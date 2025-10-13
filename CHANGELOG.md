@@ -2,6 +2,48 @@
 
 All notable changes to the Divine Moderation Service will be documented in this file.
 
+## [Unreleased] - 2025-10-12
+
+### Added
+- **Admin bypass route** (`/admin/video/{sha256}.mp4`) - Authenticated admins can now view quarantined videos for review
+  - Route requires valid session authentication
+  - Fetches directly from R2, bypassing CDN quarantine check
+  - Adds `X-Admin-Bypass: true` header for audit trail
+  - Enables moderators to review flagged content and check for false positives
+- **Comprehensive Sightengine model support** - Expanded moderation to use all 17 category models
+  - Deepfake detection with configurable thresholds
+  - Informational categories: alcohol, tobacco, gambling, destruction, military, medical, money
+  - Text content moderation (OCR profanity detection)
+  - QR code safety scanning
+  - Weapon detection (firearms, knives, threats)
+  - Drug detection (recreational drugs, medical substances)
+  - Self-harm detection (critical ban category)
+  - Enhanced gore classification with context (real/fake/animated)
+  - Offensive content (hate symbols, gestures)
+
+### Changed
+- Dashboard video URLs now use admin bypass route instead of public CDN URLs
+- All video previews in dashboard now work regardless of quarantine status
+- Videos served with `Cache-Control: private, no-cache` to prevent caching of quarantined content
+- **Classification system terminology** - Changed from "QUARANTINE" to "AGE_RESTRICTED" for high-severity content
+- **Classifier logic** - Now handles all 17 Sightengine categories with individual thresholds
+  - Permanent ban categories: self-harm (≥0.7), hate speech (≥0.8), extreme gore (≥0.95)
+  - Age-restricted categories: nudity, violence, gore, weapons, drugs, alcohol, tobacco, gambling, destruction, AI-generated, deepfake
+  - Review categories: informational content (medical, military, money, text profanity, QR codes) at ≥0.6 threshold
+- **Sightengine API requests** - Now using comprehensive model list including nudity-2.1, gore-2.0, offensive-2.0, and 13 additional models
+
+### Security
+- Admin video route requires valid session token (401 for unauthenticated requests)
+- Quarantined videos only accessible to authenticated moderators
+- Public CDN continues to block quarantined content (HTTP 451)
+
+### Testing
+- Expanded test suite to 62 tests (from 40 tests)
+- Added comprehensive tests for all 17 moderation categories
+- Tests for permanent ban logic (self-harm, hate speech, extreme gore)
+- Tests for informational category thresholds
+- All tests passing with 100% success rate
+
 ## [1.0.0] - 2025-10-05
 
 ### Added
