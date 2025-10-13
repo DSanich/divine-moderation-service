@@ -46,10 +46,11 @@ export function classifyModerationResult(moderationData, env = {}) {
   } = moderationData;
 
   // Support both old and new format
-  const scores = maxScores.nudity !== undefined ? maxScores : {
-    nudity: maxNudityScore,
-    violence: maxViolenceScore,
-    ai_generated: maxAiGeneratedScore,
+  // Default values for all categories
+  const defaultScores = {
+    nudity: 0,
+    violence: 0,
+    ai_generated: 0,
     gore: 0,
     offensive: 0,
     weapon: 0,
@@ -64,6 +65,19 @@ export function classifyModerationResult(moderationData, env = {}) {
     military: 0,
     text_profanity: 0,
     qr_unsafe: 0
+  };
+
+  // Determine if using new format (has any maxScores) or old format
+  const usingNewFormat = Object.keys(maxScores).length > 0;
+
+  const scores = usingNewFormat ? {
+    ...defaultScores,
+    ...maxScores
+  } : {
+    ...defaultScores,
+    nudity: maxNudityScore,
+    violence: maxViolenceScore,
+    ai_generated: maxAiGeneratedScore
   };
 
   // Load thresholds from env or use defaults
@@ -103,7 +117,17 @@ export function classifyModerationResult(moderationData, env = {}) {
     self_harm: {
       high: parseFloat(env.SELF_HARM_THRESHOLD_HIGH || DEFAULT_SELF_HARM_HIGH),
       medium: parseFloat(env.SELF_HARM_THRESHOLD_MEDIUM || DEFAULT_SELF_HARM_MEDIUM)
-    }
+    },
+    // Informational categories use lower thresholds (0.6 for review)
+    alcohol: { high: 0.8, medium: 0.6 },
+    tobacco: { high: 0.8, medium: 0.6 },
+    gambling: { high: 0.8, medium: 0.6 },
+    destruction: { high: 0.8, medium: 0.6 },
+    military: { high: 0.8, medium: 0.6 },
+    medical: { high: 0.8, medium: 0.6 },
+    money: { high: 0.8, medium: 0.6 },
+    text_profanity: { high: 0.8, medium: 0.6 },
+    qr_unsafe: { high: 0.8, medium: 0.6 }
   };
 
   // Find primary concern (highest score)
@@ -148,7 +172,7 @@ export function classifyModerationResult(moderationData, env = {}) {
   else if (Object.keys(thresholds).some(cat => {
     const threshold = thresholds[cat];
     return threshold && scores[cat] >= threshold.medium && scores[cat] < threshold.high;
-  }) || INFORMATIONAL_CATEGORIES.some(cat => scores[cat] >= 0.6)) {
+  })) {
     action = 'REVIEW';
     severity = 'medium';
     category = primaryConcern;
