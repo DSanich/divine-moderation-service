@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 # KV for storing moderation results
 [[kv_namespaces]]
 binding = "MODERATION_KV"
-id = "eee0689974834390acd39d543002cac3"
+id = "10af689fc82140ed9159eef3c1c47079"
 
 # R2 binding for accessing uploaded videos
 [[r2_buckets]]
@@ -29,7 +29,8 @@ max_retries = 3
 # Environment variables
 [vars]
 MODERATION_ENABLED = "true"
-CDN_DOMAIN = "r2.divine.video"  # R2 public domain for Sightengine access
+CDN_DOMAIN = "cdn.divine.video"  # CDN domain for video access
+PRIMARY_MODERATION_PROVIDER = "bunnycdn"  # Use BunnyCDN content tagging (free, fast, accurate)
 
 # Thresholds for content classification (0.0 - 1.0)
 # NSFW / Adult Content
@@ -67,6 +68,7 @@ AI_GENERATED_THRESHOLD_MEDIUM = "0.6" # Human review
 # Secrets (set with: wrangler secret put <NAME>)
 # NOSTR_PRIVATE_KEY - for signing events to faro.nos.social
 # FARO_RELAY_URL - Nostr relay for faro moderation events
-# SIGHTENGINE_API_USER - (optional, for Phase 2)
-# SIGHTENGINE_API_SECRET - (optional, for Phase 2)
+# SIGHTENGINE_API_USER - (optional, for fallback)
+# SIGHTENGINE_API_SECRET - (optional, for fallback)
+# HIVE_API_KEY - Hive.AI V2 API token for AI-generated content and deepfake detection
 # ADMIN_PASSWORD_HASH - SHA-256 hash of admin dashboard password

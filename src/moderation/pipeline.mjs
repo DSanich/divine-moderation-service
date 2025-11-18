@@ -1,7 +1,7 @@
 // ABOUTME: Complete moderation pipeline orchestration
-// ABOUTME: Coordinates Sightengine analysis and classification for videos
+// ABOUTME: Coordinates video analysis and classification using pluggable providers
 
-import { moderateVideoWithSightengine } from './sightengine.mjs';
+import { moderateWithFallback } from './providers/index.mjs';
 import { classifyModerationResult } from './classifier.mjs';
 import { fetchNostrEventBySha256, parseVideoEventMetadata } from '../nostr/relay-client.mjs';
 
@@ -29,15 +29,15 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
   let videoUrl = `https://${env.CDN_DOMAIN}/${sha256}.mp4`; // Fallback default
 
   try {
-    const relays = env.NOSTR_RELAY_URL ? [env.NOSTR_RELAY_URL] : ['wss://relay3.openvine.co'];
+    const relays = env.NOSTR_RELAY_URL ? [env.NOSTR_RELAY_URL] : ['wss://relay.divine.video'];
     const event = await fetchNostrEventBySha256(sha256, relays);
     if (event) {
       nostrContext = parseVideoEventMetadata(event);
       console.log(`[MODERATION] Found Nostr context for ${sha256}:`, nostrContext);
 
       // Use the video URL from Nostr event if available
-      if (nostrContext.videoUrl) {
-        videoUrl = nostrContext.videoUrl;
+      if (nostrContext.url) {
+        videoUrl = nostrContext.url;
         console.log(`[MODERATION] Using video URL from Nostr event: ${videoUrl}`);
       }
     } else {
@@ -49,21 +49,83 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     // Don't fail moderation if Nostr fetch fails
   }
 
-  // Step 2: Analyze video with Sightengine using the correct URL
-  const sightengineResult = await moderateVideoWithSightengine(
-    videoUrl,
-    { sha256 },
-    env,
-    fetchFn
-  );
+  // Step 2: Run both BunnyCDN (standard) and HiveAI (AI detection) in parallel
+  let moderationResult;
+  let combinedScores = {};
+  let combinedFlaggedFrames = [];
+  let providers = [];
+  let processingTime = 0;
+
+  try {
+    // Check which providers are configured
+    const hasBunny = env.BUNNY_STREAM_API_KEY;
+    const hasHive = env.HIVE_API_KEY;
+
+    if (hasBunny && hasHive) {
+      // Run both in parallel for comprehensive coverage
+      console.log('[MODERATION] Running BunnyCDN and HiveAI in parallel');
+      const { moderateWithMultiple } = await import('./providers/index.mjs');
+
+      const multiResult = await moderateWithMultiple(
+        videoUrl,
+        { sha256 },
+        env,
+        ['bunnycdn', 'hiveai'],
+        { fetchFn }
+      );
+
+      // Merge results from both providers
+      for (const result of multiResult.results) {
+        if (result.status === 'fulfilled' && result.result) {
+          providers.push(result.provider);
+          processingTime += result.result.processingTime || 0;
+
+          // Merge scores (HiveAI provides aiGenerated/deepfake, BunnyCDN provides everything else)
+          combinedScores = {
+            ...combinedScores,
+            ...result.result.scores
+          };
+
+          // Combine flagged frames
+          if (result.result.flaggedFrames) {
+            combinedFlaggedFrames = [...combinedFlaggedFrames, ...result.result.flaggedFrames];
+          }
+        }
+      }
+
+      moderationResult = {
+        scores: combinedScores,
+        flaggedFrames: combinedFlaggedFrames,
+        provider: providers.join('+'),
+        processingTime,
+        details: multiResult.results.reduce((acc, r) => ({
+          ...acc,
+          ...(r.result?.details || {})
+        }), {}),
+        raw: multiResult.results.map(r => ({ provider: r.provider, data: r.result?.raw }))
+      };
+
+      console.log(`[MODERATION] Combined results from ${providers.join(' + ')}`);
+
+    } else {
+      // Fallback to single provider
+      console.log('[MODERATION] Using fallback moderation (only one provider configured)');
+      moderationResult = await moderateWithFallback(
+        videoUrl,
+        { sha256 },
+        env,
+        { fetchFn }
+      );
+    }
+  } catch (error) {
+    console.error('[MODERATION] Moderation failed:', error);
+    throw error;
+  }
 
   // Step 3: Classify result into action categories
   const classification = classifyModerationResult({
-    maxNudityScore: sightengineResult.maxNudityScore,
-    maxViolenceScore: sightengineResult.maxViolenceScore,
-    maxAiGeneratedScore: sightengineResult.maxAiGeneratedScore,
-    maxScores: sightengineResult.maxScores,
-    flaggedFrames: sightengineResult.flaggedFrames
+    maxScores: moderationResult.scores,
+    flaggedFrames: moderationResult.flaggedFrames
   }, env);
 
   // Step 4: Return complete result
@@ -71,8 +133,12 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     // Classification
     ...classification,
 
+    // Provider used
+    provider: moderationResult.provider,
+    processingTime: moderationResult.processingTime,
+
     // Detailed subcategories for fine-grained filtering
-    detailedCategories: sightengineResult.detailedCategories,
+    detailedCategories: moderationResult.details,
 
     // Video metadata
     sha256,
@@ -86,7 +152,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     // Nostr event context (if found)
     nostrContext,
 
-    // Raw Sightengine data (for debugging/auditing)
-    sightengineFrames: sightengineResult.frames
+    // Raw provider data (for debugging/auditing)
+    providerRaw: moderationResult.raw
   };
 }

@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quick Review - Divine Moderation</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .header {
+      padding: 15px 20px;
+      background: #1a1a1a;
+      border-bottom: 1px solid #333;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .header h1 {
+      font-size: 20px;
+      color: #fff;
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .btn {
+      background: #333;
+      color: #e0e0e0;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: background 0.2s;
+    }
+
+    .btn:hover {
+      background: #444;
+    }
+
+    .btn-primary {
+      background: #2563eb;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #1d4ed8;
+    }
+
+    .review-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .video-card-swipe {
+      position: relative;
+      width: 90%;
+      max-width: 600px;
+      max-height: 90vh;
+      background: #1a1a1a;
+      border: 2px solid #333;
+      border-radius: 12px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.3s;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .video-card-swipe.swiping {
+      transition: none;
+    }
+
+    .video-card-swipe.swipe-left {
+      transform: translateX(-150%) rotate(-20deg);
+      opacity: 0;
+    }
+
+    .video-card-swipe.swipe-right {
+      transform: translateX(150%) rotate(20deg);
+      opacity: 0;
+    }
+
+    .video-card-swipe.swipe-up {
+      transform: translateY(-150%) scale(0.8);
+      opacity: 0;
+    }
+
+    .video-wrapper {
+      position: relative;
+      width: 100%;
+      height: 50vh;
+      max-height: 600px;
+      background: #0a0a0a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    .swipe-indicator {
+      position: absolute;
+      top: 50%;
+      font-size: 80px;
+      font-weight: bold;
+      opacity: 0;
+      transform: translateY(-50%);
+      pointer-events: none;
+      z-index: 10;
+      transition: opacity 0.2s;
+    }
+
+    .swipe-indicator.left {
+      left: 30px;
+      color: #ef4444;
+    }
+
+    .swipe-indicator.right {
+      right: 30px;
+      color: #22c55e;
+    }
+
+    .swipe-indicator.up {
+      top: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #f59e0b;
+    }
+
+    .swipe-indicator.visible {
+      opacity: 0.8;
+    }
+
+    .video-info {
+      padding: 20px;
+    }
+
+    .video-hash {
+      font-family: monospace;
+      font-size: 11px;
+      color: #666;
+      margin-bottom: 15px;
+    }
+
+    .scores-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+
+    .score-item {
+      background: #0a0a0a;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid #333;
+    }
+
+    .score-label {
+      font-size: 11px;
+      color: #888;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+
+    .score-value {
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .score-value.high {
+      color: #ef4444;
+    }
+
+    .score-value.medium {
+      color: #f59e0b;
+    }
+
+    .score-value.low {
+      color: #22c55e;
+    }
+
+    .nostr-meta {
+      background: #0a0a0a;
+      padding: 12px;
+      border-radius: 6px;
+      border: 1px solid #333;
+      margin-bottom: 15px;
+    }
+
+    .nostr-title {
+      font-size: 14px;
+      color: #e0e0e0;
+      margin-bottom: 8px;
+    }
+
+    .nostr-stats {
+      display: flex;
+      gap: 15px;
+      font-size: 12px;
+      color: #888;
+    }
+
+    .action-buttons {
+      display: flex;
+      gap: 10px;
+      margin-top: 15px;
+    }
+
+    .action-btn {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .action-btn.ban {
+      background: #991b1b;
+      color: #fee2e2;
+    }
+
+    .action-btn.ban:hover {
+      background: #7f1d1d;
+    }
+
+    .action-btn.age-restrict {
+      background: #b45309;
+      color: #fef3c7;
+    }
+
+    .action-btn.age-restrict:hover {
+      background: #92400e;
+    }
+
+    .action-btn.approve {
+      background: #166534;
+      color: #dcfce7;
+    }
+
+    .action-btn.approve:hover {
+      background: #14532d;
+    }
+
+    .keyboard-hints {
+      margin-top: 15px;
+      padding: 12px;
+      background: #0a0a0a;
+      border: 1px solid #333;
+      border-radius: 6px;
+      font-size: 12px;
+      color: #666;
+      text-align: center;
+    }
+
+    .keyboard-hints kbd {
+      display: inline-block;
+      padding: 3px 6px;
+      background: #1a1a1a;
+      border: 1px solid #444;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 11px;
+      color: #aaa;
+      margin: 0 2px;
+    }
+
+    .progress {
+      padding: 10px 20px;
+      background: #1a1a1a;
+      border-top: 1px solid #333;
+      text-align: center;
+      font-size: 14px;
+      color: #888;
+      flex-shrink: 0;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #666;
+    }
+
+    .empty {
+      text-align: center;
+      padding: 60px 20px;
+    }
+
+    .empty h2 {
+      font-size: 24px;
+      color: #fff;
+      margin-bottom: 10px;
+    }
+
+    .empty p {
+      color: #666;
+    }
+
+    /* Toast notifications */
+    .toast {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 15px 20px;
+      z-index: 2000;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      animation: slideDown 0.3s ease-out;
+      display: flex;
+      align-items: center;
+      gap: 15px;
+    }
+
+    @keyframes slideDown {
+      from {
+        transform: translateX(-50%) translateY(-100%);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(-50%) translateY(0);
+        opacity: 1;
+      }
+    }
+
+    .toast.hiding {
+      animation: slideUp 0.3s ease-out forwards;
+    }
+
+    @keyframes slideUp {
+      from {
+        transform: translateX(-50%) translateY(0);
+        opacity: 1;
+      }
+      to {
+        transform: translateX(-50%) translateY(-100%);
+        opacity: 0;
+      }
+    }
+
+    .toast-message {
+      color: #e0e0e0;
+      font-size: 14px;
+    }
+
+    .toast-undo {
+      background: #2563eb;
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .toast-undo:hover {
+      background: #1d4ed8;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Quick Review</h1>
+    <div class="header-actions">
+      <button class="btn" onclick="window.location.href='/admin/dashboard'">Dashboard</button>
+      <button class="btn" onclick="logout()">Logout</button>
+    </div>
+  </div>
+
+  <div id="loading" class="loading">
+    Loading videos for review...
+  </div>
+
+  <div id="empty" class="empty" style="display: none;">
+    <h2>🎉 All caught up!</h2>
+    <p>No videos need review right now</p>
+    <button class="btn btn-primary" style="margin-top: 20px;" onclick="window.location.href='/admin/dashboard'">
+      Back to Dashboard
+    </button>
+  </div>
+
+  <div id="review-container" class="review-container" style="display: none;">
+    <!-- Video card will be dynamically inserted here -->
+  </div>
+
+  <div id="progress" class="progress" style="display: none;">
+    <span id="progress-text">0 reviewed</span>
+  </div>
+
+  <script>
+    let reviewQueue = [];
+    let currentIndex = 0;
+    let reviewedCount = 0;
+    let currentToast = null;
+
+    // Touch/mouse state
+    let isDragging = false;
+    let startX = 0;
+    let startY = 0;
+    let currentX = 0;
+    let currentY = 0;
+
+    async function loadReviewQueue() {
+      try {
+        const response = await fetch('/admin/api/videos?limit=100');
+
+        if (response.status === 401) {
+          window.location.href = '/admin/login';
+          return;
+        }
+
+        const data = await response.json();
+        const allVideos = data.videos || [];
+
+        // Filter and sort videos that need review
+        // Priority: REVIEW status, then high scores near thresholds
+        reviewQueue = allVideos
+          .filter(v => v.action === 'REVIEW' || needsHumanReview(v))
+          .sort((a, b) => {
+            // REVIEW status first
+            if (a.action === 'REVIEW' && b.action !== 'REVIEW') return -1;
+            if (b.action === 'REVIEW' && a.action !== 'REVIEW') return 1;
+
+            // Then by highest max score
+            return getMaxScore(b.scores) - getMaxScore(a.scores);
+          });
+
+        document.getElementById('loading').style.display = 'none';
+
+        if (reviewQueue.length === 0) {
+          document.getElementById('empty').style.display = 'block';
+        } else {
+          document.getElementById('review-container').style.display = 'flex';
+          document.getElementById('progress').style.display = 'block';
+          showCurrentVideo();
+        }
+
+      } catch (error) {
+        console.error('Failed to load videos:', error);
+        document.getElementById('loading').innerHTML = 'Error loading videos: ' + error.message;
+      }
+    }
+
+    function needsHumanReview(video) {
+      // Check if any score is in the "medium" threshold range (0.6-0.8)
+      const scores = video.scores || {};
+      return Object.values(scores).some(score => score >= 0.6 && score < 0.8);
+    }
+
+    function getMaxScore(scores) {
+      if (!scores) return 0;
+      return Math.max(...Object.values(scores).filter(v => typeof v === 'number'));
+    }
+
+    function showCurrentVideo() {
+      if (currentIndex >= reviewQueue.length) {
+        // Finished all reviews
+        document.getElementById('review-container').innerHTML = '';
+        document.getElementById('empty').style.display = 'block';
+        document.getElementById('progress').style.display = 'none';
+        return;
+      }
+
+      const video = reviewQueue[currentIndex];
+      const container = document.getElementById('review-container');
+
+      container.innerHTML = createVideoCard(video);
+      updateProgress();
+
+      // Setup event listeners for swipe
+      const card = container.querySelector('.video-card-swipe');
+      setupSwipeHandlers(card);
+
+      // Auto-play video
+      const videoEl = card.querySelector('video');
+      if (videoEl) {
+        videoEl.play().catch(() => {
+          // Auto-play might be blocked, that's ok
+        });
+      }
+    }
+
+    function createVideoCard(video) {
+      const { sha256, scores, nostrContext, provider, detailedCategories } = video;
+      const adminVideoUrl = `/admin/video/${sha256}.mp4`;
+
+      // Get top scores
+      const scoreEntries = Object.entries(scores || {})
+        .filter(([, value]) => typeof value === 'number' && value > 0)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 4);
+
+      const scoresHTML = scoreEntries.map(([key, value]) => {
+        const label = formatCategoryName(key);
+        const percentage = (value * 100).toFixed(0);
+        const colorClass = value >= 0.7 ? 'high' : value >= 0.4 ? 'medium' : 'low';
+
+        return `
+          <div class="score-item">
+            <div class="score-label">${label}</div>
+            <div class="score-value ${colorClass}">${percentage}%</div>
+          </div>
+        `;
+      }).join('');
+
+      // Provider info with AI source detection
+      let providerHTML = '';
+      if (provider) {
+        providerHTML = `<div style="font-size: 11px; color: #666; margin-top: 8px;">Provider: ${provider}</div>`;
+      }
+
+      // AI source detection details
+      let aiSourceHTML = '';
+      if (scores.ai_generated && scores.ai_generated > 0 && detailedCategories?.ai_generated) {
+        const aiDetails = detailedCategories.ai_generated;
+        if (aiDetails.detectedSource) {
+          const sourceName = aiDetails.detectedSource.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+          aiSourceHTML = `
+            <div style="background: #1a1a1a; padding: 8px; border-radius: 4px; margin-top: 8px; font-size: 12px;">
+              <div style="color: #f59e0b; font-weight: 600;">🤖 AI Source: ${sourceName}</div>
+              <div style="color: #888; font-size: 11px; margin-top: 4px;">
+                Confidence: ${(aiDetails.sourceConfidence * 100).toFixed(0)}%
+                • ${aiDetails.framesDetected}/${aiDetails.totalFrames} frames
+              </div>
+            </div>
+          `;
+        }
+      }
+
+      const nostrHTML = nostrContext ? `
+        <div class="nostr-meta">
+          ${nostrContext.title ? `<div class="nostr-title">${escapeHtml(nostrContext.title)}</div>` : ''}
+          <div class="nostr-stats">
+            ${nostrContext.author ? `<span>👤 ${escapeHtml(nostrContext.author)}</span>` : ''}
+            ${nostrContext.loops ? `<span>🔁 ${formatNumber(nostrContext.loops)}</span>` : ''}
+            ${nostrContext.likes ? `<span>❤️ ${formatNumber(nostrContext.likes)}</span>` : ''}
+            ${nostrContext.url ? `<span><a href="${escapeHtml(nostrContext.url)}" target="_blank" style="color: #888;">🔗 CDN</a></span>` : ''}
+          </div>
+        </div>
+      ` : '';
+
+      return `
+        <div class="video-card-swipe" data-sha256="${sha256}">
+          <div class="swipe-indicator left">✗</div>
+          <div class="swipe-indicator right">✓</div>
+          <div class="swipe-indicator up">⚠</div>
+
+          <div class="video-wrapper">
+            <video src="${adminVideoUrl}" controls loop preload="auto"></video>
+          </div>
+
+          <div class="video-info">
+            <div class="video-hash">${sha256}</div>
+
+            ${scoreEntries.length > 0 ? `
+              <div class="scores-grid">
+                ${scoresHTML}
+              </div>
+            ` : ''}
+
+            ${providerHTML}
+            ${aiSourceHTML}
+            ${nostrHTML}
+
+            <div class="action-buttons">
+              <button class="action-btn ban" onclick="handleAction('${sha256}', 'PERMANENT_BAN')">
+                Ban
+              </button>
+              <button class="action-btn age-restrict" onclick="handleAction('${sha256}', 'AGE_RESTRICTED')">
+                Age-Restrict
+              </button>
+              <button class="action-btn approve" onclick="handleAction('${sha256}', 'SAFE')">
+                Approve
+              </button>
+            </div>
+
+            <div class="keyboard-hints">
+              <kbd>←</kbd> Ban &nbsp;·&nbsp; <kbd>↑</kbd> Age-Restrict &nbsp;·&nbsp; <kbd>→</kbd> Approve &nbsp;·&nbsp; <kbd>Space</kbd> Skip
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function setupSwipeHandlers(card) {
+      // Mouse/touch start
+      const handleStart = (e) => {
+        isDragging = true;
+        const point = e.touches ? e.touches[0] : e;
+        startX = point.clientX;
+        startY = point.clientY;
+        card.classList.add('swiping');
+      };
+
+      // Mouse/touch move
+      const handleMove = (e) => {
+        if (!isDragging) return;
+        e.preventDefault();
+
+        const point = e.touches ? e.touches[0] : e;
+        currentX = point.clientX - startX;
+        currentY = point.clientY - startY;
+
+        card.style.transform = `translate(${currentX}px, ${currentY}px) rotate(${currentX * 0.1}deg)`;
+
+        // Show indicators
+        const leftIndicator = card.querySelector('.swipe-indicator.left');
+        const rightIndicator = card.querySelector('.swipe-indicator.right');
+        const upIndicator = card.querySelector('.swipe-indicator.up');
+
+        leftIndicator.classList.toggle('visible', currentX < -50);
+        rightIndicator.classList.toggle('visible', currentX > 50);
+        upIndicator.classList.toggle('visible', currentY < -50);
+      };
+
+      // Mouse/touch end
+      const handleEnd = () => {
+        if (!isDragging) return;
+        isDragging = false;
+        card.classList.remove('swiping');
+
+        const sha256 = card.getAttribute('data-sha256');
+
+        // Check swipe threshold
+        if (currentX < -100) {
+          // Swipe left - BAN
+          swipeAction(card, 'left', sha256, 'PERMANENT_BAN');
+        } else if (currentX > 100) {
+          // Swipe right - APPROVE
+          swipeAction(card, 'right', sha256, 'SAFE');
+        } else if (currentY < -100) {
+          // Swipe up - AGE RESTRICT
+          swipeAction(card, 'up', sha256, 'AGE_RESTRICTED');
+        } else {
+          // Not enough swipe, reset
+          card.style.transform = '';
+          card.querySelectorAll('.swipe-indicator').forEach(el => el.classList.remove('visible'));
+        }
+
+        currentX = 0;
+        currentY = 0;
+      };
+
+      card.addEventListener('mousedown', handleStart);
+      card.addEventListener('touchstart', handleStart);
+
+      document.addEventListener('mousemove', handleMove);
+      document.addEventListener('touchmove', handleMove, { passive: false });
+
+      document.addEventListener('mouseup', handleEnd);
+      document.addEventListener('touchend', handleEnd);
+    }
+
+    function swipeAction(card, direction, sha256, action) {
+      card.classList.add(`swipe-${direction}`);
+
+      setTimeout(() => {
+        handleAction(sha256, action);
+      }, 300);
+    }
+
+    async function handleAction(sha256, action) {
+      const video = reviewQueue[currentIndex];
+      const previousAction = video.action;
+
+      try {
+        const response = await fetch(`/admin/api/moderate/${sha256}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, reason: `Quick review: ${action}` })
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        reviewedCount++;
+
+        const actionName = action === 'SAFE' ? 'approved' :
+                          action === 'AGE_RESTRICTED' ? 'age-restricted' :
+                          action === 'PERMANENT_BAN' ? 'banned' : 'updated';
+
+        showToast(`Video ${actionName}`, async () => {
+          // Undo - go back to previous video
+          try {
+            const undoResponse = await fetch(`/admin/api/moderate/${sha256}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: previousAction,
+                reason: `Undo: reverted to ${previousAction}`
+              })
+            });
+
+            if (undoResponse.ok) {
+              currentIndex--;
+              reviewedCount--;
+              showCurrentVideo();
+              showToast('Action undone', null, 2000);
+            }
+          } catch (err) {
+            console.error('Undo failed:', err);
+          }
+        });
+
+        // Move to next video
+        currentIndex++;
+        showCurrentVideo();
+
+      } catch (error) {
+        console.error('Failed to update action:', error);
+        showToast('Failed to update: ' + error.message, null, 3000);
+      }
+    }
+
+    function skipVideo() {
+      currentIndex++;
+      showCurrentVideo();
+    }
+
+    function updateProgress() {
+      const total = reviewQueue.length;
+      const remaining = total - currentIndex;
+      document.getElementById('progress-text').textContent =
+        `${reviewedCount} reviewed · ${remaining} remaining`;
+    }
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      if (!reviewQueue[currentIndex]) return;
+
+      const sha256 = reviewQueue[currentIndex].sha256;
+
+      switch(e.key) {
+        case 'ArrowLeft':
+          e.preventDefault();
+          handleAction(sha256, 'PERMANENT_BAN');
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          handleAction(sha256, 'SAFE');
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          handleAction(sha256, 'AGE_RESTRICTED');
+          break;
+        case ' ':
+          e.preventDefault();
+          skipVideo();
+          break;
+      }
+    });
+
+    function showToast(message, onUndo = null, duration = 5000) {
+      if (currentToast) {
+        currentToast.remove();
+      }
+
+      const toast = document.createElement('div');
+      toast.className = 'toast';
+
+      const messageEl = document.createElement('div');
+      messageEl.className = 'toast-message';
+      messageEl.textContent = message;
+      toast.appendChild(messageEl);
+
+      if (onUndo) {
+        const undoBtn = document.createElement('button');
+        undoBtn.className = 'toast-undo';
+        undoBtn.textContent = 'Undo';
+        undoBtn.onclick = () => {
+          onUndo();
+          hideToast(toast);
+        };
+        toast.appendChild(undoBtn);
+      }
+
+      document.body.appendChild(toast);
+      currentToast = toast;
+
+      if (duration > 0) {
+        setTimeout(() => {
+          if (currentToast === toast) {
+            hideToast(toast);
+          }
+        }, duration);
+      }
+
+      return toast;
+    }
+
+    function hideToast(toast) {
+      toast.classList.add('hiding');
+      setTimeout(() => {
+        toast.remove();
+        if (currentToast === toast) {
+          currentToast = null;
+        }
+      }, 300);
+    }
+
+    function formatCategoryName(key) {
+      const names = {
+        'nudity': 'Nudity', 'violence': 'Violence', 'gore': 'Gore',
+        'offensive': 'Offensive', 'weapon': 'Weapon', 'self_harm': 'Self-Harm',
+        'recreational_drug': 'Drugs', 'alcohol': 'Alcohol', 'tobacco': 'Tobacco',
+        'ai_generated': 'AI-Generated', 'deepfake': 'Deepfake'
+      };
+      return names[key] || key;
+    }
+
+    function formatNumber(num) {
+      if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+      if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+      return num.toString();
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function logout() {
+      document.cookie = 'admin_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
+      window.location.href = '/admin/login';
+    }
+
+    // Load on page load
+    loadReviewQueue();
+  </script>
+</body>
+</html>
