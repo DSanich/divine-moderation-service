@@ -1,6 +1,6 @@
 # Divine Video Moderation Service
 
-Automated content moderation service for Divine 6-second videos using Sightengine API and Nostr-based human review workflow.
+Content moderation service for Divine 6-second videos using Sightengine API and Nostr-based human review workflow.
 
 ## Features
 
