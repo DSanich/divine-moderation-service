@@ -82,6 +82,16 @@ SELF_HARM_THRESHOLD_MEDIUM = "0.5"    # Human review
 AI_GENERATED_THRESHOLD_HIGH = "0.8"   # Age-restricted
 AI_GENERATED_THRESHOLD_MEDIUM = "0.6" # Human review
 
+# Relay Polling Configuration
+RELAY_POLLING_ENABLED = "true"                    # Enable/disable relay polling
+RELAY_POLLING_RELAY_URL = "wss://relay.divine.video"  # Relay to poll for new video events
+RELAY_POLLING_LOOKBACK_HOURS = "1"                # How far back to look for events (in hours)
+RELAY_POLLING_LIMIT = "100"                       # Max events to fetch per poll
+
+# Cron trigger for relay polling - runs every 5 minutes
+[triggers]
+crons = ["*/5 * * * *"]
+
 # Secrets (set with: wrangler secret put <NAME>)
 # POLICY_AUD - Zero Trust application audience tag (from Access > Applications > moderation.admin.divine.video > Overview)
 # CF_ACCESS_CLIENT_ID - Cloudflare Access service token ID for relay.divine.video

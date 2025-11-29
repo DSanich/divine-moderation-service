@@ -10,6 +10,7 @@ import { publishToFaro, publishLabelEvent } from './nostr/publisher.mjs';
 import { requireAuth, getAuthenticatedUser } from './admin/auth.mjs';
 import { verifyZeroTrustJWT } from './admin/zerotrust.mjs';
 import { fetchNostrEventBySha256, parseVideoEventMetadata } from './nostr/relay-client.mjs';
+import { pollRelayForVideos, getLastPollTimestamp, setLastPollTimestamp, getPollingStatus } from './nostr/relay-poller.mjs';
 import dashboardHTML from './admin/dashboard.html';
 import swipeReviewHTML from './admin/swipe-review.html';
 import { initReportsTable, addReport } from './reports.mjs';
@@ -705,6 +706,81 @@ export default {
       }
     }
 
+    // Get relay polling status
+    if (url.pathname === '/admin/api/relay-polling/status') {
+      const authError = await requireAuth(request, env);
+      if (authError) {
+        console.log(`[${requestId}] Unauthorized access to relay-polling/status`);
+        return authError;
+      }
+
+      console.log(`[${requestId}] Fetching relay polling status`);
+      const status = await getPollingStatus(env);
+
+      return new Response(JSON.stringify(status), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Manually trigger relay polling
+    if (url.pathname === '/admin/api/relay-polling/trigger' && request.method === 'POST') {
+      const authError = await requireAuth(request, env);
+      if (authError) {
+        console.log(`[${requestId}] Unauthorized access to relay-polling/trigger`);
+        return authError;
+      }
+
+      console.log(`[${requestId}] Manually triggering relay poll`);
+
+      // Parse optional parameters from request body
+      let since, limit;
+      try {
+        const body = await request.json();
+        since = body.since;
+        limit = body.limit;
+      } catch (e) {
+        // Body is optional
+      }
+
+      // Get default since from last poll or config
+      if (!since) {
+        const lastPoll = await getLastPollTimestamp(env);
+        if (lastPoll) {
+          since = lastPoll;
+        } else {
+          const lookbackHours = parseInt(env.RELAY_POLLING_LOOKBACK_HOURS || '1', 10);
+          since = Math.floor(Date.now() / 1000) - (lookbackHours * 3600);
+        }
+      }
+
+      const relays = env.RELAY_POLLING_RELAY_URL
+        ? [env.RELAY_POLLING_RELAY_URL]
+        : ['wss://relay.divine.video'];
+
+      const results = await pollRelayForVideos(env, {
+        since,
+        limit: limit || parseInt(env.RELAY_POLLING_LIMIT || '100', 10),
+        relays
+      });
+
+      // Update last poll timestamp
+      await setLastPollTimestamp(env, Math.floor(Date.now() / 1000), {
+        totalEvents: results.totalEvents,
+        queuedForModeration: results.queuedForModeration,
+        alreadyModerated: results.alreadyModerated,
+        trigger: 'manual'
+      });
+
+      console.log(`[${requestId}] Manual poll complete: ${results.queuedForModeration} videos queued`);
+
+      return new Response(JSON.stringify({
+        success: true,
+        ...results
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
     // Admin video proxy - bypasses quarantine check for authenticated moderators
     if (url.pathname.startsWith('/admin/video/')) {
       // Check authentication
@@ -1258,6 +1334,71 @@ async function runMigration() {
 
           message.ack(); // Acknowledge to prevent infinite retries
         }
+      }
+    }
+  },
+
+  /**
+   * Scheduled handler for cron-triggered relay polling
+   * Polls relay.divine.video for new video events and queues them for moderation
+   */
+  async scheduled(event, env, ctx) {
+    console.log(`[RELAY-POLLER] Cron triggered at ${new Date().toISOString()}`);
+
+    // Check if polling is enabled
+    if (env.RELAY_POLLING_ENABLED === 'false') {
+      console.log('[RELAY-POLLER] Polling is disabled, skipping');
+      return;
+    }
+
+    try {
+      // Get the timestamp to poll from
+      let since = await getLastPollTimestamp(env);
+
+      if (!since) {
+        // First run - look back based on config
+        const lookbackHours = parseInt(env.RELAY_POLLING_LOOKBACK_HOURS || '1', 10);
+        since = Math.floor(Date.now() / 1000) - (lookbackHours * 3600);
+        console.log(`[RELAY-POLLER] First run, looking back ${lookbackHours} hours`);
+      } else {
+        console.log(`[RELAY-POLLER] Continuing from last poll at ${new Date(since * 1000).toISOString()}`);
+      }
+
+      // Get relay URL from config
+      const relays = env.RELAY_POLLING_RELAY_URL
+        ? [env.RELAY_POLLING_RELAY_URL]
+        : ['wss://relay.divine.video'];
+
+      // Poll for new video events
+      const results = await pollRelayForVideos(env, {
+        since,
+        limit: parseInt(env.RELAY_POLLING_LIMIT || '100', 10),
+        relays
+      });
+
+      // Update last poll timestamp
+      await setLastPollTimestamp(env, Math.floor(Date.now() / 1000), {
+        totalEvents: results.totalEvents,
+        queuedForModeration: results.queuedForModeration,
+        alreadyModerated: results.alreadyModerated,
+        errors: results.errors.length,
+        trigger: 'cron'
+      });
+
+      console.log(`[RELAY-POLLER] Cron complete: ${results.totalEvents} events found, ${results.queuedForModeration} queued for moderation`);
+
+    } catch (error) {
+      console.error('[RELAY-POLLER] Cron poll failed:', error);
+
+      // Store error for debugging
+      try {
+        await env.MODERATION_KV.put('relay-poller:last-error', JSON.stringify({
+          error: error.message,
+          stack: error.stack,
+          timestamp: new Date().toISOString()
+        }));
+      } catch (kvError) {
+        console.error('[RELAY-POLLER] Failed to store error:', kvError);
       }
     }
   }
