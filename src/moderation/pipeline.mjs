@@ -28,29 +28,36 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     throw new Error('CDN_DOMAIN not configured');
   }
 
-  // Step 1: Fetch Nostr event context to get the actual video URL
+  // Step 1: Determine video URL - prefer metadata.videoUrl if provided (e.g., from relay-poller)
   let nostrContext = null;
-  let videoUrl = `https://${env.CDN_DOMAIN}/${sha256}.mp4`; // Fallback default
+  let videoUrl = metadata?.videoUrl || `https://${env.CDN_DOMAIN}/${sha256}.mp4`; // Default fallback
+  let nostrEventId = metadata?.eventId || null;
 
-  try {
-    const relays = env.NOSTR_RELAY_URL ? [env.NOSTR_RELAY_URL] : ['wss://relay.divine.video'];
-    const event = await fetchNostrEventBySha256(sha256, relays, env);
-    if (event) {
-      nostrContext = parseVideoEventMetadata(event);
-      console.log(`[MODERATION] Found Nostr context for ${sha256}:`, nostrContext);
+  // If we don't have a video URL from metadata, try to fetch from Nostr relay
+  if (!metadata?.videoUrl) {
+    try {
+      const relays = env.NOSTR_RELAY_URL ? [env.NOSTR_RELAY_URL] : ['wss://relay.divine.video'];
+      const event = await fetchNostrEventBySha256(sha256, relays);
+      if (event) {
+        nostrContext = parseVideoEventMetadata(event);
+        nostrEventId = event.id;
+        console.log(`[MODERATION] Found Nostr context for ${sha256}:`, nostrContext);
 
-      // Use the video URL from Nostr event if available
-      if (nostrContext.url) {
-        videoUrl = nostrContext.url;
-        console.log(`[MODERATION] Using video URL from Nostr event: ${videoUrl}`);
+        // Use the video URL from Nostr event if available
+        if (nostrContext.url) {
+          videoUrl = nostrContext.url;
+          console.log(`[MODERATION] Using video URL from Nostr event: ${videoUrl}`);
+        }
+      } else {
+        console.log(`[MODERATION] No Nostr event found for ${sha256}, using fallback URL: ${videoUrl}`);
       }
-    } else {
-      console.log(`[MODERATION] No Nostr event found for ${sha256}, using fallback URL: ${videoUrl}`);
+    } catch (error) {
+      console.error(`[MODERATION] Failed to fetch Nostr context for ${sha256}:`, error);
+      console.log(`[MODERATION] Using fallback URL: ${videoUrl}`);
+      // Don't fail moderation if Nostr fetch fails
     }
-  } catch (error) {
-    console.error(`[MODERATION] Failed to fetch Nostr context for ${sha256}:`, error);
-    console.log(`[MODERATION] Using fallback URL: ${videoUrl}`);
-    // Don't fail moderation if Nostr fetch fails
+  } else {
+    console.log(`[MODERATION] Using video URL from metadata: ${videoUrl}`);
   }
 
   // Step 2: Check if this is an original Vine (skip AI detection for pre-2018 content)
@@ -184,6 +191,9 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
 
     // CDN URL for reference
     cdnUrl: videoUrl,
+
+    // Nostr event ID (for linking back to the original video event)
+    nostrEventId,
 
     // Nostr event context (if found)
     nostrContext,

@@ -102,6 +102,6 @@ crons = ["*/5 * * * *"]
 # FARO_RELAY_URL - Nostr relay for faro moderation events
 # SIGHTENGINE_API_USER - (optional, for fallback)
 # SIGHTENGINE_API_SECRET - (optional, for fallback)
-# HIVE_MODERATION_API_KEY - Hive.AI V2 API token for content moderation (nudity, violence, etc.)
-# HIVE_AI_DETECTION_API_KEY - Hive.AI V2 API token for AI-generated content and deepfake detection
+# HIVE_API_KEY - Hive.AI V2 API token for AI-generated content and deepfake detection (api.thehive.ai)
+# BUNNY_STREAM_API_KEY - BunnyCDN Stream API key for content moderation (nudity, violence, etc.)
 # ADMIN_PASSWORD_HASH - SHA-256 hash of admin dashboard password
