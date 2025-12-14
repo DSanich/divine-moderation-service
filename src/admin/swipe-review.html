@@ -439,28 +439,35 @@
 
     async function loadReviewQueue() {
       try {
-        const response = await fetch('/admin/api/videos?limit=100');
+        // Load AI flagged videos FIRST (priority), then untriaged
+        const [flaggedResponse, untriagedResponse] = await Promise.all([
+          fetch('/admin/api/videos?action=FLAGGED&limit=100'),
+          fetch('/admin/api/untriaged?limit=50')
+        ]);
 
-        if (response.status === 401) {
+        if (flaggedResponse.status === 401 || untriagedResponse.status === 401) {
           window.location.href = '/admin/login';
           return;
         }
 
-        const data = await response.json();
-        const allVideos = data.videos || [];
+        const flaggedData = await flaggedResponse.json();
+        const untriagedData = await untriagedResponse.json();
 
-        // Filter and sort videos that need review
-        // Priority: REVIEW status, then high scores near thresholds
-        reviewQueue = allVideos
-          .filter(v => v.action === 'REVIEW' || needsHumanReview(v))
-          .sort((a, b) => {
-            // REVIEW status first
-            if (a.action === 'REVIEW' && b.action !== 'REVIEW') return -1;
-            if (b.action === 'REVIEW' && a.action !== 'REVIEW') return 1;
+        // AI flagged videos - sorted by highest score first
+        const flaggedVideos = (flaggedData.videos || [])
+          .sort((a, b) => getMaxScore(b.scores) - getMaxScore(a.scores));
 
-            // Then by highest max score
-            return getMaxScore(b.scores) - getMaxScore(a.scores);
-          });
+        const untriagedVideos = (untriagedData.videos || []).map(v => ({
+          ...v,
+          isUntriaged: true,
+          action: 'UNTRIAGED',
+          scores: {}
+        }));
+
+        // AI FLAGGED FIRST (they need attention!), then untriaged
+        reviewQueue = [...flaggedVideos, ...untriagedVideos];
+
+        console.log('[QuickReview] Loaded:', flaggedVideos.length, 'AI flagged,', untriagedVideos.length, 'untriaged');
 
         document.getElementById('loading').style.display = 'none';
 
@@ -518,10 +525,13 @@
     }
 
     function createVideoCard(video) {
-      const { sha256, scores, nostrContext, provider, detailedCategories } = video;
-      const adminVideoUrl = `/admin/video/${sha256}.mp4`;
+      const { sha256, scores, nostrContext, provider, detailedCategories, isUntriaged, cdnUrl } = video;
+      // For untriaged videos, use CDN URL; for moderated, use admin endpoint
+      const videoUrl = isUntriaged
+        ? (cdnUrl || 'https://cdn.divine.video/' + sha256 + '.mp4')
+        : '/admin/video/' + sha256 + '.mp4';
 
-      // Get top scores
+      // Get top scores (empty for untriaged)
       const scoreEntries = Object.entries(scores || {})
         .filter(([, value]) => typeof value === 'number' && value > 0)
         .sort(([, a], [, b]) => b - a)
@@ -576,14 +586,24 @@
         </div>
       ` : '';
 
+      // Banner for untriaged videos
+      const untriagedBanner = isUntriaged ? `
+        <div style="background: linear-gradient(135deg, #8b5cf6, #6366f1); padding: 12px; text-align: center;">
+          <div style="font-weight: 600; color: white; font-size: 14px;">📦 NEW - Not Yet Moderated</div>
+          <div style="color: rgba(255,255,255,0.8); font-size: 12px; margin-top: 4px;">Swipe to queue for AI moderation</div>
+        </div>
+      ` : '';
+
       return `
-        <div class="video-card-swipe" data-sha256="${sha256}">
+        <div class="video-card-swipe" data-sha256="${sha256}" data-untriaged="${isUntriaged ? 'true' : 'false'}">
           <div class="swipe-indicator left">✗</div>
           <div class="swipe-indicator right">✓</div>
           <div class="swipe-indicator up">⚠</div>
 
+          ${untriagedBanner}
+
           <div class="video-wrapper">
-            <video src="${adminVideoUrl}" controls loop preload="auto"></video>
+            <video src="${videoUrl}" controls loop preload="auto"></video>
           </div>
 
           <div class="video-info">
@@ -593,7 +613,7 @@
               <div class="scores-grid">
                 ${scoresHTML}
               </div>
-            ` : ''}
+            ` : (isUntriaged ? '<div style="color: #888; font-size: 13px; margin-bottom: 10px;">No moderation scores yet - will be analyzed after queuing</div>' : '')}
 
             ${providerHTML}
             ${aiSourceHTML}
@@ -701,14 +721,36 @@
       const previousAction = video.action;
 
       try {
-        const response = await fetch(`/admin/api/moderate/${sha256}`, {
+        // For untriaged videos, queue for moderation instead of setting action directly
+        if (video.isUntriaged) {
+          const response = await fetch('/admin/api/queue-moderation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sha256 })
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          reviewedCount++;
+          showToast('Queued for AI moderation', null, 2000);
+
+          // Move to next video
+          currentIndex++;
+          showCurrentVideo();
+          return;
+        }
+
+        // For already-moderated videos, update action as before
+        const response = await fetch('/admin/api/moderate/' + sha256, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, reason: `Quick review: ${action}` })
+          body: JSON.stringify({ action, reason: 'Quick review: ' + action })
         });
 
         if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
+          throw new Error('HTTP ' + response.status);
         }
 
         reviewedCount++;
@@ -717,15 +759,15 @@
                           action === 'AGE_RESTRICTED' ? 'age-restricted' :
                           action === 'PERMANENT_BAN' ? 'banned' : 'updated';
 
-        showToast(`Video ${actionName}`, async () => {
+        showToast('Video ' + actionName, async () => {
           // Undo - go back to previous video
           try {
-            const undoResponse = await fetch(`/admin/api/moderate/${sha256}`, {
+            const undoResponse = await fetch('/admin/api/moderate/' + sha256, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 action: previousAction,
-                reason: `Undo: reverted to ${previousAction}`
+                reason: 'Undo: reverted to ' + previousAction
               })
             });
 

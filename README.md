@@ -37,6 +37,7 @@ Moderation Worker
 - Cloudflare Workers account
 - [Sightengine API account](https://sightengine.com)
 - Nostr private key for signing events
+- Cloudflare Access service token for relay.divine.video
 - Access to faro.nos.social relay
 
 ### Installation
@@ -52,6 +53,8 @@ wrangler kv:namespace create MODERATION_KV
 wrangler queues create video-moderation-queue
 
 # Set secrets
+wrangler secret put CF_ACCESS_CLIENT_ID        # Cloudflare Access service token ID
+wrangler secret put CF_ACCESS_CLIENT_SECRET    # Cloudflare Access service token secret
 wrangler secret put SIGHTENGINE_API_USER
 wrangler secret put SIGHTENGINE_API_SECRET
 wrangler secret put NOSTR_PRIVATE_KEY

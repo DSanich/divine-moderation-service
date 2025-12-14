@@ -1,57 +1,132 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// ABOUTME: Hive.AI API client for AI-generated content detection
-// ABOUTME: Uses Hive.AI V2 API with models array for ai_generated_media and deepfake
+// ABOUTME: Hive.AI API client for content moderation and AI-generated detection
+// ABOUTME: Uses Hive.AI V2 API with separate keys for moderation and AI detection models
+
+const HIVE_API_ENDPOINT = 'https://api.thehive.ai/api/v2/task/sync';
 
 /**
- * Moderate video using Hive.AI V2 AI-generated content and deepfake detection
- *
- * Hive.AI provides specialized detection for:
- * - AI-generated content (ai_generated_media model)
- * - Deepfake detection (deepfake model)
- * - Source identification (Sora, Pika, Haiper, Kling, Luma, Hedra, Runway, etc.)
- *
- * Recommended thresholds (from Hive.AI docs):
- * - AI-Generated: 0.9 on any frame
- * - Deepfake: 0.5 on two consecutive frames, or 5% of all frames
- *
- * @param {string} videoUrl - Public URL to video file
- * @param {Object} metadata - Video metadata (sha256, etc)
- * @param {Object} env - Environment with Hive.AI credentials
+ * Call Hive.AI V2 API with a specific API key
+ * @param {string} videoUrl - Public URL to video/image
+ * @param {string} apiKey - Hive API key (determines which model runs)
  * @param {Object} options - Options (fetchFn for testing)
  * @returns {Promise<Object>} Raw Hive.AI API response
  */
-export async function moderateVideoWithHiveAI(videoUrl, metadata, env, options = {}) {
+async function callHiveAPI(videoUrl, apiKey, options = {}) {
   const fetchFn = options.fetchFn || fetch;
 
-  // Hive.AI V2 API endpoint (NOTE: api.thehive.ai, NOT api.hivemoderation.com)
-  const endpoint = 'https://api.thehive.ai/api/v2/task/sync';
-
-  // Build form data (V2 uses form-urlencoded, NOT JSON)
   const formData = new FormData();
   formData.append('url', videoUrl);
 
-  console.log('[HiveAI] Submitting video for AI-generated and deepfake detection (V2):', videoUrl);
-
-  const response = await fetchFn(endpoint, {
+  const response = await fetchFn(HIVE_API_ENDPOINT, {
     method: 'POST',
     headers: {
-      'authorization': `token ${env.HIVE_API_KEY}`,
+      'authorization': `token ${apiKey}`,
       'accept': 'application/json'
-      // NOTE: Don't set content-type - FormData sets it automatically with boundary
     },
     body: formData
   });
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`Hive.AI V2 API error: ${response.status} ${error}`);
+    throw new Error(`Hive.AI API error: ${response.status} ${error}`);
   }
 
-  const data = await response.json();
+  return response.json();
+}
 
-  console.log('[HiveAI] Received V2 response');
+/**
+ * Moderate video using Hive.AI content moderation model
+ * Detects: nudity, violence, gore, weapons, drugs, alcohol, tobacco, gambling, etc.
+ *
+ * @param {string} videoUrl - Public URL to video file
+ * @param {Object} env - Environment with HIVE_MODERATION_API_KEY
+ * @param {Object} options - Options (fetchFn for testing)
+ * @returns {Promise<Object>} Raw Hive.AI moderation response
+ */
+export async function moderateWithHiveModeration(videoUrl, env, options = {}) {
+  if (!env.HIVE_MODERATION_API_KEY) {
+    throw new Error('HIVE_MODERATION_API_KEY not configured');
+  }
 
-  return data;
+  console.log('[HiveAI] Submitting for content moderation:', videoUrl);
+  const result = await callHiveAPI(videoUrl, env.HIVE_MODERATION_API_KEY, options);
+  console.log('[HiveAI] Received moderation response');
+  return result;
+}
+
+/**
+ * Detect AI-generated content using Hive.AI AI detection model
+ * Detects: AI-generated content, deepfakes, source identification (Midjourney, DALL-E, etc.)
+ *
+ * @param {string} videoUrl - Public URL to video file
+ * @param {Object} env - Environment with HIVE_AI_DETECTION_API_KEY
+ * @param {Object} options - Options (fetchFn for testing)
+ * @returns {Promise<Object>} Raw Hive.AI AI detection response
+ */
+export async function moderateWithHiveAIDetection(videoUrl, env, options = {}) {
+  if (!env.HIVE_AI_DETECTION_API_KEY) {
+    throw new Error('HIVE_AI_DETECTION_API_KEY not configured');
+  }
+
+  console.log('[HiveAI] Submitting for AI-generated detection:', videoUrl);
+  const result = await callHiveAPI(videoUrl, env.HIVE_AI_DETECTION_API_KEY, options);
+  console.log('[HiveAI] Received AI detection response');
+  return result;
+}
+
+/**
+ * Run both Hive.AI models in parallel (moderation + AI detection)
+ *
+ * @param {string} videoUrl - Public URL to video file
+ * @param {Object} env - Environment with both API keys
+ * @param {Object} options - Options (fetchFn for testing)
+ * @returns {Promise<Object>} Combined results from both models
+ */
+export async function moderateVideoWithHiveAI(videoUrl, metadata, env, options = {}) {
+  const results = {
+    moderation: null,
+    aiDetection: null,
+    errors: [],
+    skippedAIDetection: false
+  };
+
+  // Run both APIs in parallel (unless AI detection is skipped)
+  const promises = [];
+
+  if (env.HIVE_MODERATION_API_KEY) {
+    promises.push(
+      moderateWithHiveModeration(videoUrl, env, options)
+        .then(r => { results.moderation = r; })
+        .catch(e => { results.errors.push({ model: 'moderation', error: e.message }); })
+    );
+  }
+
+  // Skip AI detection for original Vines (pre-2018 content predates AI generation)
+  if (env.HIVE_AI_DETECTION_API_KEY && !options.skipAIDetection) {
+    promises.push(
+      moderateWithHiveAIDetection(videoUrl, env, options)
+        .then(r => { results.aiDetection = r; })
+        .catch(e => { results.errors.push({ model: 'aiDetection', error: e.message }); })
+    );
+  } else if (options.skipAIDetection) {
+    results.skippedAIDetection = true;
+    console.log('[HiveAI] Skipping AI detection (original Vine content)');
+  }
+
+  if (promises.length === 0) {
+    throw new Error('No Hive.AI API keys configured. Set HIVE_MODERATION_API_KEY and/or HIVE_AI_DETECTION_API_KEY');
+  }
+
+  await Promise.all(promises);
+
+  // If all active calls failed, throw (but not if we intentionally skipped AI detection)
+  if (!results.moderation && !results.aiDetection && !results.skippedAIDetection) {
+    throw new Error(`All Hive.AI models failed: ${results.errors.map(e => `${e.model}: ${e.error}`).join('; ')}`);
+  }
+
+  console.log(`[HiveAI] Completed - moderation: ${results.moderation ? 'OK' : 'N/A'}, AI detection: ${results.aiDetection ? 'OK' : (results.skippedAIDetection ? 'SKIPPED' : 'N/A')}`);
+
+  return results;
 }

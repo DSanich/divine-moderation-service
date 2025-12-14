@@ -2,201 +2,265 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
 // ABOUTME: Integration tests for Hive.AI provider adapter
-// ABOUTME: Verifies end-to-end moderation flow with V3 API
+// ABOUTME: Verifies end-to-end moderation flow with dual API support
 
 import { describe, it, expect, vi } from 'vitest';
 import { HiveAIProvider } from './adapter.mjs';
 
 describe('HiveAI Provider Adapter', () => {
-  const mockEnv = {
-    HIVE_API_KEY: 'test-api-key'
+  const mockEnvFull = {
+    HIVE_MODERATION_API_KEY: 'mod-key',
+    HIVE_AI_DETECTION_API_KEY: 'ai-key'
   };
 
-  it('should report correct capabilities', () => {
-    const provider = new HiveAIProvider();
+  const mockEnvModerationOnly = {
+    HIVE_MODERATION_API_KEY: 'mod-key'
+  };
 
-    expect(provider.name).toBe('hiveai');
-    expect(provider.capabilities.ai_generated).toBe(true);
-    expect(provider.capabilities.deepfake).toBe(true);
-    expect(provider.capabilities.nudity).toBe(false); // Not supported by AI-detection model
-    expect(provider.capabilities.violence).toBe(false);
+  const mockEnvAIOnly = {
+    HIVE_AI_DETECTION_API_KEY: 'ai-key'
+  };
+
+  describe('capabilities', () => {
+    it('should report full capabilities when both keys present', () => {
+      const provider = new HiveAIProvider();
+
+      expect(provider.name).toBe('hiveai');
+      expect(provider.capabilities.ai_generated).toBe(true);
+      expect(provider.capabilities.deepfake).toBe(true);
+      expect(provider.capabilities.nudity).toBe(true);
+      expect(provider.capabilities.violence).toBe(true);
+      expect(provider.capabilities.weapons).toBe(true);
+    });
+
+    it('should report available capabilities based on configured keys', () => {
+      const provider = new HiveAIProvider();
+
+      const fullCaps = provider.getAvailableCapabilities(mockEnvFull);
+      expect(fullCaps.nudity).toBe(true);
+      expect(fullCaps.ai_generated).toBe(true);
+
+      const modOnlyCaps = provider.getAvailableCapabilities(mockEnvModerationOnly);
+      expect(modOnlyCaps.nudity).toBe(true);
+      expect(modOnlyCaps.ai_generated).toBe(false);
+
+      const aiOnlyCaps = provider.getAvailableCapabilities(mockEnvAIOnly);
+      expect(aiOnlyCaps.nudity).toBe(false);
+      expect(aiOnlyCaps.ai_generated).toBe(true);
+    });
   });
 
-  it('should check if configured with both credentials', () => {
-    const provider = new HiveAIProvider();
+  describe('isConfigured', () => {
+    it('should be configured with moderation key only', () => {
+      const provider = new HiveAIProvider();
+      expect(provider.isConfigured(mockEnvModerationOnly)).toBe(true);
+    });
 
-    expect(provider.isConfigured(mockEnv)).toBe(true);
-    expect(provider.isConfigured({ HIVE_API_ACCESS_KEY: 'key-only' })).toBe(false);
-    expect(provider.isConfigured({ HIVE_API_SECRET: 'secret-only' })).toBe(false);
-    expect(provider.isConfigured({})).toBe(false);
+    it('should be configured with AI detection key only', () => {
+      const provider = new HiveAIProvider();
+      expect(provider.isConfigured(mockEnvAIOnly)).toBe(true);
+    });
+
+    it('should be configured with both keys', () => {
+      const provider = new HiveAIProvider();
+      expect(provider.isConfigured(mockEnvFull)).toBe(true);
+    });
+
+    it('should not be configured with no keys', () => {
+      const provider = new HiveAIProvider();
+      expect(provider.isConfigured({})).toBe(false);
+    });
   });
 
-  it('should moderate video and return normalized result', async () => {
-    const provider = new HiveAIProvider();
+  describe('moderation with both APIs', () => {
+    it('should call both APIs and merge results', async () => {
+      const provider = new HiveAIProvider();
 
-    const mockApiResponse = {
-      status: [{
-        response: {
-          output: [
-            {
-              time: 0,
-              classes: [
-                { class: 'ai_generated', score: 0.95 },
-                { class: 'midjourney', score: 0.88 }
-              ]
-            },
-            {
-              time: 3,
-              classes: [
-                { class: 'ai_generated', score: 0.92 },
-                { class: 'stable_diffusion', score: 0.80 }
-              ]
-            }
-          ]
+      const calls = [];
+      const mockFetch = vi.fn().mockImplementation((url, options) => {
+        const key = options.headers.authorization;
+        calls.push(key);
+
+        // Return different responses based on which API is being called
+        if (key === 'token mod-key') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              status: [{
+                response: {
+                  output: [{
+                    time: 0,
+                    classes: [{ class: 'yes_female_nudity', score: 0.85 }]
+                  }]
+                }
+              }]
+            })
+          });
+        } else {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              status: [{
+                response: {
+                  output: [{
+                    time: 0,
+                    classes: [
+                      { class: 'ai_generated', score: 0.95 },
+                      { class: 'midjourney', score: 0.88 }
+                    ]
+                  }]
+                }
+              }]
+            })
+          });
         }
-      }]
-    };
+      });
 
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => mockApiResponse
-    });
-
-    const result = await provider.moderate(
-      'https://cdn.divine.video/test123.mp4',
-      { sha256: 'test123' },
-      mockEnv,
-      { fetchFn: mockFetch }
-    );
-
-    // Verify provider metadata
-    expect(result.provider).toBe('hiveai');
-    expect(result.processingTime).toBeGreaterThan(0);
-
-    // Verify normalized scores
-    expect(result.scores.ai_generated).toBe(0.95);
-    expect(result.scores.nudity).toBe(0); // Not detected by this model
-    expect(result.scores.violence).toBe(0);
-
-    // Verify details
-    expect(result.details.ai_generated.totalFrames).toBe(2);
-    expect(result.details.ai_generated.framesDetected).toBe(2);
-    expect(result.details.ai_generated.detectedSource).toBe('midjourney');
-
-    // Verify raw response is included
-    expect(result.raw).toEqual(mockApiResponse);
-
-    // Verify flagged frames
-    expect(result.flaggedFrames).toHaveLength(2);
-  });
-
-  it('should throw error when API fails', async () => {
-    const provider = new HiveAIProvider();
-
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 401,
-      text: async () => 'Unauthorized'
-    });
-
-    await expect(
-      provider.moderate(
+      const result = await provider.moderate(
         'https://cdn.divine.video/test.mp4',
         { sha256: 'test' },
-        mockEnv,
+        mockEnvFull,
         { fetchFn: mockFetch }
-      )
-    ).rejects.toThrow('Hive.AI moderation failed');
+      );
+
+      // Both APIs should be called
+      expect(calls).toContain('token mod-key');
+      expect(calls).toContain('token ai-key');
+
+      // Results should be merged
+      expect(result.scores.nudity).toBe(0.85);
+      expect(result.scores.ai_generated).toBe(0.95);
+      expect(result.details.ai_generated.detectedSource).toBe('midjourney');
+      expect(result.provider).toBe('hiveai');
+    });
   });
 
-  it('should handle video with no AI-generated content', async () => {
-    const provider = new HiveAIProvider();
+  describe('moderation with moderation API only', () => {
+    it('should return content moderation scores', async () => {
+      const provider = new HiveAIProvider();
 
-    const mockApiResponse = {
-      status: [{
-        response: {
-          output: [
-            {
-              time: 0,
-              classes: [
-                { class: 'not_ai_generated', score: 0.98 },
-                { class: 'none', score: 0.95 }
-              ]
-            },
-            {
-              time: 3,
-              classes: [
-                { class: 'not_ai_generated', score: 0.97 },
-                { class: 'none', score: 0.93 }
-              ]
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          status: [{
+            response: {
+              output: [{
+                time: 0,
+                classes: [
+                  { class: 'yes_violence', score: 0.75 },
+                  { class: 'yes_blood_shed', score: 0.6 }
+                ]
+              }]
             }
-          ]
-        }
-      }]
-    };
+          }]
+        })
+      });
 
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => mockApiResponse
+      const result = await provider.moderate(
+        'https://cdn.divine.video/test.mp4',
+        { sha256: 'test' },
+        mockEnvModerationOnly,
+        { fetchFn: mockFetch }
+      );
+
+      expect(result.scores.violence).toBe(0.75);
+      expect(result.scores.gore).toBe(0.6);
+      expect(result.scores.ai_generated).toBe(0);
     });
-
-    const result = await provider.moderate(
-      'https://cdn.divine.video/test123.mp4',
-      { sha256: 'test123' },
-      mockEnv,
-      { fetchFn: mockFetch }
-    );
-
-    expect(result.scores.ai_generated).toBeLessThan(0.1);
-    expect(result.details.ai_generated.framesDetected).toBe(0);
-    expect(result.details.ai_generated.detectedSource).toBeNull();
-    expect(result.flaggedFrames).toHaveLength(0);
   });
 
-  it('should detect deepfakes separately from AI-generated', async () => {
-    const provider = new HiveAIProvider();
+  describe('moderation with AI detection API only', () => {
+    it('should return AI detection scores', async () => {
+      const provider = new HiveAIProvider();
 
-    const mockApiResponse = {
-      status: [{
-        response: {
-          output: [
-            {
-              time: 0,
-              classes: [
-                { class: 'ai_generated', score: 0.3 },
-                { class: 'deepfake', score: 0.7 }
-              ]
-            },
-            {
-              time: 1,
-              classes: [
-                { class: 'ai_generated', score: 0.2 },
-                { class: 'deepfake', score: 0.8 }
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          status: [{
+            response: {
+              output: [
+                { time: 0, classes: [{ class: 'deepfake', score: 0.7 }] },
+                { time: 1, classes: [{ class: 'deepfake', score: 0.8 }] }
               ]
             }
-          ]
-        }
-      }]
-    };
+          }]
+        })
+      });
 
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => mockApiResponse
+      const result = await provider.moderate(
+        'https://cdn.divine.video/test.mp4',
+        { sha256: 'test' },
+        mockEnvAIOnly,
+        { fetchFn: mockFetch }
+      );
+
+      expect(result.scores.deepfake).toBe(0.8);
+      expect(result.details.deepfake.consecutiveFrames).toBe(2);
+      expect(result.scores.nudity).toBe(0);
+    });
+  });
+
+  describe('error handling', () => {
+    it('should throw error when all APIs fail', async () => {
+      const provider = new HiveAIProvider();
+
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: async () => 'Server Error'
+      });
+
+      await expect(
+        provider.moderate(
+          'https://cdn.divine.video/test.mp4',
+          { sha256: 'test' },
+          mockEnvFull,
+          { fetchFn: mockFetch }
+        )
+      ).rejects.toThrow('Hive.AI moderation failed');
     });
 
-    const result = await provider.moderate(
-      'https://cdn.divine.video/test123.mp4',
-      { sha256: 'test123' },
-      mockEnv,
-      { fetchFn: mockFetch }
-    );
+    it('should succeed with partial results if one API fails', async () => {
+      const provider = new HiveAIProvider();
 
-    // AI-generated score is low
-    expect(result.scores.ai_generated).toBeLessThan(0.9);
+      let callCount = 0;
+      const mockFetch = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          // First call succeeds
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              status: [{
+                response: {
+                  output: [{
+                    time: 0,
+                    classes: [{ class: 'yes_violence', score: 0.8 }]
+                  }]
+                }
+              }]
+            })
+          });
+        } else {
+          // Second call fails
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            text: async () => 'Error'
+          });
+        }
+      });
 
-    // But deepfake score is high
-    expect(result.scores.deepfake).toBe(0.8);
-    expect(result.details.deepfake.consecutiveFrames).toBe(2);
-    expect(result.details.deepfake.framesDetected).toBe(2);
+      const result = await provider.moderate(
+        'https://cdn.divine.video/test.mp4',
+        { sha256: 'test' },
+        mockEnvFull,
+        { fetchFn: mockFetch }
+      );
+
+      // Should still return results from successful API
+      expect(result.scores).toBeDefined();
+      expect(result.raw.errors.length).toBe(1);
+    });
   });
 });

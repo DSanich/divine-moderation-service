@@ -92,14 +92,26 @@ function analyzeFrames(frames) {
     qr_unsafe: 0
   };
 
-  // Track detailed subcategories
+  // Track detailed subcategories for ALL models
   const detailedCategories = {
     nudity: {},
     violence: {},
     gore: {},
     offensive: {},
     weapon: {},
-    self_harm: {}
+    self_harm: {},
+    recreational_drug: {},
+    tobacco: {},
+    medical: {},
+    destruction: {},
+    military: {},
+    text_content: {},
+    qr_content: {},
+    alcohol: {},
+    gambling: {},
+    money: {},
+    deepfake: {},
+    ai_generated: {}
   };
 
   const flaggedFrames = [];
@@ -229,7 +241,14 @@ function analyzeFrames(frames) {
 
     // AI-generated and deepfake detection
     frameScores.ai_generated = frame.type?.ai_generated || 0;
+    frameDetails.ai_generated = {
+      ai_generated: frame.type?.ai_generated || 0
+    };
+
     frameScores.deepfake = frame.deepfake?.prob || 0;
+    frameDetails.deepfake = {
+      prob: frame.deepfake?.prob || 0
+    };
 
     // Recreational drug score
     frameScores.recreational_drug = Math.max(
@@ -238,9 +257,17 @@ function analyzeFrames(frames) {
       frame.recreational_drug?.cannabis_drug || 0,
       frame.recreational_drug?.recreational_drug_not_cannabis || 0
     );
+    frameDetails.recreational_drug = {
+      cannabis: frame.recreational_drug?.cannabis || 0,
+      cannabis_drug: frame.recreational_drug?.cannabis_drug || 0,
+      recreational_drug_not_cannabis: frame.recreational_drug?.recreational_drug_not_cannabis || 0
+    };
 
     // Alcohol score
     frameScores.alcohol = frame.alcohol?.prob || 0;
+    frameDetails.alcohol = {
+      prob: frame.alcohol?.prob || 0
+    };
 
     // Tobacco score
     frameScores.tobacco = Math.max(
@@ -248,6 +275,10 @@ function analyzeFrames(frames) {
       frame.tobacco?.ambiguous_tobacco || 0,
       frame.tobacco?.prob || 0
     );
+    frameDetails.tobacco = {
+      regular_tobacco: frame.tobacco?.regular_tobacco || 0,
+      ambiguous_tobacco: frame.tobacco?.ambiguous_tobacco || 0
+    };
 
     // Medical score
     frameScores.medical = Math.max(
@@ -255,12 +286,22 @@ function analyzeFrames(frames) {
       frame.medical?.medical_drug || 0,
       frame.medical?.medical_paraphernalia || 0
     );
+    frameDetails.medical = {
+      medical_drug: frame.medical?.medical_drug || 0,
+      medical_paraphernalia: frame.medical?.medical_paraphernalia || 0
+    };
 
     // Gambling score
     frameScores.gambling = frame.gambling?.prob || 0;
+    frameDetails.gambling = {
+      prob: frame.gambling?.prob || 0
+    };
 
     // Money score
     frameScores.money = frame.money?.prob || 0;
+    frameDetails.money = {
+      prob: frame.money?.prob || 0
+    };
 
     // Destruction score
     frameScores.destruction = Math.max(
@@ -270,6 +311,12 @@ function analyzeFrames(frames) {
       frame.destruction?.wildfire || 0,
       frame.destruction?.violent_protest || 0
     );
+    frameDetails.destruction = {
+      building_major_damage: frame.destruction?.building_major_damage || 0,
+      building_on_fire: frame.destruction?.building_on_fire || 0,
+      wildfire: frame.destruction?.wildfire || 0,
+      violent_protest: frame.destruction?.violent_protest || 0
+    };
 
     // Military score
     frameScores.military = Math.max(
@@ -277,6 +324,10 @@ function analyzeFrames(frames) {
       frame.military?.military_equipment || 0,
       frame.military?.military_personnel || 0
     );
+    frameDetails.military = {
+      military_equipment: frame.military?.military_equipment || 0,
+      military_personnel: frame.military?.military_personnel || 0
+    };
 
     // Text content moderation (OCR)
     frameScores.text_profanity = Math.max(
@@ -285,6 +336,12 @@ function analyzeFrames(frames) {
       frame['text-content']?.profanity?.insult || 0,
       frame['text-content']?.profanity?.inappropriate || 0
     );
+    frameDetails.text_content = {
+      profanity_sexual: frame['text-content']?.profanity?.sexual || 0,
+      profanity_discriminatory: frame['text-content']?.profanity?.discriminatory || 0,
+      profanity_insult: frame['text-content']?.profanity?.insult || 0,
+      profanity_inappropriate: frame['text-content']?.profanity?.inappropriate || 0
+    };
 
     // QR code moderation
     frameScores.qr_unsafe = Math.max(
@@ -292,6 +349,11 @@ function analyzeFrames(frames) {
       frame['qr-content']?.profanity || 0,
       frame['qr-content']?.personal || 0
     );
+    frameDetails.qr_content = {
+      link: frame['qr-content']?.link || 0,
+      profanity: frame['qr-content']?.profanity || 0,
+      personal: frame['qr-content']?.personal || 0
+    };
 
     // Track maximums across all frames
     for (const [key, value] of Object.entries(frameScores)) {
@@ -328,8 +390,17 @@ function analyzeFrames(frames) {
   }
 
   return {
+    // Legacy format for backward compatibility
+    maxNudityScore: maxScores.nudity,
+    maxViolenceScore: maxScores.violence,
+    maxAiGeneratedScore: maxScores.ai_generated,
+
+    // New comprehensive scores
     maxScores,
+
+    // Detailed subcategories for fine-grained filtering
     detailedCategories,
+
     flaggedFrames
   };
 }

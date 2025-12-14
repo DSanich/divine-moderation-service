@@ -12,6 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "jose": "^6.1.3",
     "nostr-tools": "^2.7.2"
   },
   "devDependencies": {

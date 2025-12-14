@@ -7,10 +7,10 @@
 import { validateQueueMessage } from './schemas/queue-message.mjs';
 import { moderateVideo } from './moderation/pipeline.mjs';
 import { publishToFaro, publishLabelEvent } from './nostr/publisher.mjs';
-import { verifyPassword, createSession, requireAuth, getTokenFromCookie, deleteSession } from './admin/auth.mjs';
+import { requireAuth, getAuthenticatedUser } from './admin/auth.mjs';
+import { verifyZeroTrustJWT } from './admin/zerotrust.mjs';
 import { fetchNostrEventBySha256, parseVideoEventMetadata } from './nostr/relay-client.mjs';
 import dashboardHTML from './admin/dashboard.html';
-import loginHTML from './admin/login.html';
 import swipeReviewHTML from './admin/swipe-review.html';
 
 /**
@@ -99,58 +99,24 @@ export default {
       return Response.redirect(`${url.origin}/admin/dashboard`, 302);
     }
 
+    // Login is handled by Cloudflare Zero Trust at the edge
+    // Redirect any direct login requests to the dashboard (Zero Trust will prompt if needed)
     if (url.pathname === '/admin/login') {
-      if (request.method === 'POST') {
-        console.log(`[${requestId}] Login attempt`);
-        // Handle login
-        const { password } = await request.json();
-        const isValid = await verifyPassword(password, env);
-
-        if (!isValid) {
-          console.log(`[${requestId}] Login failed - invalid password`);
-          return new Response(JSON.stringify({ success: false, error: 'Invalid password' }), {
-            status: 401,
-            headers: { 'Content-Type': 'application/json' }
-          });
-        }
-
-        // Create session
-        const token = await createSession(env);
-        console.log(`[${requestId}] Login successful, session created`);
-
-        return new Response(JSON.stringify({ success: true }), {
-          headers: {
-            'Content-Type': 'application/json',
-            'Set-Cookie': `admin_token=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`
-          }
-        });
-      }
-
-      // Show login page
-      return new Response(loginHTML, {
-        headers: { 'Content-Type': 'text/html' }
-      });
+      return Response.redirect(`${url.origin}/admin/dashboard`, 302);
     }
 
+    // Logout via Cloudflare Access
     if (url.pathname === '/admin/logout') {
-      console.log(`[${requestId}] Logout request`);
-      const cookieHeader = request.headers.get('Cookie');
-      const token = getTokenFromCookie(cookieHeader);
-      await deleteSession(token, env);
-
-      return new Response(JSON.stringify({ success: true }), {
-        headers: {
-          'Content-Type': 'application/json',
-          'Set-Cookie': 'admin_token=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0'
-        }
-      });
+      console.log(`[${requestId}] Logout request - redirecting to CF Access logout`);
+      // Cloudflare Access logout URL clears the session
+      return Response.redirect(`${url.origin}/cdn-cgi/access/logout`, 302);
     }
 
     if (url.pathname === '/admin/dashboard') {
-      // Check authentication
+      // Check authentication (defense-in-depth; Zero Trust handles this at edge)
       const authError = await requireAuth(request, env);
       if (authError) {
-        return Response.redirect(`${url.origin}/admin/login`, 302);
+        return authError;
       }
 
       return new Response(dashboardHTML, {
@@ -159,10 +125,10 @@ export default {
     }
 
     if (url.pathname === '/admin/review') {
-      // Check authentication
+      // Check authentication (defense-in-depth; Zero Trust handles this at edge)
       const authError = await requireAuth(request, env);
       if (authError) {
-        return Response.redirect(`${url.origin}/admin/login`, 302);
+        return authError;
       }
 
       return new Response(swipeReviewHTML, {
@@ -179,120 +145,58 @@ export default {
       }
 
       // Parse pagination parameters
-      const cursor = url.searchParams.get('cursor') || undefined;
-      const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 100); // Max 100 per page
+      const offset = parseInt(url.searchParams.get('offset') || '0', 10);
+      const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 100);
       const actionFilter = url.searchParams.get('action') || 'all';
-      console.log(`[${requestId}] Fetching videos: filter=${actionFilter}, limit=${limit}, cursor=${cursor ? 'yes' : 'no'}`);
+      console.log(`[${requestId}] Fetching videos: filter=${actionFilter}, limit=${limit}, offset=${offset}`);
 
-      // Determine which prefixes to query based on action filter
-      let prefixes = ['moderation:'];
-      let filterActions = null;
+      // Build SQL query based on filter
+      let whereClause = '';
+      const params = [];
 
       if (actionFilter === 'FLAGGED') {
-        // Load from action-specific keys for flagged content
-        prefixes = ['review:', 'age-restricted:', 'permanent-ban:'];
-        filterActions = ['REVIEW', 'AGE_RESTRICTED', 'PERMANENT_BAN'];
+        whereClause = "WHERE action IN ('REVIEW', 'AGE_RESTRICTED', 'PERMANENT_BAN')";
       } else if (actionFilter === 'QUARANTINE') {
-        prefixes = ['age-restricted:', 'permanent-ban:'];
-        filterActions = ['AGE_RESTRICTED', 'PERMANENT_BAN'];
-      } else if (actionFilter === 'REVIEW') {
-        prefixes = ['review:'];
-        filterActions = ['REVIEW'];
-      } else if (actionFilter === 'SAFE') {
-        // For SAFE, we need to load all and filter
-        filterActions = ['SAFE'];
+        whereClause = "WHERE action IN ('AGE_RESTRICTED', 'PERMANENT_BAN')";
+      } else if (actionFilter !== 'all') {
+        whereClause = 'WHERE action = ?';
+        params.push(actionFilter.toUpperCase());
       }
 
-      let allVideos = [];
-      let nextCursor = undefined;
-      let listComplete = true;
+      // Query D1 with pagination
+      const query = `
+        SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at
+        FROM moderation_results
+        ${whereClause}
+        ORDER BY moderated_at DESC
+        LIMIT ? OFFSET ?
+      `;
+      params.push(limit + 1, offset); // Fetch one extra to check if more exist
 
-      if (actionFilter === 'all' || actionFilter === 'SAFE') {
-        // Load from moderation: prefix with pagination
-        const listResult = await env.MODERATION_KV.list({
-          prefix: 'moderation:',
-          cursor,
-          limit: actionFilter === 'SAFE' ? limit * 3 : limit // Fetch more for SAFE since we filter
-        });
+      const result = await env.BLOSSOM_DB.prepare(query).bind(...params).all();
+      const rows = result.results || [];
 
-        const videoPromises = listResult.keys.map(async (key) => {
-          const data = await env.MODERATION_KV.get(key.name);
-          if (data) {
-            try {
-              return JSON.parse(data);
-            } catch (error) {
-              console.error(`Failed to parse moderation data for ${key.name}:`, error);
-              return null;
-            }
-          }
-          return null;
-        });
+      // Check if there are more results
+      const hasMore = rows.length > limit;
+      const videos = rows.slice(0, limit).map(row => ({
+        sha256: row.sha256,
+        action: row.action,
+        provider: row.provider,
+        scores: row.scores ? JSON.parse(row.scores) : {},
+        categories: row.categories ? JSON.parse(row.categories) : [],
+        processedAt: new Date(row.moderated_at).getTime(),
+        moderated_at: row.moderated_at,
+        reviewed_by: row.reviewed_by,
+        reviewed_at: row.reviewed_at
+      }));
 
-        const videoResults = await Promise.all(videoPromises);
-        allVideos = videoResults.filter(v => v !== null);
-
-        // Filter by action if needed
-        if (filterActions) {
-          allVideos = allVideos.filter(v => filterActions.includes(v.action));
-        }
-
-        // Trim to limit
-        if (allVideos.length > limit) {
-          allVideos = allVideos.slice(0, limit);
-        }
-
-        nextCursor = listResult.cursor;
-        listComplete = listResult.list_complete;
-      } else {
-        // Load from action-specific prefixes and get full moderation data
-        const allKeys = [];
-
-        for (const prefix of prefixes) {
-          const listResult = await env.MODERATION_KV.list({
-            prefix,
-            limit: 500 // Get more keys since we'll merge
-          });
-
-          for (const key of listResult.keys) {
-            // Extract sha256 from key (e.g., "review:abc123" -> "abc123")
-            const sha256 = key.name.split(':')[1];
-            if (sha256) {
-              allKeys.push(sha256);
-            }
-          }
-        }
-
-        // Deduplicate and get full moderation data
-        const uniqueSha256s = [...new Set(allKeys)];
-
-        // Fetch moderation data for each sha256
-        const videoPromises = uniqueSha256s.slice(0, limit).map(async (sha256) => {
-          const data = await env.MODERATION_KV.get(`moderation:${sha256}`);
-          if (data) {
-            try {
-              return JSON.parse(data);
-            } catch (error) {
-              console.error(`Failed to parse moderation data for ${sha256}:`, error);
-              return null;
-            }
-          }
-          return null;
-        });
-
-        const videoResults = await Promise.all(videoPromises);
-        allVideos = videoResults.filter(v => v !== null);
-
-        // Sort by processedAt descending
-        allVideos.sort((a, b) => (b.processedAt || 0) - (a.processedAt || 0));
-
-        listComplete = uniqueSha256s.length <= limit;
-      }
-
-      console.log(`[${requestId}] Returning ${allVideos.length} videos in ${Date.now() - startTime}ms`);
+      console.log(`[${requestId}] Returning ${videos.length} videos in ${Date.now() - startTime}ms`);
       return new Response(JSON.stringify({
-        videos: allVideos,
-        cursor: nextCursor,
-        list_complete: listComplete
+        videos,
+        offset,
+        limit,
+        hasMore,
+        nextOffset: hasMore ? offset + limit : null
       }), {
         headers: { 'Content-Type': 'application/json' }
       });
@@ -308,60 +212,44 @@ export default {
       console.log(`[${requestId}] Fetching stats`);
 
       try {
-        // Get total videos from D1 (excluding deleted/error status)
-        const d1Count = await env.BLOSSOM_DB.prepare(`
-          SELECT COUNT(*) as total FROM (
-            SELECT sha256
-            FROM bunny_webhook_events e1
+        // All stats from D1 - fast SQL queries instead of KV iteration
+        const [totalResult, moderationStats] = await Promise.all([
+          // Total videos (excluding deleted/error)
+          env.BLOSSOM_DB.prepare(`
+            SELECT COUNT(DISTINCT sha256) as total
+            FROM bunny_webhook_events
             WHERE sha256 IS NOT NULL
-              AND received_at = (
-                SELECT MAX(received_at) FROM bunny_webhook_events e2 WHERE e2.sha256 = e1.sha256
-              )
               AND status_name NOT IN ('error', 'deleted')
-          )
-        `).first();
-        const totalInD1 = d1Count?.total || 0;
+          `).first(),
+          // Moderation breakdown by action
+          env.BLOSSOM_DB.prepare(`
+            SELECT
+              action,
+              COUNT(*) as count
+            FROM moderation_results
+            GROUP BY action
+          `).all()
+        ]);
 
-        // Count moderation results in KV (iterate through all keys)
+        const totalInD1 = totalResult?.total || 0;
+
+        // Parse moderation stats
         let totalModerated = 0;
         let safeCount = 0;
         let reviewCount = 0;
         let ageRestrictedCount = 0;
         let permanentBanCount = 0;
 
-        let cursor = undefined;
-        do {
-          const listResult = await env.MODERATION_KV.list({
-            prefix: 'moderation:',
-            cursor,
-            limit: 1000
-          });
-
-          // Count this batch
-          for (const key of listResult.keys) {
-            totalModerated++;
-            // We can't efficiently get the action without reading each value
-            // So we'll estimate based on action-specific keys
+        for (const row of (moderationStats?.results || [])) {
+          const count = row.count || 0;
+          totalModerated += count;
+          switch (row.action) {
+            case 'SAFE': safeCount = count; break;
+            case 'REVIEW': reviewCount = count; break;
+            case 'AGE_RESTRICTED': ageRestrictedCount = count; break;
+            case 'PERMANENT_BAN': permanentBanCount = count; break;
           }
-
-          cursor = listResult.cursor;
-          if (listResult.list_complete) break;
-        } while (cursor);
-
-        // Count action-specific keys for accurate breakdown
-        const [reviewList, ageRestrictedList, permanentBanList] = await Promise.all([
-          env.MODERATION_KV.list({ prefix: 'review:', limit: 1000 }),
-          env.MODERATION_KV.list({ prefix: 'age-restricted:', limit: 1000 }),
-          env.MODERATION_KV.list({ prefix: 'permanent-ban:', limit: 1000 })
-        ]);
-
-        reviewCount = reviewList.keys.length;
-        ageRestrictedCount = ageRestrictedList.keys.length;
-        permanentBanCount = permanentBanList.keys.length;
-
-        // SAFE = total moderated minus all flagged categories
-        const flaggedCount = reviewCount + ageRestrictedCount + permanentBanCount;
-        safeCount = Math.max(0, totalModerated - flaggedCount);
+        }
 
         const untriaged = Math.max(0, totalInD1 - totalModerated);
 
@@ -905,23 +793,286 @@ export default {
       }
     }
 
+    // Migration page - simple UI to run migration
+    if (url.pathname === '/admin/migrate') {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      return new Response(`<!DOCTYPE html>
+<html><head><title>KV to D1 Migration</title></head>
+<body style="font-family:monospace;padding:20px;max-width:800px;margin:0 auto">
+<h1>KV to D1 Migration</h1>
+<button id="start" onclick="runMigration()" style="padding:10px 20px;font-size:16px">Start Migration</button>
+<pre id="log" style="background:#111;color:#0f0;padding:20px;height:400px;overflow:auto"></pre>
+<script>
+async function runMigration() {
+  const log = document.getElementById('log');
+  const btn = document.getElementById('start');
+  btn.disabled = true;
+  let cursor = null, total = 0, batch = 0;
+  while (true) {
+    batch++;
+    log.textContent += 'Batch ' + batch + '...\\n';
+    log.scrollTop = log.scrollHeight;
+    const res = await fetch('/admin/api/migrate-kv', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cursor, batchSize: 500})
+    });
+    const data = await res.json();
+    total += data.migrated || 0;
+    log.textContent += 'Migrated ' + (data.migrated||0) + ' (total: ' + total + ')\\n';
+    if (data.error) { log.textContent += 'ERROR: ' + data.error + '\\n'; break; }
+    if (data.done) { log.textContent += '✅ DONE! ' + total + ' records migrated\\n'; break; }
+    cursor = data.cursor;
+  }
+  btn.disabled = false;
+}
+</script>
+</body></html>`, { headers: { 'Content-Type': 'text/html' } });
+    }
+
+    // Migration API endpoint - migrate KV data to D1 in batches
+    if (url.pathname === '/admin/api/migrate-kv' && request.method === 'POST') {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      const body = await request.json().catch(() => ({}));
+      const cursor = body.cursor || undefined;
+      const batchSize = Math.min(body.batchSize || 500, 1000);
+
+      console.log(`[MIGRATE] Starting batch migration, cursor=${cursor ? 'yes' : 'start'}, batchSize=${batchSize}`);
+
+      try {
+        // List KV keys
+        const listResult = await env.MODERATION_KV.list({
+          prefix: 'moderation:',
+          cursor,
+          limit: batchSize
+        });
+
+        const keys = listResult.keys;
+        console.log(`[MIGRATE] Found ${keys.length} keys in this batch`);
+
+        if (keys.length === 0) {
+          return new Response(JSON.stringify({
+            done: true,
+            migrated: 0,
+            message: 'Migration complete - no more keys'
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        // Fetch action flags for this batch
+        const sha256List = keys.map(k => k.name.replace('moderation:', ''));
+        const flagChecks = await Promise.all([
+          ...sha256List.map(s => env.MODERATION_KV.get(`review:${s}`).then(v => v ? ['review', s] : null)),
+          ...sha256List.map(s => env.MODERATION_KV.get(`age-restricted:${s}`).then(v => v ? ['age-restricted', s] : null)),
+          ...sha256List.map(s => env.MODERATION_KV.get(`permanent-ban:${s}`).then(v => v ? ['permanent-ban', s] : null))
+        ]);
+
+        const reviewSet = new Set();
+        const ageRestrictedSet = new Set();
+        const permanentBanSet = new Set();
+
+        for (const flag of flagChecks) {
+          if (flag) {
+            if (flag[0] === 'review') reviewSet.add(flag[1]);
+            else if (flag[0] === 'age-restricted') ageRestrictedSet.add(flag[1]);
+            else if (flag[0] === 'permanent-ban') permanentBanSet.add(flag[1]);
+          }
+        }
+
+        // Fetch all values in parallel
+        const values = await Promise.all(
+          keys.map(async (k) => {
+            const sha256 = k.name.replace('moderation:', '');
+            const valueStr = await env.MODERATION_KV.get(k.name);
+            if (!valueStr) return null;
+
+            try {
+              const value = JSON.parse(valueStr);
+              let action = value.action || 'SAFE';
+              if (permanentBanSet.has(sha256)) action = 'PERMANENT_BAN';
+              else if (ageRestrictedSet.has(sha256)) action = 'AGE_RESTRICTED';
+              else if (reviewSet.has(sha256)) action = 'REVIEW';
+
+              return {
+                sha256,
+                action,
+                provider: value.provider || 'sightengine',
+                scores: JSON.stringify(value.scores || {}),
+                categories: JSON.stringify(value.categories || []),
+                raw_response: JSON.stringify(value.rawResponse || value.raw || {}),
+                moderated_at: value.moderatedAt || value.timestamp || new Date().toISOString()
+              };
+            } catch (e) {
+              console.error(`[MIGRATE] Error parsing ${sha256}:`, e.message);
+              return null;
+            }
+          })
+        );
+
+        const validValues = values.filter(v => v !== null);
+
+        // Batch insert into D1
+        if (validValues.length > 0) {
+          const stmt = env.BLOSSOM_DB.prepare(`
+            INSERT OR REPLACE INTO moderation_results
+            (sha256, action, provider, scores, categories, raw_response, moderated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          `);
+
+          const batch = validValues.map(v => stmt.bind(
+            v.sha256, v.action, v.provider, v.scores, v.categories, v.raw_response, v.moderated_at
+          ));
+
+          await env.BLOSSOM_DB.batch(batch);
+        }
+
+        const nextCursor = listResult.list_complete ? null : listResult.cursor;
+
+        console.log(`[MIGRATE] Batch complete: migrated=${validValues.length}, hasMore=${!!nextCursor}`);
+
+        return new Response(JSON.stringify({
+          done: !nextCursor,
+          migrated: validValues.length,
+          cursor: nextCursor,
+          message: nextCursor ? 'Batch complete, continue with cursor' : 'Migration complete'
+        }), { headers: { 'Content-Type': 'application/json' } });
+
+      } catch (error) {
+        console.error(`[MIGRATE] Error:`, error);
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // API: Update moderation status (for external services)
+    // Auth: Verify Zero Trust JWT using jose library
+    if (url.pathname === '/api/v1/moderate' && request.method === 'POST') {
+      const jwtToken = request.headers.get('cf-access-jwt-assertion');
+
+      // Verify JWT signature, issuer, and audience
+      const verification = await verifyZeroTrustJWT(jwtToken, env);
+
+      if (!verification.valid) {
+        console.log(`[API] JWT verification failed: ${verification.error}`);
+        return new Response(JSON.stringify({
+          error: `Unauthorized - ${verification.error}`
+        }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Determine auth source for logging
+      const authSource = verification.email
+        ? `user:${verification.email}`
+        : `service-token:${verification.payload?.sub || 'unknown'}`;
+
+      try {
+        const body = await request.json();
+        const { sha256, action, reason, source } = body;
+
+        if (!sha256 || !action) {
+          return new Response(JSON.stringify({ error: 'sha256 and action required' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        // Validate action
+        const validActions = ['SAFE', 'REVIEW', 'AGE_RESTRICTED', 'PERMANENT_BAN'];
+        if (!validActions.includes(action.toUpperCase())) {
+          return new Response(JSON.stringify({
+            error: `Invalid action. Must be one of: ${validActions.join(', ')}`
+          }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        // Update or insert moderation result
+        await env.BLOSSOM_DB.prepare(`
+          INSERT INTO moderation_results (sha256, action, provider, scores, categories, moderated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(sha256) DO UPDATE SET
+            action = excluded.action,
+            provider = excluded.provider,
+            review_notes = ?,
+            reviewed_at = ?
+        `).bind(
+          sha256,
+          action.toUpperCase(),
+          source || 'external-api',
+          JSON.stringify({}),
+          JSON.stringify([reason || action.toLowerCase()]),
+          new Date().toISOString(),
+          reason || null,
+          new Date().toISOString()
+        ).run();
+
+        console.log(`[API] Moderation updated: ${sha256} -> ${action} by ${source || 'external-api'} (auth: ${authSource})`);
+
+        return new Response(JSON.stringify({
+          success: true,
+          sha256,
+          action: action.toUpperCase(),
+          updated_at: new Date().toISOString()
+        }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+
+      } catch (error) {
+        console.error('[API] Error updating moderation:', error);
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
     // Check moderation result
     if (url.pathname.startsWith('/check-result/')) {
       const sha256 = url.pathname.split('/')[2];
-      const result = await env.MODERATION_KV.get(`moderation:${sha256}`);
-      const review = await env.MODERATION_KV.get(`review:${sha256}`);
-      const ageRestricted = await env.MODERATION_KV.get(`age-restricted:${sha256}`);
-      const permanentBan = await env.MODERATION_KV.get(`permanent-ban:${sha256}`);
-      // Keep old quarantine key for backward compatibility
-      const quarantine = await env.MODERATION_KV.get(`quarantine:${sha256}`);
 
+      // Query D1 for moderation result
+      const d1Result = await env.BLOSSOM_DB.prepare(`
+        SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at
+        FROM moderation_results
+        WHERE sha256 = ?
+      `).bind(sha256).first();
+
+      if (!d1Result) {
+        return new Response(JSON.stringify({
+          sha256,
+          status: 'unknown',
+          moderated: false,
+          blocked: false,
+          age_restricted: false
+        }, null, 2), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Simplified response for external tools
+      const action = d1Result.action;
       return new Response(JSON.stringify({
         sha256,
-        moderation: result ? JSON.parse(result) : null,
-        review: review ? JSON.parse(review) : null,
-        age_restricted: ageRestricted ? JSON.parse(ageRestricted) : null,
-        permanent_ban: permanentBan ? JSON.parse(permanentBan) : null,
-        quarantine: quarantine ? JSON.parse(quarantine) : null  // Legacy
+        status: action.toLowerCase(),
+        moderated: true,
+        blocked: action === 'PERMANENT_BAN',
+        age_restricted: action === 'AGE_RESTRICTED',
+        needs_review: action === 'REVIEW',
+        action,
+        provider: d1Result.provider,
+        scores: d1Result.scores ? JSON.parse(d1Result.scores) : null,
+        categories: d1Result.categories ? JSON.parse(d1Result.categories) : null,
+        moderated_at: d1Result.moderated_at,
+        reviewed_by: d1Result.reviewed_by,
+        reviewed_at: d1Result.reviewed_at
       }, null, 2), {
         headers: { 'Content-Type': 'application/json' }
       });
@@ -956,14 +1107,15 @@ export default {
         const { sha256, uploadedBy, uploadedAt, metadata } = validation.data;
         console.log(`[MODERATION] Step 2: Message validated for ${sha256}`);
 
-        // Check if already moderated (duplicate prevention)
+        // Check if already moderated (duplicate prevention) - use D1
         console.log(`[MODERATION] Step 3: Checking for existing moderation result`);
-        const existingResult = await env.MODERATION_KV.get(`moderation:${sha256}`);
+        const existingResult = await env.BLOSSOM_DB.prepare(
+          'SELECT sha256, action, moderated_at FROM moderation_results WHERE sha256 = ?'
+        ).bind(sha256).first();
 
         if (existingResult) {
           console.log(`[MODERATION] ⚠️ SKIPPED ${sha256} - already moderated`);
-          const existing = JSON.parse(existingResult);
-          console.log(`[MODERATION] Previous result: action=${existing.action}, processedAt=${new Date(existing.processedAt).toISOString()}`);
+          console.log(`[MODERATION] Previous result: action=${existingResult.action}, moderated_at=${existingResult.moderated_at}`);
           message.ack();
           continue;
         }
@@ -983,20 +1135,22 @@ export default {
         console.log(`[MODERATION] Result: action=${result.action}, severity=${result.severity}`);
         console.log(`[MODERATION] Scores: nudity=${result.scores.nudity}, violence=${result.scores.violence}, ai=${result.scores.ai_generated}`);
 
-        console.log(`[MODERATION] Step 6: Storing result in KV`);
-        // Store result in KV
-        await env.MODERATION_KV.put(
-          `moderation:${sha256}`,
-          JSON.stringify({
-            ...result,
-            processedAt: Date.now(),
-            processingTimeMs: Date.now() - startTime
-          }),
-          {
-            expirationTtl: 60 * 60 * 24 * 90 // 90 days
-          }
-        );
-        console.log(`[MODERATION] Step 7: KV write successful`);
+        console.log(`[MODERATION] Step 6: Storing result in D1`);
+        // Store result in D1
+        await env.BLOSSOM_DB.prepare(`
+          INSERT OR REPLACE INTO moderation_results
+          (sha256, action, provider, scores, categories, raw_response, moderated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          sha256,
+          result.action,
+          result.provider || 'unknown',
+          JSON.stringify(result.scores || {}),
+          JSON.stringify(result.categories || []),
+          JSON.stringify(result.rawResponse || {}),
+          new Date().toISOString()
+        ).run();
+        console.log(`[MODERATION] Step 7: D1 write successful`);
 
         // Handle based on severity
         console.log(`[MODERATION] Step 8: Handling result (action=${result.action})`);
@@ -1038,117 +1192,34 @@ export default {
 };
 
 /**
- * Handle moderation result based on severity
+ * Handle moderation result - publish notifications
+ * Action is already stored in D1, this just handles notifications
  */
 async function handleModerationResult(result, env) {
   const { sha256, action, scores, reason, flaggedFrames, severity, cdnUrl } = result;
 
   console.log(`[MODERATION] handleModerationResult called for ${sha256} with action ${action}`);
 
-  switch (action) {
-    case 'SAFE':
-      // Mark as approved, no further action needed
-      console.log(`[MODERATION] ${sha256} approved (no further action)`);
-      break;
-
-    case 'REVIEW':
-      // Flag for human review - store in KV for tracking
-      console.log(`[MODERATION] ${sha256} flagged for review - writing to KV`);
-      await env.MODERATION_KV.put(
-        `review:${sha256}`,
-        JSON.stringify({
-          category: result.category,
-          reason,
-          scores,
-          timestamp: Date.now(),
-          severity
-        })
-      );
-      console.log(`[MODERATION] ${sha256} - review flag written`);
-
-      // Also publish to Nostr for notifications
-      try {
-        await publishToFaro({
-          type: 'review',
-          sha256,
-          cdnUrl,
-          scores,
-          reason,
-          frames: flaggedFrames
-        }, env);
-        console.log(`[MODERATION] ${sha256} - Nostr event published successfully`);
-      } catch (error) {
-        console.error(`[MODERATION] ${sha256} - Nostr publish failed:`, error);
-        // Don't throw - we don't want Nostr failures to fail the whole moderation
-      }
-      break;
-
-    case 'AGE_RESTRICTED':
-      // Age-restricted content - requires user consent but not banned
-      console.log(`[MODERATION] ${sha256} age-restricted (${result.category}) - writing restriction to KV`);
-      await env.MODERATION_KV.put(
-        `age-restricted:${sha256}`,
-        JSON.stringify({
-          category: result.category,
-          reason,
-          scores,
-          timestamp: Date.now(),
-          severity
-        })
-      );
-      console.log(`[MODERATION] ${sha256} - age restriction written`);
-
-      // Notify via Nostr
-      try {
-        await publishToFaro({
-          type: 'age-restricted',
-          sha256,
-          cdnUrl,
-          category: result.category,
-          scores,
-          reason,
-          severity
-        }, env);
-        console.log(`[MODERATION] ${sha256} - Nostr age-restricted event published`);
-      } catch (error) {
-        console.error(`[MODERATION] ${sha256} - Nostr publish failed:`, error);
-      }
-      break;
-
-    case 'PERMANENT_BAN':
-      // Permanent ban - never serve to anyone except admins
-      console.log(`[MODERATION] ${sha256} PERMANENTLY BANNED (${result.category}) - writing to KV`);
-      await env.MODERATION_KV.put(
-        `permanent-ban:${sha256}`,
-        JSON.stringify({
-          category: result.category,
-          reason,
-          scores,
-          timestamp: Date.now(),
-          severity
-        })
-      );
-      console.log(`[MODERATION] ${sha256} - permanent ban written`);
-
-      // High-priority notification
-      try {
-        await publishToFaro({
-          type: 'permanent-ban',
-          sha256,
-          cdnUrl,
-          category: result.category,
-          scores,
-          reason,
-          severity
-        }, env);
-        console.log(`[MODERATION] ${sha256} - Nostr permanent ban event published`);
-      } catch (error) {
-        console.error(`[MODERATION] ${sha256} - Nostr publish failed:`, error);
-      }
-      break;
-
-    default:
-      console.warn(`[MODERATION] Unknown action: ${action}`);
+  // Publish Nostr notifications for flagged content
+  if (action !== 'SAFE') {
+    try {
+      await publishToFaro({
+        type: action.toLowerCase().replace('_', '-'),
+        sha256,
+        cdnUrl,
+        category: result.category,
+        scores,
+        reason,
+        severity,
+        frames: flaggedFrames
+      }, env);
+      console.log(`[MODERATION] ${sha256} - Nostr ${action} event published`);
+    } catch (error) {
+      console.error(`[MODERATION] ${sha256} - Nostr publish failed:`, error);
+      // Don't throw - we don't want Nostr failures to fail the whole moderation
+    }
+  } else {
+    console.log(`[MODERATION] ${sha256} approved (no notification needed)`);
   }
 
   console.log(`[MODERATION] handleModerationResult finished for ${sha256}`);

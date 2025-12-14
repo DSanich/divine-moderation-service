@@ -1,120 +1,198 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// ABOUTME: Tests for Hive.AI V3 API client
-// ABOUTME: Verifies AI-generated content detection API calls and authentication
+// ABOUTME: Tests for Hive.AI API client with dual model support
+// ABOUTME: Tests content moderation and AI detection API calls
 
 import { describe, it, expect, vi } from 'vitest';
-import { moderateVideoWithHiveAI } from './client.mjs';
+import {
+  moderateWithHiveModeration,
+  moderateWithHiveAIDetection,
+  moderateVideoWithHiveAI
+} from './client.mjs';
 
-describe('Hive.AI V2 Client', () => {
-  const mockEnv = {
-    HIVE_API_KEY: 'test-api-key'
-  };
+describe('Hive.AI Client', () => {
+  describe('moderateWithHiveModeration', () => {
+    it('should call moderation API with correct auth', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ status: [{ response: { output: [] } }] })
+      });
 
-  it('should call Hive.AI V2 API with token authentication', async () => {
-    const mockResponse = {
-      status: [{
-        response: {
-          output: [
-            {
-              time: 0,
-              classes: [
-                { class: 'ai_generated', score: 0.95 },
-                { class: 'midjourney', score: 0.88 }
-              ]
-            }
-          ]
-        }
-      }]
-    };
+      const env = { HIVE_MODERATION_API_KEY: 'mod-key-123' };
 
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => mockResponse
+      await moderateWithHiveModeration(
+        'https://cdn.divine.video/test.mp4',
+        env,
+        { fetchFn: mockFetch }
+      );
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.thehive.ai/api/v2/task/sync',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'authorization': 'token mod-key-123'
+          })
+        })
+      );
     });
 
-    const result = await moderateVideoWithHiveAI(
-      'https://cdn.divine.video/test123.mp4',
-      { sha256: 'test123' },
-      mockEnv,
-      { fetchFn: mockFetch }
-    );
-
-    // Verify endpoint
-    expect(mockFetch).toHaveBeenCalledWith(
-      'https://api.thehive.ai/api/v2/task/sync',
-      expect.any(Object)
-    );
-
-    // Verify token authentication header
-    const callOptions = mockFetch.mock.calls[0][1];
-    expect(callOptions.headers.authorization).toBe('token test-api-key');
-
-    // Verify request body is FormData with url
-    const body = callOptions.body;
-    expect(body).toBeInstanceOf(FormData);
-    expect(body.get('url')).toBe('https://cdn.divine.video/test123.mp4');
-
-    // Verify response
-    expect(result).toEqual(mockResponse);
+    it('should throw if HIVE_MODERATION_API_KEY not configured', async () => {
+      await expect(
+        moderateWithHiveModeration('https://cdn.divine.video/test.mp4', {}, {})
+      ).rejects.toThrow('HIVE_MODERATION_API_KEY not configured');
+    });
   });
 
-  it('should include correct headers', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ status: [] })
+  describe('moderateWithHiveAIDetection', () => {
+    it('should call AI detection API with correct auth', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ status: [{ response: { output: [] } }] })
+      });
+
+      const env = { HIVE_AI_DETECTION_API_KEY: 'ai-key-456' };
+
+      await moderateWithHiveAIDetection(
+        'https://cdn.divine.video/test.mp4',
+        env,
+        { fetchFn: mockFetch }
+      );
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.thehive.ai/api/v2/task/sync',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'authorization': 'token ai-key-456'
+          })
+        })
+      );
     });
 
-    await moderateVideoWithHiveAI(
-      'https://cdn.divine.video/test.mp4',
-      { sha256: 'test' },
-      mockEnv,
-      { fetchFn: mockFetch }
-    );
-
-    const callOptions = mockFetch.mock.calls[0][1];
-    expect(callOptions.headers).toMatchObject({
-      'accept': 'application/json'
-      // NOTE: content-type is NOT set - FormData sets it automatically with boundary
+    it('should throw if HIVE_AI_DETECTION_API_KEY not configured', async () => {
+      await expect(
+        moderateWithHiveAIDetection('https://cdn.divine.video/test.mp4', {}, {})
+      ).rejects.toThrow('HIVE_AI_DETECTION_API_KEY not configured');
     });
-    expect(callOptions.headers.authorization).toBe('token test-api-key');
   });
 
-  it('should throw error on API failure', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 401,
-      text: async () => 'Unauthorized'
-    });
+  describe('moderateVideoWithHiveAI (combined)', () => {
+    it('should call both APIs when both keys present', async () => {
+      const calls = [];
+      const mockFetch = vi.fn().mockImplementation((url, options) => {
+        calls.push(options.headers.authorization);
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ status: [{ response: { output: [] } }] })
+        });
+      });
 
-    await expect(
-      moderateVideoWithHiveAI(
+      const env = {
+        HIVE_MODERATION_API_KEY: 'mod-key',
+        HIVE_AI_DETECTION_API_KEY: 'ai-key'
+      };
+
+      const result = await moderateVideoWithHiveAI(
         'https://cdn.divine.video/test.mp4',
         { sha256: 'test' },
-        mockEnv,
+        env,
         { fetchFn: mockFetch }
-      )
-    ).rejects.toThrow('Hive.AI V2 API error: 401 Unauthorized');
-  });
+      );
 
-  it('should pass video URL correctly in request body', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ status: [] })
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(calls).toContain('token mod-key');
+      expect(calls).toContain('token ai-key');
+      expect(result.moderation).toBeDefined();
+      expect(result.aiDetection).toBeDefined();
     });
 
-    const testUrl = 'https://cdn.divine.video/abc123xyz.mp4';
-    await moderateVideoWithHiveAI(
-      testUrl,
-      { sha256: 'abc123xyz' },
-      mockEnv,
-      { fetchFn: mockFetch }
-    );
+    it('should work with only moderation key', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ status: [{ response: { output: [] } }] })
+      });
 
-    const callOptions = mockFetch.mock.calls[0][1];
-    const body = callOptions.body;
-    expect(body).toBeInstanceOf(FormData);
-    expect(body.get('url')).toBe(testUrl);
+      const env = { HIVE_MODERATION_API_KEY: 'mod-key' };
+
+      const result = await moderateVideoWithHiveAI(
+        'https://cdn.divine.video/test.mp4',
+        { sha256: 'test' },
+        env,
+        { fetchFn: mockFetch }
+      );
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(result.moderation).toBeDefined();
+      expect(result.aiDetection).toBeNull();
+    });
+
+    it('should work with only AI detection key', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ status: [{ response: { output: [] } }] })
+      });
+
+      const env = { HIVE_AI_DETECTION_API_KEY: 'ai-key' };
+
+      const result = await moderateVideoWithHiveAI(
+        'https://cdn.divine.video/test.mp4',
+        { sha256: 'test' },
+        env,
+        { fetchFn: mockFetch }
+      );
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(result.moderation).toBeNull();
+      expect(result.aiDetection).toBeDefined();
+    });
+
+    it('should throw if no API keys configured', async () => {
+      await expect(
+        moderateVideoWithHiveAI(
+          'https://cdn.divine.video/test.mp4',
+          { sha256: 'test' },
+          {},
+          {}
+        )
+      ).rejects.toThrow('No Hive.AI API keys configured');
+    });
+
+    it('should handle partial failures gracefully', async () => {
+      let callCount = 0;
+      const mockFetch = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          // First call succeeds
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ status: [{ response: { output: [] } }] })
+          });
+        } else {
+          // Second call fails
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            text: async () => 'API Error'
+          });
+        }
+      });
+
+      const env = {
+        HIVE_MODERATION_API_KEY: 'mod-key',
+        HIVE_AI_DETECTION_API_KEY: 'ai-key'
+      };
+
+      const result = await moderateVideoWithHiveAI(
+        'https://cdn.divine.video/test.mp4',
+        { sha256: 'test' },
+        env,
+        { fetchFn: mockFetch }
+      );
+
+      // Should succeed with partial results
+      expect(result.errors.length).toBe(1);
+    });
   });
 });

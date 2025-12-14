@@ -7,6 +7,11 @@ main = "src/index.mjs"
 compatibility_date = "2024-10-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Custom domain (requires divine.video zone in the same Cloudflare account)
+routes = [
+  { pattern = "moderation.admin.divine.video/*", zone_name = "divine.video" }
+]
+
 # KV for storing moderation results
 [[kv_namespaces]]
 binding = "MODERATION_KV"
@@ -40,6 +45,9 @@ max_retries = 3
 MODERATION_ENABLED = "true"
 CDN_DOMAIN = "cdn.divine.video"  # CDN domain for video access
 PRIMARY_MODERATION_PROVIDER = "hiveai"  # Use Hive.AI for content moderation + AI detection
+
+# Zero Trust JWT verification (for /api/v1/moderate endpoint)
+TEAM_DOMAIN = "https://divinevideo.cloudflareaccess.com"  # Cloudflare Access team domain
 
 # Thresholds for content classification (0.0 - 1.0)
 # NSFW / Adult Content
@@ -75,6 +83,7 @@ AI_GENERATED_THRESHOLD_HIGH = "0.8"   # Age-restricted
 AI_GENERATED_THRESHOLD_MEDIUM = "0.6" # Human review
 
 # Secrets (set with: wrangler secret put <NAME>)
+# POLICY_AUD - Zero Trust application audience tag (from Access > Applications > moderation.admin.divine.video > Overview)
 # CF_ACCESS_CLIENT_ID - Cloudflare Access service token ID for relay.divine.video
 # CF_ACCESS_CLIENT_SECRET - Cloudflare Access service token secret for relay.divine.video
 # NOSTR_PRIVATE_KEY - for signing NIP-56 report events to faro.nos.social

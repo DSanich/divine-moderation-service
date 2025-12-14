@@ -56,7 +56,7 @@ export function selectProvider(env, strategy = 'default') {
 
   // Default: use PRIMARY_MODERATION_PROVIDER env var or first configured
   if (strategy === 'default' || typeof strategy === 'string') {
-    const primaryName = env.PRIMARY_MODERATION_PROVIDER || 'aws-rekognition';
+    const primaryName = env.PRIMARY_MODERATION_PROVIDER || 'hiveai';
     const primary = configured.find(p => p.name === primaryName);
 
     if (primary) {
@@ -99,7 +99,7 @@ export function selectProvider(env, strategy = 'default') {
 export async function moderateWithFallback(videoUrl, metadata, env, options = {}) {
   // Determine provider chain
   const providerNames = options.providers || [
-    env.PRIMARY_MODERATION_PROVIDER || 'aws-rekognition',
+    env.PRIMARY_MODERATION_PROVIDER || 'hiveai',
     'sightengine' // Always fallback to Sightengine if configured
   ];
 

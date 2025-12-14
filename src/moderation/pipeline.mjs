@@ -6,7 +6,7 @@
 
 import { moderateWithFallback } from './providers/index.mjs';
 import { classifyModerationResult } from './classifier.mjs';
-import { fetchNostrEventBySha256, parseVideoEventMetadata } from '../nostr/relay-client.mjs';
+import { fetchNostrEventBySha256, parseVideoEventMetadata, isOriginalVine } from '../nostr/relay-client.mjs';
 
 /**
  * Run full moderation pipeline on a video
@@ -33,7 +33,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
 
   try {
     const relays = env.NOSTR_RELAY_URL ? [env.NOSTR_RELAY_URL] : ['wss://relay.divine.video'];
-    const event = await fetchNostrEventBySha256(sha256, relays);
+    const event = await fetchNostrEventBySha256(sha256, relays, env);
     if (event) {
       nostrContext = parseVideoEventMetadata(event);
       console.log(`[MODERATION] Found Nostr context for ${sha256}:`, nostrContext);
@@ -52,7 +52,13 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     // Don't fail moderation if Nostr fetch fails
   }
 
-  // Step 2: Run both BunnyCDN (standard) and HiveAI (AI detection) in parallel
+  // Step 2: Check if this is an original Vine (skip AI detection for pre-2018 content)
+  const skipAIDetection = isOriginalVine(nostrContext);
+  if (skipAIDetection) {
+    console.log(`[MODERATION] Original Vine detected - skipping AI detection for ${sha256}`);
+  }
+
+  // Step 3: Run moderation with appropriate providers
   let moderationResult;
   let combinedScores = {};
   let combinedFlaggedFrames = [];
@@ -62,7 +68,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
   try {
     // Check which providers are configured
     const hasBunny = env.BUNNY_STREAM_API_KEY;
-    const hasHive = env.HIVE_API_KEY;
+    const hasHive = env.HIVE_MODERATION_API_KEY || env.HIVE_AI_DETECTION_API_KEY;
 
     if (hasBunny && hasHive) {
       // Run both in parallel for comprehensive coverage
@@ -74,7 +80,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
         { sha256 },
         env,
         ['bunnycdn', 'hiveai'],
-        { fetchFn }
+        { fetchFn, skipAIDetection }
       );
 
       // Merge results from both providers
@@ -117,7 +123,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
         videoUrl,
         { sha256 },
         env,
-        { fetchFn }
+        { fetchFn, skipAIDetection }
       );
     }
   } catch (error) {
