@@ -952,10 +952,18 @@ async function runMigration() {
     // API: Update moderation status (for external services)
     // Auth: Verify Zero Trust JWT using jose library
     if (url.pathname === '/api/v1/moderate' && request.method === 'POST') {
-      const jwtToken = request.headers.get('cf-access-jwt-assertion');
+      let verification = { valid: false, error: 'Not verified' };
 
-      // Verify JWT signature, issuer, and audience
-      const verification = await verifyZeroTrustJWT(jwtToken, env);
+      // In development without Zero Trust, allow if explicitly configured
+      if (env.ALLOW_DEV_ACCESS === 'true') {
+        console.log('[API] Development mode - bypassing JWT verification');
+        verification = { valid: true, email: 'dev@localhost', isServiceToken: false };
+      } else {
+        const jwtToken = request.headers.get('cf-access-jwt-assertion');
+
+        // Verify JWT signature, issuer, and audience
+        verification = await verifyZeroTrustJWT(jwtToken, env);
+      }
 
       if (!verification.valid) {
         console.log(`[API] JWT verification failed: ${verification.error}`);
@@ -1016,11 +1024,19 @@ async function runMigration() {
 
         console.log(`[API] Moderation updated: ${sha256} -> ${action} by ${source || 'external-api'} (auth: ${authSource})`);
 
+        // Notify divine-blossom of the moderation decision
+        // This is fire-and-forget - we don't fail the request if blossom notification fails
+        const blossomResult = await notifyBlossom(sha256, action.toUpperCase(), env);
+        if (!blossomResult.success && !blossomResult.skipped) {
+          console.warn(`[API] Blossom notification failed but moderation was recorded: ${blossomResult.error}`);
+        }
+
         return new Response(JSON.stringify({
           success: true,
           sha256,
           action: action.toUpperCase(),
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
+          blossom_notified: blossomResult.success || false
         }), {
           headers: { 'Content-Type': 'application/json' }
         });
@@ -1223,4 +1239,57 @@ async function handleModerationResult(result, env) {
   }
 
   console.log(`[MODERATION] handleModerationResult finished for ${sha256}`);
+}
+
+/**
+ * Notify divine-blossom of moderation decision via webhook
+ * This allows blossom to update blob status and enforce blocking
+ * @param {string} sha256 - The blob hash
+ * @param {string} action - The moderation action (SAFE, REVIEW, AGE_RESTRICTED, PERMANENT_BAN)
+ * @param {Object} env - Environment with BLOSSOM_WEBHOOK_URL and BLOSSOM_WEBHOOK_SECRET
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+async function notifyBlossom(sha256, action, env) {
+  // Skip if webhook not configured
+  if (!env.BLOSSOM_WEBHOOK_URL) {
+    console.log('[BLOSSOM] Webhook not configured, skipping notification');
+    return { success: true, skipped: true };
+  }
+
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+
+    // Add authentication if secret is configured
+    if (env.BLOSSOM_WEBHOOK_SECRET) {
+      headers['Authorization'] = `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}`;
+    }
+
+    console.log(`[BLOSSOM] Notifying blossom of ${action} for ${sha256}`);
+
+    const response = await fetch(env.BLOSSOM_WEBHOOK_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        sha256,
+        action,
+        timestamp: new Date().toISOString(),
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[BLOSSOM] Webhook failed: ${response.status} - ${errorText}`);
+      return { success: false, error: `HTTP ${response.status}: ${errorText}` };
+    }
+
+    const result = await response.json();
+    console.log(`[BLOSSOM] Webhook succeeded for ${sha256}:`, result);
+    return { success: true, result };
+
+  } catch (error) {
+    console.error(`[BLOSSOM] Webhook error for ${sha256}:`, error);
+    return { success: false, error: error.message };
+  }
 }
