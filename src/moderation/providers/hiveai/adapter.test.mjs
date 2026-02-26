@@ -132,6 +132,13 @@ describe('HiveAI Provider Adapter', () => {
       expect(result.scores.ai_generated).toBe(0.95);
       expect(result.details.ai_generated.detectedSource).toBe('midjourney');
       expect(result.provider).toBe('hiveai');
+
+      // rawClassifierData should be present
+      expect(result.rawClassifierData).toBeDefined();
+      expect(result.rawClassifierData.moderation).toBeDefined();
+      expect(result.rawClassifierData.aiDetection).toBeDefined();
+      expect(result.rawClassifierData.moderation.frames[0].scores['yes_female_nudity']).toBe(0.85);
+      expect(result.rawClassifierData.aiDetection.frames[0].scores['ai_generated']).toBe(0.95);
     });
   });
 

@@ -372,4 +372,235 @@ describe('Hive.AI Response Normalizer', () => {
       expect(result.scores.violence).toBe(0.9);
     });
   });
+
+  describe('Raw Classifier Data Extraction', () => {
+    it('should include rawClassifierData in normalized output', () => {
+      const hiveResponse = {
+        moderation: {
+          status: [{
+            response: {
+              output: [
+                {
+                  time: 0,
+                  classes: [
+                    { class: 'yes_female_nudity', score: 0.85 },
+                    { class: 'general_nsfw', score: 0.92 },
+                    { class: 'no_nudity', score: 0.08 }
+                  ]
+                }
+              ]
+            }
+          }]
+        },
+        aiDetection: null
+      };
+
+      const result = normalizeHiveAIResponse(hiveResponse);
+
+      expect(result.rawClassifierData).toBeDefined();
+      expect(result.rawClassifierData.extractedAt).toBeDefined();
+      expect(result.rawClassifierData.moderation).toBeDefined();
+      expect(result.rawClassifierData.aiDetection).toBeNull();
+    });
+
+    it('should capture ALL classes per frame including unmapped ones', () => {
+      const hiveResponse = {
+        moderation: {
+          status: [{
+            response: {
+              output: [
+                {
+                  time: 2.5,
+                  classes: [
+                    { class: 'yes_female_nudity', score: 0.85 },
+                    { class: 'no_nudity', score: 0.15 },
+                    { class: 'general_nsfw', score: 0.92 },
+                    { class: 'general_suggestive', score: 0.45 },
+                    { class: 'general_safe', score: 0.05 }
+                  ]
+                }
+              ]
+            }
+          }]
+        },
+        aiDetection: null
+      };
+
+      const result = normalizeHiveAIResponse(hiveResponse);
+      const modFrames = result.rawClassifierData.moderation.frames;
+
+      expect(modFrames).toHaveLength(1);
+      expect(modFrames[0].timestamp).toBe(2.5);
+      expect(modFrames[0].source).toBe('moderation');
+
+      // ALL classes should be present, including ones NOT in MODERATION_CLASS_MAP
+      expect(modFrames[0].scores['yes_female_nudity']).toBe(0.85);
+      expect(modFrames[0].scores['no_nudity']).toBe(0.15);
+      expect(modFrames[0].scores['general_nsfw']).toBe(0.92);
+      expect(modFrames[0].scores['general_suggestive']).toBe(0.45);
+      expect(modFrames[0].scores['general_safe']).toBe(0.05);
+    });
+
+    it('should track max scores across all frames per class', () => {
+      const hiveResponse = {
+        moderation: {
+          status: [{
+            response: {
+              output: [
+                { time: 0, classes: [{ class: 'yes_violence', score: 0.3 }, { class: 'yes_blood_shed', score: 0.1 }] },
+                { time: 3, classes: [{ class: 'yes_violence', score: 0.9 }, { class: 'yes_blood_shed', score: 0.6 }] },
+                { time: 6, classes: [{ class: 'yes_violence', score: 0.5 }, { class: 'yes_blood_shed', score: 0.2 }] }
+              ]
+            }
+          }]
+        },
+        aiDetection: null
+      };
+
+      const result = normalizeHiveAIResponse(hiveResponse);
+      const maxScores = result.rawClassifierData.allClassMaxScores;
+
+      expect(maxScores['yes_violence']).toBe(0.9);
+      expect(maxScores['yes_blood_shed']).toBe(0.6);
+    });
+
+    it('should capture per-frame data with timestamps for temporal analysis', () => {
+      const hiveResponse = {
+        moderation: {
+          status: [{
+            response: {
+              output: [
+                { time: 0, classes: [{ class: 'yes_violence', score: 0.3 }] },
+                { time: 3.5, classes: [{ class: 'yes_violence', score: 0.9 }] },
+                { time: 7.0, classes: [{ class: 'yes_violence', score: 0.1 }] }
+              ]
+            }
+          }]
+        },
+        aiDetection: null
+      };
+
+      const result = normalizeHiveAIResponse(hiveResponse);
+      const frames = result.rawClassifierData.moderation.frames;
+
+      expect(frames).toHaveLength(3);
+      expect(frames[0].timestamp).toBe(0);
+      expect(frames[1].timestamp).toBe(3.5);
+      expect(frames[2].timestamp).toBe(7.0);
+
+      // Each frame has its own scores
+      expect(frames[0].scores['yes_violence']).toBe(0.3);
+      expect(frames[1].scores['yes_violence']).toBe(0.9);
+      expect(frames[2].scores['yes_violence']).toBe(0.1);
+    });
+
+    it('should capture both moderation and AI detection raw data', () => {
+      const hiveResponse = {
+        moderation: {
+          status: [{
+            response: {
+              output: [
+                {
+                  time: 0,
+                  classes: [
+                    { class: 'yes_female_nudity', score: 0.8 },
+                    { class: 'yes_violence', score: 0.3 }
+                  ]
+                }
+              ]
+            }
+          }]
+        },
+        aiDetection: {
+          status: [{
+            response: {
+              output: [
+                {
+                  time: 0,
+                  classes: [
+                    { class: 'ai_generated', score: 0.92 },
+                    { class: 'not_ai_generated', score: 0.08 },
+                    { class: 'midjourney', score: 0.85 },
+                    { class: 'stable_diffusion', score: 0.12 }
+                  ]
+                }
+              ]
+            }
+          }]
+        }
+      };
+
+      const result = normalizeHiveAIResponse(hiveResponse);
+
+      // Both moderation and AI detection data should be captured
+      expect(result.rawClassifierData.moderation).toBeDefined();
+      expect(result.rawClassifierData.aiDetection).toBeDefined();
+
+      // Moderation frame data
+      expect(result.rawClassifierData.moderation.frames[0].scores['yes_female_nudity']).toBe(0.8);
+
+      // AI detection frame data
+      expect(result.rawClassifierData.aiDetection.frames[0].scores['ai_generated']).toBe(0.92);
+      expect(result.rawClassifierData.aiDetection.frames[0].scores['not_ai_generated']).toBe(0.08);
+      expect(result.rawClassifierData.aiDetection.frames[0].scores['midjourney']).toBe(0.85);
+      expect(result.rawClassifierData.aiDetection.frames[0].scores['stable_diffusion']).toBe(0.12);
+
+      // AI detection classes should be prefixed in allClassMaxScores
+      expect(result.rawClassifierData.allClassMaxScores['ai_detection:ai_generated']).toBe(0.92);
+      expect(result.rawClassifierData.allClassMaxScores['ai_detection:midjourney']).toBe(0.85);
+
+      // Moderation classes should be in allClassMaxScores without prefix
+      expect(result.rawClassifierData.allClassMaxScores['yes_female_nudity']).toBe(0.8);
+    });
+
+    it('should return null moderation/aiDetection when inputs are null', () => {
+      const hiveResponse = {
+        moderation: null,
+        aiDetection: null
+      };
+
+      const result = normalizeHiveAIResponse(hiveResponse);
+
+      expect(result.rawClassifierData).toBeDefined();
+      expect(result.rawClassifierData.moderation).toBeNull();
+      expect(result.rawClassifierData.aiDetection).toBeNull();
+      expect(result.rawClassifierData.allClassMaxScores).toEqual({});
+    });
+
+    it('should handle empty output arrays in rawClassifierData', () => {
+      const hiveResponse = {
+        moderation: { status: [{ response: { output: [] } }] },
+        aiDetection: { status: [{ response: { output: [] } }] }
+      };
+
+      const result = normalizeHiveAIResponse(hiveResponse);
+
+      // Empty outputs should result in null rawClassifierData for each model
+      // (extractRawClassifierData is only called when output.length > 0)
+      expect(result.rawClassifierData.moderation).toBeNull();
+      expect(result.rawClassifierData.aiDetection).toBeNull();
+    });
+
+    it('should use frame index as timestamp when time is not provided', () => {
+      const hiveResponse = {
+        moderation: {
+          status: [{
+            response: {
+              output: [
+                { classes: [{ class: 'yes_violence', score: 0.5 }] },
+                { classes: [{ class: 'yes_violence', score: 0.7 }] }
+              ]
+            }
+          }]
+        },
+        aiDetection: null
+      };
+
+      const result = normalizeHiveAIResponse(hiveResponse);
+      const frames = result.rawClassifierData.moderation.frames;
+
+      expect(frames[0].timestamp).toBe(0);
+      expect(frames[1].timestamp).toBe(1);
+    });
+  });
 });
