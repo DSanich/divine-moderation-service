@@ -79,6 +79,59 @@ export async function publishToFaro(report, env, mockRelay = null) {
 }
 
 /**
+ * Publish moderation report to the content relay (relay.divine.video)
+ * This ensures the content relay is aware of moderation decisions and can stop serving flagged events
+ * @param {Object} report - Same report object as publishToFaro
+ * @param {Object} env - Environment with Nostr credentials
+ * @param {Object} [mockRelay] - Mock relay for testing
+ */
+export async function publishToContentRelay(report, env, mockRelay = null) {
+  // Don't publish safe content
+  if (report.type === 'safe') {
+    return;
+  }
+
+  // Validate configuration
+  if (!env.NOSTR_PRIVATE_KEY) {
+    throw new Error('NOSTR_PRIVATE_KEY not configured');
+  }
+  if (!env.NOSTR_RELAY_URL) {
+    console.log('[PUBLISHER] NOSTR_RELAY_URL not configured, skipping content relay publish');
+    return;
+  }
+
+  // Don't double-publish if content relay is the same as faro
+  if (env.NOSTR_RELAY_URL === env.FARO_RELAY_URL) {
+    console.log('[PUBLISHER] Content relay same as Faro relay, skipping duplicate publish');
+    return;
+  }
+
+  // Create kind 1984 report event (NIP-56)
+  const event = createReportEvent(report, env.NOSTR_PRIVATE_KEY);
+
+  // Publish to content relay
+  if (mockRelay) {
+    await mockRelay.publish(event);
+  } else {
+    const relayOptions = {};
+    if (env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
+      relayOptions.headers = {
+        'CF-Access-Client-Id': env.CF_ACCESS_CLIENT_ID,
+        'CF-Access-Client-Secret': env.CF_ACCESS_CLIENT_SECRET
+      };
+    }
+
+    const relay = await Relay.connect(env.NOSTR_RELAY_URL, relayOptions);
+    try {
+      await relay.publish(event);
+      console.log(`[PUBLISHER] NIP-56 report published to content relay ${env.NOSTR_RELAY_URL}`);
+    } finally {
+      relay.close();
+    }
+  }
+}
+
+/**
  * Create a signed NIP-56 report event
  * @param {Object} report - Report data
  * @param {string} privateKeyHex - Nostr private key (hex)

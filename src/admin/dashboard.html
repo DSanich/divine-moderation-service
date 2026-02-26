@@ -566,11 +566,6 @@
       color: #fff;
     }
 
-    .provider-badge.bunnycdn {
-      background: linear-gradient(135deg, #f97316, #ea580c);
-      color: #fff;
-    }
-
     .provider-badge.combined {
       background: linear-gradient(135deg, #8b5cf6, #6366f1);
       color: #fff;
@@ -2151,7 +2146,7 @@
       let icon = '🤖';
       let displayName = provider;
 
-      if (providerLower.includes('+') || providerLower.includes('bunnycdn') && providerLower.includes('hive')) {
+      if (providerLower.includes('+')) {
         badgeClass = 'combined';
         icon = '🔗';
         displayName = provider.replace(/\+/g, ' + ');
@@ -2163,10 +2158,6 @@
         badgeClass = 'sightengine';
         icon = '👁️';
         displayName = 'SightEngine';
-      } else if (providerLower.includes('bunny')) {
-        badgeClass = 'bunnycdn';
-        icon = '🐰';
-        displayName = 'BunnyCDN';
       }
 
       return `<span class="provider-badge ${badgeClass}">${icon} ${displayName}</span>`;
@@ -2285,7 +2276,6 @@
       const lower = provider.toLowerCase();
       if (lower.includes('hive')) return 'HiveAI';
       if (lower.includes('sightengine')) return 'SightEngine';
-      if (lower.includes('bunny')) return 'BunnyCDN';
       return provider;
     }
 

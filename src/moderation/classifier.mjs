@@ -2,7 +2,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
 // ABOUTME: Content severity classification logic
-// ABOUTME: Determines action (SAFE/REVIEW/AGE_RESTRICTED/PERMANENT_BAN) based on moderation scores and content category
+// ABOUTME: Determines action (SAFE/REVIEW/QUARANTINE/AGE_RESTRICTED/PERMANENT_BAN) based on moderation scores and content category
 
 // Default thresholds (can be overridden by env vars)
 const DEFAULT_NSFW_HIGH = 0.8;
@@ -193,10 +193,25 @@ export function classifyModerationResult(moderationData, env = {}) {
     category = primaryConcern;
     reason = `${getCategoryLabel(category)} content detected (score: ${primaryScore.toFixed(2)}) - requires age verification`;
   }
-  // Check for REVIEW threshold
+  // Check for QUARANTINE — above quarantine threshold but below permanent ban / age-restricted
+  // Hidden from regular users, visible to moderators via admin bypass route
+  else if ((() => {
+    const quarantineThreshold = parseFloat(env.QUARANTINE_THRESHOLD || '0.7');
+    return Object.keys(thresholds).some(cat => {
+      const threshold = thresholds[cat];
+      return threshold && scores[cat] >= quarantineThreshold && scores[cat] < threshold.high;
+    });
+  })()) {
+    action = 'QUARANTINE';
+    severity = 'medium';
+    category = primaryConcern;
+    reason = `Potential ${getCategoryLabel(category)} content detected (score: ${primaryScore.toFixed(2)}) - quarantined pending moderator review`;
+  }
+  // Check for REVIEW threshold (below quarantine threshold but above medium)
   else if (Object.keys(thresholds).some(cat => {
     const threshold = thresholds[cat];
-    return threshold && scores[cat] >= threshold.medium && scores[cat] < threshold.high;
+    const quarantineThreshold = parseFloat(env.QUARANTINE_THRESHOLD || '0.7');
+    return threshold && scores[cat] >= threshold.medium && scores[cat] < quarantineThreshold;
   })) {
     action = 'REVIEW';
     severity = 'medium';

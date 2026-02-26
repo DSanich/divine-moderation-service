@@ -2,6 +2,40 @@
 
 All notable changes to the Divine Moderation Service will be documented in this file.
 
+## [Unreleased] - 2026-02-27
+
+### Added
+- **QUARANTINE action** — New moderation state between REVIEW and PERMANENT_BAN
+  - Hidden from regular users, visible to authenticated moderators via admin bypass route
+  - Classifier auto-quarantines content above configurable threshold but below permanent ban
+  - Manual quarantine/unquarantine via `POST /api/v1/quarantine/:sha256`
+- **Decisions API** for divine-relay-manager integration
+  - `GET /api/v1/decisions` — Paginated list of moderation decisions (filterable by action, since timestamp)
+  - `GET /api/v1/decisions/:sha256` — Single decision lookup by content hash
+  - Authenticated via Zero Trust JWT
+- **Content relay NIP-56 publishing** — Moderation reports now published to both Faro and content relay (`NOSTR_RELAY_URL`)
+- **Relay cache invalidation** — `notifyRelay()` sends purge requests to Funnelcake admin endpoint after bans
+  - Uses `RELAY_ADMIN_URL` secret with CF Access auth headers
+  - Fire-and-forget pattern, parallel to existing `notifyBlossom()`
+
+### Removed
+- **BunnyCDN moderation provider** — Removed entirely (HiveAI is now sole primary provider with Sightengine fallback)
+  - Deleted `src/moderation/providers/bunnycdn/` (adapter, client, normalizer)
+  - Removed parallel BunnyCDN+HiveAI pipeline path
+  - Removed `BUNNY_STREAM_API_KEY` secret
+  - Removed BunnyCDN provider badge from admin dashboard
+
+### Changed
+- Moderation pipeline simplified to always use fallback chain (HiveAI primary, Sightengine fallback)
+- Backfill script cost estimates updated for HiveAI pricing
+- Valid moderation actions now include QUARANTINE alongside SAFE, REVIEW, AGE_RESTRICTED, PERMANENT_BAN
+
+### Configuration
+- `RELAY_ADMIN_URL` — Funnelcake admin API endpoint for cache purge / event deletion (new secret)
+- `QUARANTINE_THRESHOLD` — Optional threshold for auto-quarantine (defaults to medium threshold)
+
+---
+
 ## [Unreleased] - 2025-01-25
 
 ### Added
@@ -23,7 +57,7 @@ All notable changes to the Divine Moderation Service will be documented in this 
   - Shows "🎉 Auto-approved!" toast notification
 
 - **Provider badges** - Dashboard shows which AI analyzed each video
-  - HiveAI 🐝, SightEngine 👁️, BunnyCDN 🐰, or combined 🔗
+  - HiveAI 🐝, SightEngine 👁️, or combined 🔗
   - "📦 Legacy" badge for older videos without provider info
 
 - **Moderation history timeline** - Shows AI vs human decision history

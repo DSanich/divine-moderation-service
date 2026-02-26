@@ -6,7 +6,7 @@
 
 import { validateQueueMessage } from './schemas/queue-message.mjs';
 import { moderateVideo } from './moderation/pipeline.mjs';
-import { publishToFaro, publishLabelEvent } from './nostr/publisher.mjs';
+import { publishToFaro, publishToContentRelay, publishLabelEvent } from './nostr/publisher.mjs';
 import { requireAuth, getAuthenticatedUser } from './admin/auth.mjs';
 import { verifyZeroTrustJWT } from './admin/zerotrust.mjs';
 import { fetchNostrEventBySha256, parseVideoEventMetadata } from './nostr/relay-client.mjs';
@@ -15,6 +15,8 @@ import dashboardHTML from './admin/dashboard.html';
 import swipeReviewHTML from './admin/swipe-review.html';
 import { initReportsTable, addReport } from './reports.mjs';
 import { initOffenderTable, updateUploaderStats, getUploaderStats } from './offender-tracker.mjs';
+import { formatForStorage, formatForGorse, formatForFunnelcake } from './classification/pipeline.mjs';
+import { topicsToLabels, topicsToWeightedFeatures } from './classification/topic-extractor.mjs';
 /**
  * NIP-32 label mapping for content categories
  * Maps internal category names to NIP-32/NIP-56 compatible labels
@@ -436,25 +438,45 @@ export default {
       const { action, reason, scores } = await request.json();
 
       // Validate action
-      if (!['SAFE', 'REVIEW', 'AGE_RESTRICTED', 'PERMANENT_BAN'].includes(action)) {
-        return new Response(JSON.stringify({ error: 'Invalid action. Must be SAFE, REVIEW, AGE_RESTRICTED, or PERMANENT_BAN' }), {
+      if (!['SAFE', 'REVIEW', 'QUARANTINE', 'AGE_RESTRICTED', 'PERMANENT_BAN'].includes(action)) {
+        return new Response(JSON.stringify({ error: 'Invalid action. Must be SAFE, REVIEW, QUARANTINE, AGE_RESTRICTED, or PERMANENT_BAN' }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      // Get existing moderation result
-      const existingData = await env.MODERATION_KV.get(`moderation:${sha256}`);
-      if (!existingData) {
+      // Get existing moderation result — check D1 first, fall back to KV
+      let existing = null;
+      const d1Row = await env.BLOSSOM_DB.prepare(
+        'SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at FROM moderation_results WHERE sha256 = ?'
+      ).bind(sha256).first();
+
+      if (d1Row) {
+        existing = {
+          action: d1Row.action,
+          scores: d1Row.scores ? JSON.parse(d1Row.scores) : {},
+          provider: d1Row.provider,
+          categories: d1Row.categories ? JSON.parse(d1Row.categories) : [],
+          moderated_at: d1Row.moderated_at
+        };
+      } else {
+        // Fall back to KV for legacy data
+        const kvData = await env.MODERATION_KV.get(`moderation:${sha256}`);
+        if (kvData) {
+          existing = JSON.parse(kvData);
+        }
+      }
+
+      if (!existing) {
         return new Response(JSON.stringify({ error: 'Moderation result not found for this video' }), {
           status: 404,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      const existing = JSON.parse(existingData);
+      const previousAction = existing.action;
 
-      // Update moderation result
+      // Update moderation result in KV
       const updated = {
         ...existing,
         action,
@@ -462,7 +484,7 @@ export default {
         manualOverride: true,
         overriddenBy: 'admin',
         overriddenAt: Date.now(),
-        previousAction: existing.action
+        previousAction
       };
 
       // If scores provided, override them
@@ -474,7 +496,7 @@ export default {
         console.log(`[ADMIN] Score override applied for ${sha256}`);
       }
 
-      // Write updated result
+      // Write updated result to KV
       await env.MODERATION_KV.put(
         `moderation:${sha256}`,
         JSON.stringify(updated),
@@ -483,56 +505,69 @@ export default {
         }
       );
 
-      // Update action-specific keys
+      // Update D1 with new action
+      await env.BLOSSOM_DB.prepare(`
+        UPDATE moderation_results
+        SET action = ?, review_notes = ?, reviewed_by = ?, reviewed_at = ?
+        WHERE sha256 = ?
+      `).bind(
+        action,
+        reason || 'Manual override by moderator',
+        'admin',
+        new Date().toISOString(),
+        sha256
+      ).run();
+
+      // Update action-specific KV keys
       await Promise.all([
         // Clear old keys
         env.MODERATION_KV.delete(`review:${sha256}`),
         env.MODERATION_KV.delete(`age-restricted:${sha256}`),
         env.MODERATION_KV.delete(`permanent-ban:${sha256}`),
-        env.MODERATION_KV.delete(`quarantine:${sha256}`)  // Legacy
+        env.MODERATION_KV.delete(`quarantine:${sha256}`)
       ]);
 
       // Set new key based on action
+      const kvPayload = JSON.stringify({
+        category: updated.category,
+        reason: updated.reason,
+        timestamp: Date.now(),
+        manualOverride: true
+      });
+
       if (action === 'REVIEW') {
-        await env.MODERATION_KV.put(
-          `review:${sha256}`,
-          JSON.stringify({
-            category: updated.category,
-            reason: updated.reason,
-            timestamp: Date.now(),
-            manualOverride: true
-          })
-        );
+        await env.MODERATION_KV.put(`review:${sha256}`, kvPayload);
+      } else if (action === 'QUARANTINE') {
+        await env.MODERATION_KV.put(`quarantine:${sha256}`, kvPayload, { expirationTtl: 60 * 60 * 24 * 90 });
       } else if (action === 'AGE_RESTRICTED') {
-        await env.MODERATION_KV.put(
-          `age-restricted:${sha256}`,
-          JSON.stringify({
-            category: updated.category,
-            reason: updated.reason,
-            timestamp: Date.now(),
-            manualOverride: true
-          })
-        );
+        await env.MODERATION_KV.put(`age-restricted:${sha256}`, kvPayload);
       } else if (action === 'PERMANENT_BAN') {
-        await env.MODERATION_KV.put(
-          `permanent-ban:${sha256}`,
-          JSON.stringify({
-            category: updated.category,
-            reason: updated.reason,
-            timestamp: Date.now(),
-            manualOverride: true
-          })
-        );
+        await env.MODERATION_KV.put(`permanent-ban:${sha256}`, kvPayload);
       }
 
-      console.log(`[ADMIN] Updated ${sha256} from ${existing.action} to ${action}`);
+      // Notify Blossom and relay of the moderation decision
+      const [blossomResult, relayResult] = await Promise.all([
+        notifyBlossom(sha256, action, env),
+        notifyRelay(sha256, action, env)
+      ]);
+
+      if (!blossomResult.success && !blossomResult.skipped) {
+        console.warn(`[ADMIN] Blossom notification failed: ${blossomResult.error}`);
+      }
+      if (!relayResult.success && !relayResult.skipped) {
+        console.warn(`[ADMIN] Relay purge notification failed: ${relayResult.error}`);
+      }
+
+      console.log(`[ADMIN] Updated ${sha256} from ${previousAction} to ${action} (blossom: ${blossomResult.success}, relay: ${relayResult.success})`);
 
       return new Response(JSON.stringify({
         success: true,
         sha256,
         action,
-        previousAction: existing.action,
-        message: `Content updated to ${action}`
+        previousAction,
+        message: `Content updated to ${action}`,
+        blossom_notified: blossomResult.success || false,
+        relay_notified: relayResult.success || false
       }), {
         headers: { 'Content-Type': 'application/json' }
       });
@@ -1127,7 +1162,7 @@ async function runMigration() {
         }
 
         // Validate action
-        const validActions = ['SAFE', 'REVIEW', 'AGE_RESTRICTED', 'PERMANENT_BAN'];
+        const validActions = ['SAFE', 'REVIEW', 'QUARANTINE', 'AGE_RESTRICTED', 'PERMANENT_BAN'];
         if (!validActions.includes(action.toUpperCase())) {
           return new Response(JSON.stringify({
             error: `Invalid action. Must be one of: ${validActions.join(', ')}`
@@ -1215,8 +1250,9 @@ async function runMigration() {
         status: action.toLowerCase(),
         moderated: true,
         blocked: action === 'PERMANENT_BAN',
+        quarantined: action === 'QUARANTINE',
         age_restricted: action === 'AGE_RESTRICTED',
-        needs_review: action === 'REVIEW' || action === 'PERMANENT_BAN',
+        needs_review: action === 'REVIEW' || action === 'QUARANTINE' || action === 'PERMANENT_BAN',
         action,
         provider: d1Result.provider,
         scores: d1Result.scores ? JSON.parse(d1Result.scores) : null,
@@ -1229,7 +1265,365 @@ async function runMigration() {
       });
     }
 
-    return new Response('Divine Moderation Service\n\nEndpoints:\nPOST /test-moderate {"sha256":"..."}\nGET  /check-result/{sha256}\nGET  /admin (password protected)', {
+    // API: Moderation decisions list (for divine-relay-manager integration)
+    // Auth: Verify Zero Trust JWT
+    if (url.pathname === '/api/v1/decisions' && request.method === 'GET') {
+      let verification = { valid: false, error: 'Not verified' };
+      if (env.ALLOW_DEV_ACCESS === 'true') {
+        verification = { valid: true, email: 'dev@localhost', isServiceToken: false };
+      } else {
+        const jwtToken = request.headers.get('cf-access-jwt-assertion');
+        if (jwtToken) {
+          try {
+            verification = await verifyZeroTrustJWT(jwtToken, env);
+          } catch (e) {
+            verification = { valid: false, error: e.message };
+          }
+        }
+      }
+
+      if (!verification.valid) {
+        return new Response(JSON.stringify({ error: 'Authentication required' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      try {
+        const action = url.searchParams.get('action');
+        const since = url.searchParams.get('since');
+        const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200);
+        const offset = parseInt(url.searchParams.get('offset') || '0', 10);
+
+        let query = 'SELECT sha256, action, provider, scores, moderated_at, reviewed_by, reviewed_at FROM moderation_results';
+        const conditions = [];
+        const bindings = [];
+
+        if (action) {
+          conditions.push('action = ?');
+          bindings.push(action.toUpperCase());
+        }
+        if (since) {
+          conditions.push('moderated_at >= ?');
+          bindings.push(since);
+        }
+
+        if (conditions.length > 0) {
+          query += ' WHERE ' + conditions.join(' AND ');
+        }
+
+        query += ' ORDER BY moderated_at DESC LIMIT ? OFFSET ?';
+        bindings.push(limit, offset);
+
+        const results = await env.BLOSSOM_DB.prepare(query).bind(...bindings).all();
+
+        // Get total count for pagination
+        let countQuery = 'SELECT COUNT(*) as total FROM moderation_results';
+        if (conditions.length > 0) {
+          countQuery += ' WHERE ' + conditions.join(' AND ');
+        }
+        const countResult = await env.BLOSSOM_DB.prepare(countQuery).bind(...bindings.slice(0, -2)).all();
+        const total = countResult.results[0]?.total || 0;
+
+        return new Response(JSON.stringify({
+          decisions: results.results.map(r => ({
+            ...r,
+            scores: r.scores ? JSON.parse(r.scores) : null
+          })),
+          pagination: { total, limit, offset, has_more: offset + limit < total }
+        }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        console.error('[API] Error fetching decisions:', error);
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // API: Single moderation decision lookup (for divine-relay-manager integration)
+    // Auth: Verify Zero Trust JWT
+    if (url.pathname.startsWith('/api/v1/decisions/') && request.method === 'GET') {
+      const sha256 = url.pathname.split('/')[4];
+
+      if (!sha256 || sha256.length !== 64) {
+        return new Response(JSON.stringify({ error: 'Invalid sha256 hash' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      let verification = { valid: false, error: 'Not verified' };
+      if (env.ALLOW_DEV_ACCESS === 'true') {
+        verification = { valid: true, email: 'dev@localhost', isServiceToken: false };
+      } else {
+        const jwtToken = request.headers.get('cf-access-jwt-assertion');
+        if (jwtToken) {
+          try {
+            verification = await verifyZeroTrustJWT(jwtToken, env);
+          } catch (e) {
+            verification = { valid: false, error: e.message };
+          }
+        }
+      }
+
+      if (!verification.valid) {
+        return new Response(JSON.stringify({ error: 'Authentication required' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      try {
+        const result = await env.BLOSSOM_DB.prepare(
+          'SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes FROM moderation_results WHERE sha256 = ?'
+        ).bind(sha256).first();
+
+        if (!result) {
+          return new Response(JSON.stringify({ error: 'No decision found', sha256 }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        return new Response(JSON.stringify({
+          ...result,
+          scores: result.scores ? JSON.parse(result.scores) : null,
+          categories: result.categories ? JSON.parse(result.categories) : null
+        }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        console.error('[API] Error fetching decision:', error);
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // API: Quarantine/unquarantine content
+    // Auth: Verify Zero Trust JWT
+    if (url.pathname.startsWith('/api/v1/quarantine/') && request.method === 'POST') {
+      const sha256 = url.pathname.split('/')[4];
+
+      if (!sha256 || sha256.length !== 64) {
+        return new Response(JSON.stringify({ error: 'Invalid sha256 hash' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      let verification = { valid: false, error: 'Not verified' };
+      if (env.ALLOW_DEV_ACCESS === 'true') {
+        verification = { valid: true, email: 'dev@localhost', isServiceToken: false };
+      } else {
+        const jwtToken = request.headers.get('cf-access-jwt-assertion');
+        if (jwtToken) {
+          try {
+            verification = await verifyZeroTrustJWT(jwtToken, env);
+          } catch (e) {
+            verification = { valid: false, error: e.message };
+          }
+        }
+      }
+
+      if (!verification.valid) {
+        return new Response(JSON.stringify({ error: 'Authentication required' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      try {
+        const body = await request.json();
+        const { quarantine, reason } = body;
+        const newAction = quarantine === false ? 'REVIEW' : 'QUARANTINE';
+
+        const authSource = verification.email
+          ? `user:${verification.email}`
+          : `service-token:${verification.payload?.sub || 'unknown'}`;
+
+        // Update D1
+        await env.BLOSSOM_DB.prepare(`
+          UPDATE moderation_results
+          SET action = ?, review_notes = ?, reviewed_by = ?, reviewed_at = ?
+          WHERE sha256 = ?
+        `).bind(
+          newAction,
+          reason || (quarantine === false ? 'Unquarantined by moderator' : 'Quarantined by moderator'),
+          authSource,
+          new Date().toISOString(),
+          sha256
+        ).run();
+
+        // Update KV quarantine flag
+        if (quarantine === false) {
+          await env.MODERATION_KV.delete(`quarantine:${sha256}`);
+        } else {
+          await env.MODERATION_KV.put(`quarantine:${sha256}`, JSON.stringify({
+            action: 'QUARANTINE',
+            reason: reason || 'Quarantined by moderator',
+            by: authSource,
+            timestamp: new Date().toISOString()
+          }), { expirationTtl: 60 * 60 * 24 * 90 });
+        }
+
+        // Notify blossom and relay
+        const [blossomResult, relayResult] = await Promise.all([
+          notifyBlossom(sha256, newAction, env),
+          notifyRelay(sha256, newAction, env)
+        ]);
+
+        console.log(`[API] Quarantine updated: ${sha256} -> ${newAction} by ${authSource}`);
+
+        return new Response(JSON.stringify({
+          success: true,
+          sha256,
+          action: newAction,
+          updated_at: new Date().toISOString(),
+          blossom_notified: blossomResult.success || false,
+          relay_notified: relayResult.success || false
+        }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        console.error('[API] Error updating quarantine:', error);
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // API: Classifier endpoints for recommendation system data
+    // Auth: Verify Zero Trust JWT for access control
+    if (url.pathname.startsWith('/api/v1/classifier/')) {
+      // Parse the path segments: /api/v1/classifier/{sha256}[/recommendations]
+      const pathParts = url.pathname.split('/').filter(Boolean);
+      // pathParts: ['api', 'v1', 'classifier', sha256, ?'recommendations']
+      const sha256 = pathParts[3];
+      const subRoute = pathParts[4] || null;
+
+      if (!sha256 || sha256.length !== 64) {
+        return new Response(JSON.stringify({ error: 'Invalid sha256 hash' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Require authentication (Zero Trust JWT or dev access)
+      let verification = { valid: false, error: 'Not verified' };
+      if (env.ALLOW_DEV_ACCESS === 'true') {
+        verification = { valid: true, email: 'dev@localhost', isServiceToken: false };
+      } else {
+        const jwtToken = request.headers.get('cf-access-jwt-assertion');
+        if (jwtToken) {
+          try {
+            verification = await verifyZeroTrustJWT(jwtToken, env);
+          } catch (e) {
+            verification = { valid: false, error: e.message };
+          }
+        }
+      }
+
+      if (!verification.valid) {
+        return new Response(JSON.stringify({ error: 'Authentication required' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      try {
+        const classifierData = await env.MODERATION_KV.get(`classifier:${sha256}`);
+        if (!classifierData) {
+          return new Response(JSON.stringify({
+            sha256,
+            classifier_data: null,
+            message: 'No classifier data available for this hash'
+          }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        // GET /api/v1/classifier/{sha256}/recommendations — pre-formatted for gorse/funnelcake
+        if (subRoute === 'recommendations') {
+          const parsed = JSON.parse(classifierData);
+
+          // Collect labels from all three classification layers
+          const allLabels = [];
+          const allFeatures = {};
+
+          // Layer 1: VLM scene classification labels (topics, setting, objects, activities, mood)
+          if (parsed.sceneClassification) {
+            const sceneLabels = formatForGorse(parsed.sceneClassification);
+            allLabels.push(...sceneLabels);
+            const sceneFeatures = formatForFunnelcake(parsed.sceneClassification);
+            Object.assign(allFeatures, sceneFeatures);
+          }
+
+          // Layer 2: VTT topic labels
+          if (parsed.topicProfile) {
+            const topicLabels = topicsToLabels(parsed.topicProfile);
+            allLabels.push(...topicLabels);
+            const topicFeatures = topicsToWeightedFeatures(parsed.topicProfile);
+            Object.assign(allFeatures, topicFeatures);
+          }
+
+          // Layer 3: Raw moderation scores as features (for safety signals)
+          if (parsed.rawClassifierData) {
+            // Extract top-level moderation scores for safety signals
+            const rawData = parsed.rawClassifierData;
+            if (rawData.maxScores) {
+              for (const [key, value] of Object.entries(rawData.maxScores)) {
+                if (typeof value === 'number') {
+                  allFeatures[key] = value;
+                }
+              }
+            }
+          }
+
+          // Determine safety from moderation result
+          const moderationResult = await env.BLOSSOM_DB.prepare(
+            'SELECT action FROM moderation_results WHERE sha256 = ?'
+          ).bind(sha256).first();
+
+          const action = moderationResult?.action || 'UNKNOWN';
+          const isSafe = action === 'SAFE';
+
+          return new Response(JSON.stringify({
+            sha256,
+            gorse: {
+              labels: [...new Set(allLabels)],  // deduplicate
+              features: allFeatures
+            },
+            description: parsed.sceneClassification?.description || null,
+            primary_topic: parsed.topicProfile?.primary_topic || null,
+            has_speech: parsed.topicProfile?.has_speech || false,
+            is_safe: isSafe,
+            action
+          }), {
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        // GET /api/v1/classifier/{sha256} — full classifier data (all three layers)
+        return new Response(classifierData, {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        console.error(`[API] Error fetching classifier data for ${sha256}:`, error);
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    return new Response('Divine Moderation Service\n\nEndpoints:\nPOST /test-moderate {"sha256":"..."}\nGET  /check-result/{sha256}\nGET  /api/v1/decisions (authenticated - paginated moderation decisions)\nGET  /api/v1/decisions/{sha256} (authenticated - single decision lookup)\nPOST /api/v1/quarantine/{sha256} (authenticated - quarantine/unquarantine)\nGET  /api/v1/classifier/{sha256} (authenticated - all classification layers)\nGET  /api/v1/classifier/{sha256}/recommendations (authenticated - pre-formatted for gorse/funnelcake)\nGET  /admin (password protected)', {
       headers: { 'Content-Type': 'text/plain' }
     });
   },
@@ -1302,6 +1696,43 @@ async function runMigration() {
           new Date().toISOString()
         ).run();
         console.log(`[MODERATION] Step 7: D1 write successful`);
+
+        // Step 7.5: Store classifier + classification data in KV for recommendation systems
+        {
+          try {
+            const classifierPayload = {
+              sha256,
+              provider: result.provider || 'unknown',
+              moderatedAt: new Date().toISOString(),
+              // Layer 1: Raw Hive moderation scores (all classes, all frames)
+              rawClassifierData: result.rawClassifierData || null,
+              // Layer 2: VLM scene classification (topics, setting, objects, activities, mood, description)
+              sceneClassification: formatForStorage(result.sceneClassification),
+              // Layer 3: VTT topic extraction (topic categories from transcript)
+              topicProfile: result.topicProfile || null
+            };
+            await env.MODERATION_KV.put(
+              `classifier:${sha256}`,
+              JSON.stringify(classifierPayload),
+              { expirationTtl: 60 * 60 * 24 * 180 }  // 180 days — longer TTL for recommendation data
+            );
+            console.log(`[MODERATION] Step 7.5: Classifier data stored in KV (classifier:${sha256}) — raw=${!!result.rawClassifierData}, scene=${!!result.sceneClassification}, topics=${!!result.topicProfile}`);
+          } catch (classifierErr) {
+            // Non-fatal: don't fail moderation if classifier storage fails
+            console.error(`[MODERATION] Failed to store classifier data for ${sha256}:`, classifierErr.message);
+          }
+        }
+
+        // Step 7.6: Set quarantine flag in KV if action is QUARANTINE
+        if (result.action === 'QUARANTINE') {
+          await env.MODERATION_KV.put(`quarantine:${sha256}`, JSON.stringify({
+            action: 'QUARANTINE',
+            reason: result.reason,
+            category: result.category,
+            timestamp: new Date().toISOString()
+          }), { expirationTtl: 60 * 60 * 24 * 90 });
+          console.log(`[MODERATION] Step 7.6: Quarantine flag set for ${sha256}`);
+        }
 
         // Handle based on severity
         console.log(`[MODERATION] Step 8: Handling result (action=${result.action})`);
@@ -1419,7 +1850,7 @@ async function handleModerationResult(result, env) {
   // Publish Nostr notifications for flagged content
   if (action !== 'SAFE') {
     try {
-      await publishToFaro({
+      const reportData = {
         type: action.toLowerCase().replace('_', '-'),
         sha256,
         cdnUrl,
@@ -1428,8 +1859,17 @@ async function handleModerationResult(result, env) {
         reason,
         severity,
         frames: flaggedFrames
-      }, env);
-      console.log(`[MODERATION] ${sha256} - Nostr ${action} event published`);
+      };
+      await publishToFaro(reportData, env);
+      console.log(`[MODERATION] ${sha256} - Nostr ${action} event published to Faro`);
+
+      // Also publish to content relay so it can stop serving flagged events
+      try {
+        await publishToContentRelay(reportData, env);
+        console.log(`[MODERATION] ${sha256} - Nostr ${action} event published to content relay`);
+      } catch (relayError) {
+        console.error(`[MODERATION] ${sha256} - Content relay publish failed:`, relayError);
+      }
     } catch (error) {
       console.error(`[MODERATION] ${sha256} - Nostr publish failed:`, error);
       // Don't throw - we don't want Nostr failures to fail the whole moderation
@@ -1438,10 +1878,17 @@ async function handleModerationResult(result, env) {
     console.log(`[MODERATION] ${sha256} approved (no notification needed)`);
   }
 
-  // Notify divine-blossom of moderation decision (for blocking/age-restriction)
-  const blossomResult = await notifyBlossom(sha256, action, env);
+  // Notify divine-blossom and relay of moderation decision (in parallel)
+  const [blossomResult, relayResult] = await Promise.all([
+    notifyBlossom(sha256, action, env),
+    notifyRelay(sha256, action, env)
+  ]);
+
   if (!blossomResult.success && !blossomResult.skipped) {
     console.warn(`[MODERATION] Blossom notification failed: ${blossomResult.error}`);
+  }
+  if (!relayResult.success && !relayResult.skipped) {
+    console.warn(`[MODERATION] Relay purge notification failed: ${relayResult.error}`);
   }
 
   console.log(`[MODERATION] handleModerationResult finished for ${sha256}`);
@@ -1496,6 +1943,59 @@ async function notifyBlossom(sha256, action, env) {
 
   } catch (error) {
     console.error(`[BLOSSOM] Webhook error for ${sha256}:`, error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Notify Funnelcake relay to purge cached content after moderation action
+ * Fire-and-forget — parallel to notifyBlossom
+ * @param {string} sha256 - The content hash
+ * @param {string} action - The moderation action
+ * @param {Object} env - Environment with RELAY_ADMIN_URL and CF Access credentials
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+async function notifyRelay(sha256, action, env) {
+  if (!env.RELAY_ADMIN_URL) {
+    console.log('[RELAY] Admin URL not configured, skipping relay notification');
+    return { success: true, skipped: true };
+  }
+
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+
+    // Add CF Access headers for authentication
+    if (env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
+      headers['CF-Access-Client-Id'] = env.CF_ACCESS_CLIENT_ID;
+      headers['CF-Access-Client-Secret'] = env.CF_ACCESS_CLIENT_SECRET;
+    }
+
+    console.log(`[RELAY] Notifying relay to purge ${sha256} (action: ${action})`);
+
+    const response = await fetch(`${env.RELAY_ADMIN_URL}/api/admin/purge`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        sha256,
+        action,
+        timestamp: new Date().toISOString(),
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[RELAY] Purge request failed: ${response.status} - ${errorText}`);
+      return { success: false, error: `HTTP ${response.status}: ${errorText}` };
+    }
+
+    const result = await response.json();
+    console.log(`[RELAY] Purge succeeded for ${sha256}:`, result);
+    return { success: true, result };
+
+  } catch (error) {
+    console.error(`[RELAY] Purge error for ${sha256}:`, error);
     return { success: false, error: error.message };
   }
 }
