@@ -6,7 +6,6 @@
 
 import { AWSRekognitionProvider } from './aws-rekognition/adapter.mjs';
 import { SightengineProvider } from './sightengine/adapter.mjs';
-import { BunnyCDNProvider } from './bunnycdn/adapter.mjs';
 import { HiveAIProvider } from './hiveai/adapter.mjs';
 
 /**
@@ -15,7 +14,6 @@ import { HiveAIProvider } from './hiveai/adapter.mjs';
 const PROVIDERS = {
   'aws-rekognition': new AWSRekognitionProvider(),
   'sightengine': new SightengineProvider(),
-  'bunnycdn': new BunnyCDNProvider(),
   'hiveai': new HiveAIProvider()
 };
 

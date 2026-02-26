@@ -8,6 +8,8 @@ import { moderateWithFallback } from './providers/index.mjs';
 import { classifyModerationResult } from './classifier.mjs';
 import { classifyText, parseVttText } from './text-classifier.mjs';
 import { fetchNostrEventBySha256, parseVideoEventMetadata, isOriginalVine } from '../nostr/relay-client.mjs';
+import { classifyVideo } from '../classification/pipeline.mjs';
+import { extractTopics } from '../classification/topic-extractor.mjs';
 
 /**
  * Run full moderation pipeline on a video
@@ -66,81 +68,65 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     console.log(`[MODERATION] Original Vine detected - skipping AI detection for ${sha256}`);
   }
 
-  // Step 3: Run moderation with appropriate providers
+  // Step 3: Run moderation and scene classification in parallel
   let moderationResult;
   let combinedScores = {};
   let combinedFlaggedFrames = [];
   let providers = [];
   let processingTime = 0;
+  let rawClassifierData = null;
+  let sceneClassification = null;
 
-  try {
-    // Check which providers are configured
-    const hasBunny = env.BUNNY_STREAM_API_KEY;
-    const hasHive = env.HIVE_MODERATION_API_KEY || env.HIVE_AI_DETECTION_API_KEY;
-
-    if (hasBunny && hasHive) {
-      // Run both in parallel for comprehensive coverage
-      console.log('[MODERATION] Running BunnyCDN and HiveAI in parallel');
-      const { moderateWithMultiple } = await import('./providers/index.mjs');
-
-      const multiResult = await moderateWithMultiple(
-        videoUrl,
-        { sha256 },
-        env,
-        ['bunnycdn', 'hiveai'],
-        { fetchFn, skipAIDetection }
-      );
-
-      // Merge results from both providers
-      for (const result of multiResult.results) {
-        if (result.status === 'fulfilled' && result.result) {
-          providers.push(result.provider);
-          processingTime += result.result.processingTime || 0;
-
-          // Merge scores (HiveAI provides aiGenerated/deepfake, BunnyCDN provides everything else)
-          combinedScores = {
-            ...combinedScores,
-            ...result.result.scores
-          };
-
-          // Combine flagged frames
-          if (result.result.flaggedFrames) {
-            combinedFlaggedFrames = [...combinedFlaggedFrames, ...result.result.flaggedFrames];
-          }
-        }
-      }
-
-      moderationResult = {
-        scores: combinedScores,
-        flaggedFrames: combinedFlaggedFrames,
-        provider: providers.join('+'),
-        processingTime,
-        details: multiResult.results.reduce((acc, r) => ({
-          ...acc,
-          ...(r.result?.details || {})
-        }), {}),
-        raw: multiResult.results.map(r => ({ provider: r.provider, data: r.result?.raw }))
-      };
-
-      console.log(`[MODERATION] Combined results from ${providers.join(' + ')}`);
-
-    } else {
-      // Fallback to single provider
-      console.log('[MODERATION] Using fallback moderation (only one provider configured)');
-      moderationResult = await moderateWithFallback(
+  // Build the moderation promise (HiveAI primary, Sightengine fallback)
+  const moderationPromise = (async () => {
+    try {
+      console.log('[MODERATION] Running moderation with fallback chain');
+      return await moderateWithFallback(
         videoUrl,
         { sha256 },
         env,
         { fetchFn, skipAIDetection }
       );
+    } catch (error) {
+      console.error('[MODERATION] Moderation failed:', error);
+      throw error;
     }
-  } catch (error) {
-    console.error('[MODERATION] Moderation failed:', error);
-    throw error;
+  })();
+
+  // Build the scene classification promise (runs in parallel with moderation)
+  const sceneClassificationPromise = (async () => {
+    try {
+      const result = await classifyVideo(videoUrl, env, { sha256, fetchFn });
+      return result;
+    } catch (error) {
+      console.error(`[MODERATION] Scene classification failed for ${sha256} (non-fatal):`, error.message);
+      return null;
+    }
+  })();
+
+  // Run moderation and scene classification in parallel
+  const [moderationSettled, sceneSettled] = await Promise.allSettled([
+    moderationPromise,
+    sceneClassificationPromise
+  ]);
+
+  // Moderation is required — rethrow if it failed
+  if (moderationSettled.status === 'rejected') {
+    throw moderationSettled.reason;
+  }
+  moderationResult = moderationSettled.value;
+
+  // Scene classification is optional — use null if it failed
+  if (sceneSettled.status === 'fulfilled' && sceneSettled.value && !sceneSettled.value.skipped) {
+    sceneClassification = sceneSettled.value;
+    console.log(`[MODERATION] Scene classification complete for ${sha256}: ${sceneClassification.labels?.length || 0} labels`);
+  } else if (sceneSettled.status === 'fulfilled' && sceneSettled.value?.skipped) {
+    console.log(`[MODERATION] Scene classification skipped for ${sha256}: ${sceneSettled.value.reason}`);
   }
 
-  // Step 3.5: Fetch VTT transcript and analyze text content
+  // Step 3.5: Fetch VTT transcript and analyze text content + extract topics
   let textScores = null;
+  let topicProfile = null;
   try {
     const vttUrl = `https://media.divine.video/${sha256}.vtt`;
     console.log(`[MODERATION] Fetching VTT transcript: ${vttUrl}`);
@@ -155,6 +141,14 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
       if (plainText.trim().length > 0) {
         textScores = classifyText(plainText);
         console.log(`[MODERATION] Text analysis scores for ${sha256}:`, textScores);
+
+        // Extract topics from the same VTT text (local computation, fast)
+        try {
+          topicProfile = extractTopics(plainText);
+          console.log(`[MODERATION] Topic extraction for ${sha256}: primary_topic=${topicProfile.primary_topic}, ${topicProfile.topics.length} topics, has_speech=${topicProfile.has_speech}`);
+        } catch (topicError) {
+          console.error(`[MODERATION] Topic extraction failed for ${sha256} (non-fatal):`, topicError.message);
+        }
       } else {
         console.log(`[MODERATION] VTT transcript for ${sha256} contains no extractable text`);
       }
@@ -202,6 +196,20 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     text_scores: textScores,
 
     // Raw provider data (for debugging/auditing)
-    providerRaw: moderationResult.raw
+    providerRaw: moderationResult.raw,
+
+    // Full raw classifier data from Hive AI (all classes, all frames)
+    // Used by downstream recommendation systems (funnelcake, gorse)
+    rawClassifierData: moderationResult.rawClassifierData || null,
+
+    // Scene classification result from Hive AI VLM (Vision Language Model)
+    // Contains topics, setting, objects, activities, mood, description, and recommendation labels
+    // null if HIVE_VLM_API_KEY is not configured or classification failed
+    sceneClassification: sceneClassification || null,
+
+    // Topic profile extracted from VTT transcript text
+    // Contains topics with confidence scores, primary_topic, has_speech, language_hint
+    // null if no VTT transcript is available
+    topicProfile: topicProfile || null
   };
 }

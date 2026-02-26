@@ -34,6 +34,19 @@ describe('Moderation Classifier', () => {
     expect(result.reason).toContain('review');
   });
 
+  it('should classify scores above quarantine threshold as QUARANTINE', () => {
+    const result = classifyModerationResult({
+      maxScores: {
+        nudity: 0.75,
+        violence: 0.3
+      }
+    });
+
+    expect(result.action).toBe('QUARANTINE');
+    expect(result.severity).toBe('medium');
+    expect(result.reason).toContain('quarantined');
+  });
+
   it('should classify high nudity as AGE_RESTRICTED', () => {
     const result = classifyModerationResult({
       maxScores: {
@@ -68,7 +81,7 @@ describe('Moderation Classifier', () => {
       VIOLENCE_THRESHOLD_MEDIUM: '0.7'
     };
 
-    // Score that would normally be AGE_RESTRICTED
+    // Score 0.85: above default quarantine (0.7) but below env high (0.9) → QUARANTINE
     const result = classifyModerationResult({
       maxScores: {
         nudity: 0.85,
@@ -76,7 +89,22 @@ describe('Moderation Classifier', () => {
       }
     }, env);
 
-    // With higher threshold, should only be REVIEW
+    expect(result.action).toBe('QUARANTINE');
+  });
+
+  it('should use configurable quarantine threshold from env', () => {
+    const env = {
+      QUARANTINE_THRESHOLD: '0.8'
+    };
+
+    // Score 0.75: above default medium (0.6) but below custom quarantine (0.8) → REVIEW
+    const result = classifyModerationResult({
+      maxScores: {
+        nudity: 0.75,
+        violence: 0.1
+      }
+    }, env);
+
     expect(result.action).toBe('REVIEW');
   });
 
@@ -270,7 +298,7 @@ describe('Moderation Classifier', () => {
     expect(result.category).toBe('deepfake');
   });
 
-  it('should classify medium deepfake score (0.85) as REVIEW not ban', () => {
+  it('should classify medium deepfake score (0.85) as QUARANTINE not ban', () => {
     const result = classifyModerationResult({
       maxScores: {
         deepfake: 0.85,
@@ -279,7 +307,8 @@ describe('Moderation Classifier', () => {
       }
     });
 
-    expect(result.action).toBe('REVIEW');
+    // Deepfake 0.85 is above quarantine threshold (0.7) but below deepfake high (0.95)
+    expect(result.action).toBe('QUARANTINE');
     expect(result.severity).toBe('medium');
   });
 
@@ -338,16 +367,27 @@ describe('Moderation Classifier', () => {
     expect(result.category).toBe('self_harm');
   });
 
-  it('should use informational category thresholds', () => {
+  it('should use informational category thresholds for REVIEW', () => {
     const result = classifyModerationResult({
       maxScores: {
-        medical: 0.65,  // Informational category
+        medical: 0.65,  // Informational category — between medium (0.6) and quarantine (0.7)
         military: 0.6,
-        text_profanity: 0.7
+        text_profanity: 0.65
       }
     });
 
     expect(result.action).toBe('REVIEW');
+    expect(result.severity).toBe('medium');
+  });
+
+  it('should quarantine informational categories above quarantine threshold', () => {
+    const result = classifyModerationResult({
+      maxScores: {
+        text_profanity: 0.75  // Above quarantine threshold (0.7) but below high (0.8)
+      }
+    });
+
+    expect(result.action).toBe('QUARANTINE');
     expect(result.severity).toBe('medium');
   });
 

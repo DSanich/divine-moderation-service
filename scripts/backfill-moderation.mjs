@@ -335,24 +335,22 @@ async function backfillModeration(options = {}) {
   console.log(`  Failed:                ${globalStats.failed}`);
   console.log('='.repeat(60));
 
-  // Cost estimate (BunnyCDN primary, Sightengine fallback)
+  // Cost estimate (HiveAI primary, Sightengine fallback)
   const moderatedCount = globalStats.queued;
   if (moderatedCount > 0) {
     console.log('');
     console.log('[COST] Moderation Cost Estimate:');
-    console.log(`  Provider: BunnyCDN (primary), Sightengine (fallback)`);
+    console.log(`  Provider: HiveAI (primary), Sightengine (fallback)`);
     console.log(`  ${moderatedCount} videos queued for moderation`);
     console.log('');
-    console.log('  BunnyCDN Cost:');
-    console.log(`    - FREE (included with Stream hosting)`);
-    console.log(`    - ${moderatedCount} videos @ $0.00/video = $0.00`);
+    console.log('  HiveAI Cost:');
+    console.log(`    - See https://thehive.ai/pricing for current rates`);
+    console.log(`    - ${moderatedCount} videos queued`);
     console.log('');
     console.log('  Sightengine Cost (fallback only):');
-    console.log(`    - Only charged if BunnyCDN fails`);
+    console.log(`    - Only charged if HiveAI fails`);
     console.log(`    - Fallback rate: ~1-5% of requests`);
     console.log(`    - Estimated Sightengine calls: ${Math.ceil(moderatedCount * 0.03)} (3% fallback estimate)`);
-    console.log('');
-    console.log(`  Estimated Total Cost: $0.00 (BunnyCDN is free)`);
     console.log('='.repeat(60));
   }
 

@@ -63,6 +63,48 @@ const MODERATION_CLASS_MAP = {
 };
 
 /**
+ * Extract raw classifier data from a Hive.AI API response output.
+ * Captures ALL class names and scores per frame, preserving the full
+ * granularity of the Hive model output for downstream recommendation systems.
+ *
+ * @param {Array} output - Array of frame objects from Hive API response
+ * @param {string} source - Source model identifier ('moderation' or 'ai_detection')
+ * @returns {Object} Raw classifier data with per-frame scores and aggregate max scores
+ */
+function extractRawClassifierData(output, source) {
+  const frames = [];
+  const allClassMaxScores = {};
+
+  for (let i = 0; i < output.length; i++) {
+    const frame = output[i];
+    const classes = frame.classes || [];
+    const frameData = {
+      timestamp: frame.time !== undefined ? frame.time : i,
+      source,
+      scores: {}
+    };
+
+    for (const cls of classes) {
+      const className = cls.class;
+      const score = parseFloat(cls.score) || 0;
+
+      if (className) {
+        frameData.scores[className] = score;
+
+        // Track max score across all frames for each class
+        if (!allClassMaxScores[className] || score > allClassMaxScores[className]) {
+          allClassMaxScores[className] = score;
+        }
+      }
+    }
+
+    frames.push(frameData);
+  }
+
+  return { frames, allClassMaxScores };
+}
+
+/**
  * Normalize Hive.AI moderation response (content safety model)
  * @param {Object} moderationResult - Raw moderation API response
  * @returns {Object} Partial scores object
@@ -259,7 +301,7 @@ function normalizeAIDetectionResponse(aiResult) {
 /**
  * Normalize combined Hive.AI response (moderation + AI detection)
  * @param {Object} hiveResult - Combined result from moderateVideoWithHiveAI
- * @returns {Object} Normalized moderation result
+ * @returns {Object} Normalized moderation result with rawClassifierData
  */
 export function normalizeHiveAIResponse(hiveResult) {
   // Initialize with all categories at 0
@@ -296,12 +338,28 @@ export function normalizeHiveAIResponse(hiveResult) {
 
   let flaggedFrames = [];
 
+  // Raw classifier data: per-frame scores for ALL Hive classes (not just mapped ones)
+  const rawClassifierData = {
+    moderation: null,
+    aiDetection: null,
+    allClassMaxScores: {},
+    extractedAt: new Date().toISOString()
+  };
+
   // Process moderation results
   if (hiveResult.moderation) {
     const modNorm = normalizeModerationResponse(hiveResult.moderation);
     Object.assign(scores, modNorm.scores);
     Object.assign(details, modNorm.details);
     flaggedFrames = flaggedFrames.concat(modNorm.flaggedFrames);
+
+    // Extract raw classifier data from moderation response
+    const modOutput = hiveResult.moderation?.status?.[0]?.response?.output;
+    if (modOutput && modOutput.length > 0) {
+      const rawMod = extractRawClassifierData(modOutput, 'moderation');
+      rawClassifierData.moderation = rawMod;
+      Object.assign(rawClassifierData.allClassMaxScores, rawMod.allClassMaxScores);
+    }
   }
 
   // Process AI detection results
@@ -312,10 +370,24 @@ export function normalizeHiveAIResponse(hiveResult) {
     details.ai_generated = aiNorm.details.ai_generated;
     details.deepfake = aiNorm.details.deepfake;
     flaggedFrames = flaggedFrames.concat(aiNorm.flaggedFrames);
+
+    // Extract raw classifier data from AI detection response
+    const aiOutput = hiveResult.aiDetection?.status?.[0]?.response?.output;
+    if (aiOutput && aiOutput.length > 0) {
+      const rawAI = extractRawClassifierData(aiOutput, 'ai_detection');
+      rawClassifierData.aiDetection = rawAI;
+      // Merge AI detection max scores (prefix with 'ai_detection:' to avoid collisions)
+      for (const [className, score] of Object.entries(rawAI.allClassMaxScores)) {
+        const key = `ai_detection:${className}`;
+        if (!rawClassifierData.allClassMaxScores[key] || score > rawClassifierData.allClassMaxScores[key]) {
+          rawClassifierData.allClassMaxScores[key] = score;
+        }
+      }
+    }
   }
 
   // Sort flagged frames by position
   flaggedFrames.sort((a, b) => a.position - b.position);
 
-  return { scores, details, flaggedFrames };
+  return { scores, details, flaggedFrames, rawClassifierData };
 }

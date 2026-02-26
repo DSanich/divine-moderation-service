@@ -103,5 +103,9 @@ crons = ["*/5 * * * *"]
 # SIGHTENGINE_API_USER - (optional, for fallback)
 # SIGHTENGINE_API_SECRET - (optional, for fallback)
 # HIVE_API_KEY - Hive.AI V2 API token for AI-generated content and deepfake detection (api.thehive.ai)
-# BUNNY_STREAM_API_KEY - BunnyCDN Stream API key for content moderation (nudity, violence, etc.)
+# HIVE_VLM_API_KEY - Hive.AI V3 API token for VLM (Vision Language Model) classification
+#   Self-serve, uses the chat/completions endpoint at api.thehive.ai/api/v3/chat/completions
+#   Pricing: ~$0.001/video (much cheaper than V2 scene classification)
+# HIVE_VLM_PROMPT - (optional) Custom prompt for VLM classification (overrides default)
+# RELAY_ADMIN_URL - Funnelcake admin API endpoint for cache purge / event deletion
 # ADMIN_PASSWORD_HASH - SHA-256 hash of admin dashboard password
