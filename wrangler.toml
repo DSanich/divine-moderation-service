@@ -43,7 +43,7 @@ max_retries = 3
 # Environment variables
 [vars]
 MODERATION_ENABLED = "true"
-CDN_DOMAIN = "cdn.divine.video"  # CDN domain for video access
+CDN_DOMAIN = "media.divine.video"  # CDN domain for video access
 PRIMARY_MODERATION_PROVIDER = "hiveai"  # Use Hive.AI for content moderation + AI detection
 
 # Zero Trust JWT verification (for /api/v1/moderate endpoint)
