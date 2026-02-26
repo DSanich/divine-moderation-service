@@ -13,7 +13,7 @@ import { fetchNostrEventBySha256, parseVideoEventMetadata } from './nostr/relay-
 import dashboardHTML from './admin/dashboard.html';
 import swipeReviewHTML from './admin/swipe-review.html';
 import { initReportsTable, addReport } from './reports.mjs';
-
+import { initOffenderTable, updateUploaderStats, getUploaderStats } from './offender-tracker.mjs';
 /**
  * NIP-32 label mapping for content categories
  * Maps internal category names to NIP-32/NIP-56 compatible labels
@@ -87,6 +87,9 @@ export default {
    * HTTP handler for testing and admin dashboard
    */
   async fetch(request, env) {
+    // Ensure offender tracking table exists (idempotent)
+    await initOffenderTable(env.BLOSSOM_DB);
+
     const url = new URL(request.url);
     const startTime = Date.now();
     const requestId = crypto.randomUUID().substring(0, 8);
