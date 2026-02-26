@@ -12,6 +12,7 @@ import { verifyZeroTrustJWT } from './admin/zerotrust.mjs';
 import { fetchNostrEventBySha256, parseVideoEventMetadata } from './nostr/relay-client.mjs';
 import dashboardHTML from './admin/dashboard.html';
 import swipeReviewHTML from './admin/swipe-review.html';
+import { initReportsTable, addReport } from './reports.mjs';
 
 /**
  * NIP-32 label mapping for content categories
@@ -92,6 +93,9 @@ export default {
 
     // Log all incoming requests
     console.log(`[${requestId}] ${request.method} ${url.pathname}${url.search ? '?' + url.search.substring(0, 100) : ''}`);
+
+    // Ensure reports table exists
+    await initReportsTable(env.BLOSSOM_DB);
 
     // Admin dashboard routes
     if (url.pathname === '/admin' || url.pathname === '/admin/') {
@@ -948,6 +952,52 @@ async function runMigration() {
 
       } catch (error) {
         console.error(`[MIGRATE] Error:`, error);
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // API: Submit a user report for a piece of content (NIP-56)
+    // Auth: Verify Zero Trust JWT using jose library
+    if (url.pathname === '/api/v1/report' && request.method === 'POST') {
+      let verification = { valid: false, error: 'Not verified' };
+
+      if (env.ALLOW_DEV_ACCESS === 'true') {
+        verification = { valid: true, email: 'dev@localhost', isServiceToken: false };
+      } else {
+        const jwtToken = request.headers.get('cf-access-jwt-assertion');
+        verification = await verifyZeroTrustJWT(jwtToken, env);
+      }
+
+      if (!verification.valid) {
+        console.log(`[API] JWT verification failed for /api/v1/report: ${verification.error}`);
+        return new Response(JSON.stringify({ error: `Unauthorized - ${verification.error}` }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      try {
+        const { sha256, reporter_pubkey, report_type, reason } = await request.json();
+
+        if (!sha256 || !reporter_pubkey || !report_type) {
+          return new Response(JSON.stringify({ error: 'sha256, reporter_pubkey, and report_type are required' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        const result = await addReport(env.BLOSSOM_DB, { sha256, reporter_pubkey, report_type, reason });
+
+        console.log(`[API] Report added: ${sha256} by ${reporter_pubkey.substring(0, 16)}... escalate=${result.escalate}`);
+
+        return new Response(JSON.stringify({ success: true, ...result }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        console.error('[API] Error adding report:', error);
         return new Response(JSON.stringify({ error: error.message }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' }
