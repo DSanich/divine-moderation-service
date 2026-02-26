@@ -762,7 +762,13 @@ export default {
     // Test endpoint to manually trigger moderation
     if (url.pathname === '/test-moderate' && request.method === 'POST') {
       const body = await request.json();
-      const { sha256 } = body;
+      const { sha256, force } = body;
+
+      // If force=true, delete existing result to allow re-moderation
+      if (force) {
+        await env.BLOSSOM_DB.prepare('DELETE FROM moderation_results WHERE sha256 = ?').bind(sha256).run();
+        console.log(`[TEST] Force re-moderation: deleted existing result for ${sha256}`);
+      }
 
       // Send to queue (uploadedBy is optional, omit for test)
       await env.MODERATION_QUEUE.send({
