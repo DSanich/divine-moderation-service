@@ -784,20 +784,38 @@ export default {
       });
     }
 
-    // Admin video proxy - bypasses quarantine check for authenticated moderators
+    // Admin video proxy - try CDN first (Blossom/Fastly → GCS), fall back to R2
     if (url.pathname.startsWith('/admin/video/')) {
-      // Check authentication
       const authError = await requireAuth(request, env);
       if (authError) {
         return new Response('Unauthorized', { status: 401 });
       }
 
-      // Extract sha256 from path
       const sha256 = url.pathname.split('/')[3].replace('.mp4', '');
 
-      console.log(`[ADMIN] Fetching video: ${sha256}`);
+      // Try CDN first (production media lives on Blossom/GCS)
+      const cdnUrl = `https://${env.CDN_DOMAIN}/${sha256}`;
+      console.log(`[ADMIN] Trying CDN: ${cdnUrl}`);
 
-      // Try multiple R2 key formats (Blossom uses blobs/ prefix)
+      try {
+        const cdnResponse = await fetch(cdnUrl);
+        if (cdnResponse.ok) {
+          console.log(`[ADMIN] Serving video from CDN: ${sha256}`);
+          return new Response(cdnResponse.body, {
+            headers: {
+              'Content-Type': cdnResponse.headers.get('Content-Type') || 'video/mp4',
+              'Cache-Control': 'private, no-cache',
+              'X-Admin-Proxy': 'cdn'
+            }
+          });
+        }
+        // CDN returned non-200 (banned content returns 404 from Blossom)
+        console.log(`[ADMIN] CDN returned ${cdnResponse.status} for ${sha256}, trying R2 fallback`);
+      } catch (error) {
+        console.error(`[ADMIN] CDN fetch error for ${sha256}:`, error);
+      }
+
+      // Fallback: try R2 with multiple key formats (legacy storage)
       const possibleKeys = [
         `blobs/${sha256}`,        // New SDK worker format
         `videos/${sha256}.mp4`,   // Old format
@@ -813,32 +831,30 @@ export default {
         object = await env.R2_VIDEOS.get(key);
         if (object) {
           usedKey = key;
-          console.log(`[ADMIN] Found video at: ${key}`);
+          console.log(`[ADMIN] Found video in R2: ${key}`);
           break;
         }
       }
 
-      if (!object) {
-        console.error(`[ADMIN] Video not found in R2: ${sha256}`);
-        return new Response(JSON.stringify({
-          error: 'Video not found in R2',
-          sha256,
-          triedKeys: possibleKeys
-        }), {
-          status: 404,
-          headers: { 'Content-Type': 'application/json' }
+      if (object) {
+        return new Response(object.body, {
+          headers: {
+            'Content-Type': 'video/mp4',
+            'Cache-Control': 'private, no-cache',
+            'X-Admin-Proxy': 'r2',
+            'X-R2-Key': usedKey
+          }
         });
       }
 
-      console.log(`[ADMIN] Serving video from R2 key: ${usedKey}`);
-
-      return new Response(object.body, {
-        headers: {
-          'Content-Type': 'video/mp4',
-          'Cache-Control': 'private, no-cache',
-          'X-Admin-Bypass': 'true',
-          'X-R2-Key': usedKey
-        }
+      console.error(`[ADMIN] Video not found on CDN or R2: ${sha256}`);
+      return new Response(JSON.stringify({
+        error: 'Video not found',
+        sha256,
+        hint: 'Content may be banned on Blossom, or not present in R2'
+      }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' }
       });
     }
 
