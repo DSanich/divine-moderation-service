@@ -1244,6 +1244,12 @@ async function handleModerationResult(result, env) {
     console.log(`[MODERATION] ${sha256} approved (no notification needed)`);
   }
 
+  // Notify divine-blossom of moderation decision (for blocking/age-restriction)
+  const blossomResult = await notifyBlossom(sha256, action, env);
+  if (!blossomResult.success && !blossomResult.skipped) {
+    console.warn(`[MODERATION] Blossom notification failed: ${blossomResult.error}`);
+  }
+
   console.log(`[MODERATION] handleModerationResult finished for ${sha256}`);
 }
 
