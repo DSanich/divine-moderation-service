@@ -528,7 +528,7 @@
       const { sha256, scores, nostrContext, provider, detailedCategories, isUntriaged, cdnUrl } = video;
       // For untriaged videos, use CDN URL; for moderated, use admin endpoint
       const videoUrl = isUntriaged
-        ? (cdnUrl || 'https://cdn.divine.video/' + sha256 + '.mp4')
+        ? (cdnUrl || 'https://media.divine.video/' + sha256 + '.mp4')
         : '/admin/video/' + sha256 + '.mp4';
 
       // Get top scores (empty for untriaged)
