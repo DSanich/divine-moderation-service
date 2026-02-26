@@ -6,6 +6,7 @@
 
 import { moderateWithFallback } from './providers/index.mjs';
 import { classifyModerationResult } from './classifier.mjs';
+import { classifyText, parseVttText } from './text-classifier.mjs';
 import { fetchNostrEventBySha256, parseVideoEventMetadata, isOriginalVine } from '../nostr/relay-client.mjs';
 
 /**
@@ -131,13 +132,39 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     throw error;
   }
 
-  // Step 3: Classify result into action categories
+  // Step 3.5: Fetch VTT transcript and analyze text content
+  let textScores = null;
+  try {
+    const vttUrl = `https://media.divine.video/${sha256}.vtt`;
+    console.log(`[MODERATION] Fetching VTT transcript: ${vttUrl}`);
+    const vttResponse = await fetchFn(vttUrl);
+    if (vttResponse.status === 404) {
+      console.log(`[MODERATION] No VTT transcript found for ${sha256} (404) - skipping text analysis`);
+    } else if (!vttResponse.ok) {
+      console.warn(`[MODERATION] VTT fetch returned ${vttResponse.status} for ${sha256} - skipping text analysis`);
+    } else {
+      const vttContent = await vttResponse.text();
+      const plainText = parseVttText(vttContent);
+      if (plainText.trim().length > 0) {
+        textScores = classifyText(plainText);
+        console.log(`[MODERATION] Text analysis scores for ${sha256}:`, textScores);
+      } else {
+        console.log(`[MODERATION] VTT transcript for ${sha256} contains no extractable text`);
+      }
+    }
+  } catch (error) {
+    console.error(`[MODERATION] Failed to fetch/analyze VTT for ${sha256}:`, error);
+    // Don't fail moderation if VTT analysis fails
+  }
+
+  // Step 4: Classify result into action categories
   const classification = classifyModerationResult({
     maxScores: moderationResult.scores,
-    flaggedFrames: moderationResult.flaggedFrames
+    flaggedFrames: moderationResult.flaggedFrames,
+    text_scores: textScores
   }, env);
 
-  // Step 4: Return complete result
+  // Step 5: Return complete result
   return {
     // Classification
     ...classification,
@@ -160,6 +187,9 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
 
     // Nostr event context (if found)
     nostrContext,
+
+    // Text analysis scores from VTT transcript (null if no VTT available)
+    text_scores: textScores,
 
     // Raw provider data (for debugging/auditing)
     providerRaw: moderationResult.raw

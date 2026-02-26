@@ -24,6 +24,11 @@ const DEFAULT_DRUG_MEDIUM = 0.6;
 const DEFAULT_SELF_HARM_HIGH = 0.7;
 const DEFAULT_SELF_HARM_MEDIUM = 0.5;
 
+// Text score thresholds
+const DEFAULT_TEXT_HATE_SPEECH_HIGH = 0.7;
+const DEFAULT_TEXT_THREATS_HIGH = 0.7;
+const DEFAULT_TEXT_PROFANITY_MEDIUM = 0.5;
+
 // Categories that warrant permanent ban
 const PERMANENT_BAN_CATEGORIES = ['self_harm', 'offensive', 'ai_generated', 'deepfake'];
 
@@ -44,7 +49,8 @@ const INFORMATIONAL_CATEGORIES = ['medical', 'money', 'military', 'text_profanit
 export function classifyModerationResult(moderationData, env = {}) {
   const {
     maxScores = {},
-    flaggedFrames = []
+    flaggedFrames = [],
+    text_scores = null
   } = moderationData;
 
   // Default values for all categories
@@ -164,6 +170,19 @@ export function classifyModerationResult(moderationData, env = {}) {
     category = 'deepfake';
     reason = 'Deepfake content detected - not permitted on platform';
   }
+  // Check for text-based PERMANENT_BAN (hate speech or threats in transcript)
+  else if (text_scores && text_scores.hate_speech > (parseFloat(env.TEXT_HATE_SPEECH_THRESHOLD_HIGH) || DEFAULT_TEXT_HATE_SPEECH_HIGH)) {
+    action = 'PERMANENT_BAN';
+    severity = 'critical';
+    category = 'hate_speech';
+    reason = `Hate speech detected in transcript (score: ${text_scores.hate_speech.toFixed(2)}) - immediate removal required`;
+  }
+  else if (text_scores && text_scores.threats > (parseFloat(env.TEXT_THREATS_THRESHOLD_HIGH) || DEFAULT_TEXT_THREATS_HIGH)) {
+    action = 'PERMANENT_BAN';
+    severity = 'critical';
+    category = 'threats';
+    reason = `Threatening content detected in transcript (score: ${text_scores.threats.toFixed(2)}) - immediate removal required`;
+  }
   // Check for AGE_RESTRICTED categories
   else if (AGE_RESTRICTED_CATEGORIES.some(cat => {
     const threshold = thresholds[cat];
@@ -183,6 +202,13 @@ export function classifyModerationResult(moderationData, env = {}) {
     severity = 'medium';
     category = primaryConcern;
     reason = `Potential ${getCategoryLabel(category)} content detected (score: ${primaryScore.toFixed(2)}) - requires human review`;
+  }
+  // Check for text-based REVIEW (profanity in transcript)
+  else if (text_scores && text_scores.profanity > (parseFloat(env.TEXT_PROFANITY_THRESHOLD_MEDIUM) || DEFAULT_TEXT_PROFANITY_MEDIUM)) {
+    action = 'REVIEW';
+    severity = 'medium';
+    category = 'text_profanity';
+    reason = `Profanity detected in transcript (score: ${text_scores.profanity.toFixed(2)}) - requires human review`;
   }
   else {
     action = 'SAFE';
