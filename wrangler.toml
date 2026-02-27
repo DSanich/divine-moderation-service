@@ -17,11 +17,6 @@ routes = [
 binding = "MODERATION_KV"
 id = "10af689fc82140ed9159eef3c1c47079"
 
-# R2 binding for accessing uploaded videos
-[[r2_buckets]]
-binding = "R2_VIDEOS"
-bucket_name = "nostrvine-media"
-
 # D1 database for Blossom webhook events (video uploads)
 [[d1_databases]]
 binding = "BLOSSOM_DB"

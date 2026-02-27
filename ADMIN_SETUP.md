@@ -238,8 +238,7 @@ Invalidate session and clear cookie.
 ### Videos won't play
 
 - Ensure `CDN_DOMAIN` is correctly configured in `wrangler.toml`
-- Verify R2 bucket has public access or proper CORS headers
-- Check that video URLs are publicly accessible
+- Check that video URLs are publicly accessible on Blossom
 
 ## Changing the Password
 

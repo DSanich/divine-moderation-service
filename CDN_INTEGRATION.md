@@ -12,7 +12,7 @@ This document explains how the main CDN/upload service integrates with the Divin
 │  (Your Worker)  │
 └────────┬────────┘
          │
-         │ 1. Upload video to R2
+         │ 1. Upload video to Blossom
          │ 2. Return success to client
          │ 3. Send to moderation queue
          │
@@ -52,23 +52,15 @@ This document explains how the main CDN/upload service integrates with the Divin
 
 ### 1. After Successful Upload (CDN → Moderation)
 
-When your CDN service successfully uploads a video to R2, send it to the moderation queue:
+When your CDN service successfully uploads a video to Blossom, send it to the moderation queue:
 
 ```javascript
 // In your CDN upload handler (e.g., handlers/blossom.mjs or handlers/upload.mjs)
 async function handleVideoUpload(request, env) {
   // ... your upload logic ...
 
-  // After successful R2 upload
+  // After successful Blossom upload
   const sha256 = videoHash; // Your computed SHA256
-  const r2Key = `videos/${sha256}.mp4`; // Or however you structure R2 keys
-
-  // Store video in R2
-  await env.R2_VIDEOS.put(r2Key, videoBlob, {
-    httpMetadata: {
-      contentType: 'video/mp4'
-    }
-  });
 
   // Send to moderation queue (non-blocking)
   // Use waitUntil to ensure it sends but don't wait for completion
@@ -104,7 +96,6 @@ The moderation service expects messages with this structure:
 ```typescript
 {
   sha256: string,          // Required: 64 hex characters
-  r2Key: string,           // Required: R2 object key (e.g., "videos/abc123.mp4")
   uploadedBy?: string,     // Optional: Nostr pubkey (64 hex chars)
   uploadedAt: number,      // Required: Unix timestamp in milliseconds
   metadata?: {             // Optional metadata
@@ -152,18 +143,18 @@ async function handleVideoRequest(request, env) {
     // Actions: 'SAFE', 'REVIEW', 'QUARANTINE'
   }
 
-  // Serve the video from R2
-  const object = await env.R2_VIDEOS.get(`videos/${sha256}.mp4`);
+  // Serve the video from Blossom
+  const blossomUrl = `https://${env.CDN_DOMAIN}/${sha256}`;
+  const response = await fetch(blossomUrl);
 
-  if (!object) {
+  if (!response.ok) {
     return new Response('Not found', { status: 404 });
   }
 
-  return new Response(object.body, {
+  return new Response(response.body, {
     headers: {
       'Content-Type': 'video/mp4',
-      'Cache-Control': 'public, max-age=31536000, immutable',
-      'ETag': object.httpEtag
+      'Cache-Control': 'public, max-age=31536000, immutable'
     }
   });
 }
@@ -197,10 +188,9 @@ Complete moderation result for every analyzed video.
     }
   ],
   "sha256": "abc123...",
-  "r2Key": "videos/abc123.mp4",
   "uploadedBy": "user_pubkey...",
   "uploadedAt": 1704067200000,
-  "cdnUrl": "https://r2.divine.video/abc123.mp4",
+  "cdnUrl": "https://media.divine.video/abc123.mp4",
   "processedAt": 1704067205000,
   "processingTimeMs": 5432
 }
@@ -274,14 +264,9 @@ queue = "video-moderation-queue"
 binding = "MODERATION_KV"
 id = "eee0689974834390acd39d543002cac3"  # Use the same ID as moderation service
 
-# R2 bucket (shared with moderation service)
-[[r2_buckets]]
-binding = "R2_VIDEOS"
-bucket_name = "nostrvine-media"  # Same bucket
-
 # Variables
 [vars]
-CDN_DOMAIN = "r2.divine.video"  # Your CDN domain
+CDN_DOMAIN = "media.divine.video"  # Your Blossom server domain
 ```
 
 ### Queue Configuration
@@ -336,17 +321,12 @@ async function handleUpload(request, env, ctx) {
     .map(b => b.toString(16).padStart(2, '0'))
     .join('');
 
-  // Store in R2
-  const r2Key = `videos/${sha256}.mp4`;
-  await env.R2_VIDEOS.put(r2Key, buffer, {
-    httpMetadata: { contentType: 'video/mp4' }
-  });
+  // Upload to Blossom server (handled by divine-blossom)
 
   // Queue for moderation (non-blocking)
   ctx.waitUntil(
     env.MODERATION_QUEUE.send({
       sha256,
-      r2Key,
       uploadedAt: Date.now(),
       metadata: {
         fileSize: buffer.byteLength,
@@ -377,15 +357,15 @@ async function handleServe(request, env) {
     });
   }
 
-  // Serve from R2
-  const r2Key = `videos/${sha256}.mp4`;
-  const object = await env.R2_VIDEOS.get(r2Key);
+  // Serve from Blossom
+  const blossomUrl = `https://${env.CDN_DOMAIN}/${sha256}`;
+  const blossomResp = await fetch(blossomUrl);
 
-  if (!object) {
+  if (!blossomResp.ok) {
     return new Response('Not found', { status: 404 });
   }
 
-  return new Response(object.body, {
+  return new Response(blossomResp.body, {
     headers: {
       'Content-Type': 'video/mp4',
       'Cache-Control': 'public, max-age=31536000, immutable'
@@ -399,7 +379,7 @@ async function handleServe(request, env) {
 Understanding when content becomes available and when moderation completes:
 
 1. **T+0s**: User uploads video
-2. **T+0s**: CDN stores in R2, returns success to user
+2. **T+0s**: Blossom stores video, returns success to user
 3. **T+0s**: Message sent to moderation queue
 4. **T+1-10s**: Moderation worker picks up message from queue
 5. **T+5-15s**: Sightengine analyzes video (3-4 frames)
@@ -555,15 +535,15 @@ curl https://your-cdn.workers.dev/abc123quarantined.mp4
 
 ### Q: Should I wait for moderation to complete before returning success to the user?
 
-**No.** The system is designed to be non-blocking. Return success immediately after R2 upload. Moderation happens in the background within 5-15 seconds.
+**No.** The system is designed to be non-blocking. Return success immediately after Blossom upload. Moderation happens in the background within 5-15 seconds.
 
 ### Q: What if a user tries to view content before moderation completes?
 
 Content is served. The system is fail-safe: better to show content pending review than to block legitimate content. Harmful content is quarantined within seconds.
 
-### Q: Do I need to delete quarantined content from R2?
+### Q: Do I need to delete quarantined content from Blossom?
 
-No. The moderation service only sets the quarantine flag in KV. The CDN checks this flag and returns 451. You can optionally delete from R2, but the KV check is sufficient.
+No. The moderation service only sets the quarantine flag in KV. Blossom checks this flag and blocks serving. The webhook notification tells Blossom to enforce the block.
 
 ### Q: Can I customize moderation thresholds?
 
@@ -586,19 +566,18 @@ Yes. Multiple workers can share the same `MODERATION_QUEUE` (producers) and `MOD
 
 ## Summary
 
-**CDN Upload Flow:**
-1. Store video in R2
+**Upload Flow:**
+1. Upload video to Blossom server
 2. Send to `MODERATION_QUEUE` (non-blocking)
 3. Return success immediately
 
-**CDN Serve Flow:**
-1. Check `quarantine:{sha256}` in KV
-2. If exists → return 451
-3. If not exists → serve from R2
+**Serve Flow:**
+1. Blossom checks moderation status
+2. If blocked → return 404
+3. If allowed → serve video
 
 **Required Bindings:**
 - `MODERATION_QUEUE` (producer)
 - `MODERATION_KV` (reader)
-- `R2_VIDEOS` (shared bucket)
 
 That's it! The moderation service handles everything else asynchronously.
