@@ -213,7 +213,7 @@ This creates an auditable record of human moderation decisions on the Nostr prot
 | **D1** `moderation_results` | Action, provider, scores JSON, categories, raw response, timestamps, reviewer info | Permanent |
 | **D1** `uploader_stats` | Per-pubkey counters and risk level | Permanent |
 | **D1** `user_reports` | User-submitted reports with auto-escalation | Permanent |
-| **R2** `nostrvine-media` | Source video files | Permanent |
+| **Blossom** `media.divine.video` | Source video files | Permanent |
 
 ---
 

@@ -931,7 +931,7 @@ export default {
       });
     }
 
-    // Admin video proxy - try CDN first (Blossom/Fastly → GCS), fall back to R2
+    // Admin video proxy - fetch from Blossom server
     if (url.pathname.startsWith('/admin/video/')) {
       const authError = await requireAuth(request, env);
       if (authError) {
@@ -939,70 +939,47 @@ export default {
       }
 
       const sha256 = url.pathname.split('/')[3].replace('.mp4', '');
-
-      // Try CDN first (production media lives on Blossom/GCS)
-      const cdnUrl = `https://${env.CDN_DOMAIN}/${sha256}`;
-      console.log(`[ADMIN] Trying CDN: ${cdnUrl}`);
+      const blossomUrl = `https://${env.CDN_DOMAIN}/${sha256}`;
+      console.log(`[ADMIN] Fetching video from Blossom: ${blossomUrl}`);
 
       try {
-        const cdnResponse = await fetch(cdnUrl);
-        if (cdnResponse.ok) {
-          console.log(`[ADMIN] Serving video from CDN: ${sha256}`);
-          return new Response(cdnResponse.body, {
+        const fetchHeaders = {};
+        if (env.BLOSSOM_WEBHOOK_SECRET) {
+          fetchHeaders['Authorization'] = `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}`;
+        }
+        const blossomResponse = await fetch(blossomUrl, { headers: fetchHeaders });
+        if (blossomResponse.ok) {
+          console.log(`[ADMIN] Serving video from Blossom: ${sha256}`);
+          const moderationStatus = blossomResponse.headers.get('X-Moderation-Status');
+          return new Response(blossomResponse.body, {
             headers: {
-              'Content-Type': cdnResponse.headers.get('Content-Type') || 'video/mp4',
-              'Cache-Control': 'private, no-cache',
-              'X-Admin-Proxy': 'cdn'
+              'Content-Type': blossomResponse.headers.get('Content-Type') || 'video/mp4',
+              'Cache-Control': 'private, no-store',
+              'X-Admin-Proxy': 'blossom',
+              ...(moderationStatus && { 'X-Moderation-Status': moderationStatus })
             }
           });
         }
-        // CDN returned non-200 (banned content returns 404 from Blossom)
-        console.log(`[ADMIN] CDN returned ${cdnResponse.status} for ${sha256}, trying R2 fallback`);
+        console.error(`[ADMIN] Blossom returned ${blossomResponse.status} for ${sha256}`);
+        return new Response(JSON.stringify({
+          error: 'Video not found',
+          sha256,
+          blossomStatus: blossomResponse.status
+        }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' }
+        });
       } catch (error) {
-        console.error(`[ADMIN] CDN fetch error for ${sha256}:`, error);
-      }
-
-      // Fallback: try R2 with multiple key formats (legacy storage)
-      const possibleKeys = [
-        `blobs/${sha256}`,        // New SDK worker format
-        `videos/${sha256}.mp4`,   // Old format
-        `${sha256}.mp4`,
-        sha256
-      ];
-
-      let object = null;
-      let usedKey = null;
-
-      for (const key of possibleKeys) {
-        console.log(`[ADMIN] Trying R2 key: ${key}`);
-        object = await env.R2_VIDEOS.get(key);
-        if (object) {
-          usedKey = key;
-          console.log(`[ADMIN] Found video in R2: ${key}`);
-          break;
-        }
-      }
-
-      if (object) {
-        return new Response(object.body, {
-          headers: {
-            'Content-Type': 'video/mp4',
-            'Cache-Control': 'private, no-cache',
-            'X-Admin-Proxy': 'r2',
-            'X-R2-Key': usedKey
-          }
+        console.error(`[ADMIN] Blossom fetch error for ${sha256}:`, error);
+        return new Response(JSON.stringify({
+          error: 'Failed to fetch video from Blossom',
+          sha256,
+          details: error.message
+        }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' }
         });
       }
-
-      console.error(`[ADMIN] Video not found on CDN or R2: ${sha256}`);
-      return new Response(JSON.stringify({
-        error: 'Video not found',
-        sha256,
-        hint: 'Content may be banned on Blossom, or not present in R2'
-      }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json' }
-      });
     }
 
     // Test endpoint to manually trigger moderation

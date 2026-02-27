@@ -60,7 +60,7 @@ wrangler secret put SIGHTENGINE_API_SECRET
 wrangler secret put NOSTR_PRIVATE_KEY
 wrangler secret put FARO_RELAY_URL
 
-# Update wrangler.toml with your KV namespace ID and R2 bucket name
+# Update wrangler.toml with your KV namespace ID
 
 # Deploy
 wrangler deploy
@@ -81,10 +81,6 @@ VIOLENCE_THRESHOLD_HIGH = "0.8"
 VIOLENCE_THRESHOLD_MEDIUM = "0.6"
 AI_GENERATED_THRESHOLD_HIGH = "0.8"   # Auto-quarantine AI content
 AI_GENERATED_THRESHOLD_MEDIUM = "0.6" # Flag AI content for review
-
-[[r2_buckets]]
-binding = "R2_VIDEOS"
-bucket_name = "your-video-bucket"  # Your R2 bucket name
 
 [[kv_namespaces]]
 binding = "MODERATION_KV"
@@ -254,8 +250,7 @@ For 1,000 videos per day (6 seconds each):
 | Cloudflare Workers | Free (included) |
 | Cloudflare Queue | Free (< 1M ops) |
 | Cloudflare KV | Free (< 10M reads) |
-| Cloudflare R2 | ~$0.01/day (egress) |
-| **Total** | **~$3.01/day** |
+| **Total** | **~$3.00/day** |
 
 ## Monitoring
 

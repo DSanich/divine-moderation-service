@@ -95,7 +95,7 @@ All notable changes to the Divine Moderation Service will be documented in this 
 ### Added
 - **Admin bypass route** (`/admin/video/{sha256}.mp4`) - Authenticated admins can now view quarantined videos for review
   - Route requires valid session authentication
-  - Fetches directly from R2, bypassing CDN quarantine check
+  - Fetches from Blossom server for admin review
   - Adds `X-Admin-Bypass: true` header for audit trail
   - Enables moderators to review flagged content and check for false positives
 - **Comprehensive Sightengine model support** - Expanded moderation to use all 17 category models
@@ -146,8 +146,7 @@ All notable changes to the Divine Moderation Service will be documented in this 
 - **Cloudflare Workers integration**
   - Queue-based asynchronous processing
   - KV storage for moderation results (90-day retention)
-  - R2 bucket access for video retrieval
-  - CDN integration with automatic quarantine blocking (HTTP 451)
+  - Blossom server integration for video access
 - **Nostr event publishing** (NIP-56 kind 1984)
   - REVIEW cases flagged to human moderators
   - QUARANTINE cases logged for audit trail
@@ -192,5 +191,4 @@ All notable changes to the Divine Moderation Service will be documented in this 
 - Deployed to Cloudflare Workers as `divine-moderation-service`
 - Queue: `video-moderation-queue`
 - KV Namespace: `eee0689974834390acd39d543002cac3`
-- R2 Bucket: `nostrvine-media`
-- CDN: `cdn.divine.video`
+- Blossom: `media.divine.video`

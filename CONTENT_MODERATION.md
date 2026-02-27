@@ -10,7 +10,7 @@ This document outlines the content moderation strategy for uploaded videos, focu
 
 ```mermaid
 graph TD
-    A[Video Upload] --> B[Store in R2]
+    A[Video Upload] --> B[Store in Blossom]
     B --> C[Return Success to Client]
     B --> D[Trigger Moderation Hook]
     D --> E[Queue for Processing]
@@ -37,10 +37,9 @@ graph TD
 async function handleBlossomUpload(req, env, deps) {
   // ... existing upload code ...
 
-  // After successful R2 storage
+  // After successful Blossom storage
   const moderationConfig = {
     sha256,
-    r2Key,
     cdnUrl: `https://${cdnDomain}/${sha256}.mp4`,
     uploadedBy: auth?.pubkey || 'anonymous',
     uploadedAt: Date.now(),
@@ -139,17 +138,17 @@ export default {
 ```javascript
 // src/utils/moderation_pipeline.mjs
 
-export async function analyzeVideoContent(r2Key, env) {
+export async function analyzeVideoContent(videoUrl, env) {
   const stages = {
     // Stage 1: Perceptual hashing
     perceptualHash: async () => {
-      const videoStream = await env.R2_VIDEOS.get(r2Key);
-      return await generateVideoHash(videoStream);
+      const videoStream = await fetch(videoUrl);
+      return await generateVideoHash(videoStream.body);
     },
 
     // Stage 2: Frame extraction and AI analysis
     frameAnalysis: async () => {
-      const frames = await extractKeyFrames(r2Key, env, {
+      const frames = await extractKeyFrames(videoUrl, env, {
         count: 10,  // Extract 10 frames
         strategy: 'distributed'  // Even distribution through video
       });
@@ -166,8 +165,7 @@ export async function analyzeVideoContent(r2Key, env) {
     // Stage 4: Metadata analysis
     metadataCheck: async () => {
       // Check file metadata for suspicious patterns
-      const metadata = await env.R2_VIDEOS.head(r2Key);
-      return analyzeMetadata(metadata);
+      return {};  // Placeholder
     }
   };
 
@@ -425,16 +423,8 @@ export async function handleModerationResult(sha256, result, env) {
         })
       );
 
-      // Delete from public access
-      await env.R2_VIDEOS.delete(`${sha256}.mp4`);
-
-      // Preserve evidence (if required)
-      if (result.requiresPreservation) {
-        await env.R2_EVIDENCE.put(
-          `evidence/${sha256}.mp4`,
-          await env.R2_VIDEOS.get(`${sha256}.mp4`)
-        );
-      }
+      // Notify Blossom to block public access
+      await notifyBlossom(sha256, 'PERMANENT_BAN', env);
     },
 
     ILLEGAL: async () => {
@@ -486,10 +476,8 @@ MODERATION_WEBHOOK_URL = "https://your-moderation-service.com/webhook"
 binding = "MODERATION_QUEUE"
 queue = "video-moderation"
 
-# Additional R2 bucket for evidence preservation
-[[r2_buckets]]
-binding = "R2_EVIDENCE"
-bucket_name = "evidence-preservation"
+# Blossom webhook for enforcement
+# BLOSSOM_WEBHOOK_URL and BLOSSOM_WEBHOOK_SECRET set as secrets
 ```
 
 ### Secrets to Configure
