@@ -2111,10 +2111,8 @@
           divineLink.href = `https://divine.video/video/${video.nostrContext.eventId}?source=discovery&index=0`;
         }
 
-        // Load full classifier detail panels (async, non-blocking)
-        if (video.classifierSummary) {
-          loadClassifierDetail(video.sha256);
-        }
+        // Load classifier inline summary + detail panels (async, non-blocking)
+        loadClassifierData(video.sha256);
       });
     }
 
@@ -2308,7 +2306,7 @@
 
             ${reason ? `<div class="reason">${escapeHtml(reason)}</div>` : ''}
 
-            ${createClassifierInlineSummary(video.classifierSummary)}
+            <div id="classifier-inline-${sha256}"></div>
 
             <div id="classifier-detail-${sha256}"></div>
 
@@ -2539,6 +2537,92 @@
       `;
     }
 
+    async function loadClassifierData(sha256) {
+      try {
+        const resp = await fetch(`/admin/api/classifier/${sha256}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        // Populate inline summary
+        const inlineContainer = document.getElementById(`classifier-inline-${sha256}`);
+        if (inlineContainer) {
+          const summary = {
+            description: data.sceneClassification?.description || null,
+            topics: data.sceneClassification?.topics || null,
+            primaryTopic: data.topicProfile?.primary_topic || null,
+            mood: data.sceneClassification?.mood || null
+          };
+          inlineContainer.innerHTML = createClassifierInlineSummary(summary);
+        }
+
+        // Populate detail panels
+        renderClassifierPanels(sha256, data);
+      } catch (err) {
+        // Silently fail — classifier data is optional
+      }
+    }
+
+    function renderClassifierPanels(sha256, data) {
+      const container = document.getElementById(`classifier-detail-${sha256}`);
+      if (!container || container.dataset.loaded === 'true') return;
+      container.dataset.loaded = 'true';
+
+      const scene = data.sceneClassification;
+      const topics = data.topicProfile;
+      let html = '';
+
+      if (scene) {
+        const tagsHTML = [];
+        if (scene.topics) scene.topics.forEach(t => tagsHTML.push('<span class="classifier-tag topic">' + escapeHtml(t) + '</span>'));
+        if (scene.activities) scene.activities.forEach(a => tagsHTML.push('<span class="classifier-tag activity">' + escapeHtml(a) + '</span>'));
+        if (scene.objects) scene.objects.forEach(o => tagsHTML.push('<span class="classifier-tag object">' + escapeHtml(o) + '</span>'));
+        if (scene.setting) tagsHTML.push('<span class="classifier-tag setting">' + escapeHtml(scene.setting) + '</span>');
+        if (scene.mood) tagsHTML.push('<span class="classifier-tag mood">' + escapeHtml(scene.mood) + '</span>');
+
+        html += '<div class="classifier-panel">'
+          + '<div class="classifier-panel-header" onclick="toggleClassifierPanel(\'scene-' + sha256 + '\')">'
+          + '<span class="classifier-panel-title">Scene Classification</span>'
+          + '<span class="classifier-panel-toggle" id="toggle-scene-' + sha256 + '">&#9660;</span>'
+          + '</div>'
+          + '<div class="classifier-panel-body" id="body-scene-' + sha256 + '">'
+          + (scene.description ? '<div class="classifier-description">' + escapeHtml(scene.description) + '</div>' : '')
+          + (tagsHTML.length > 0 ? '<div class="classifier-tags">' + tagsHTML.join('') + '</div>' : '')
+          + '</div></div>';
+      }
+
+      if (topics) {
+        var topicRowsHTML = '';
+        if (topics.topics && topics.topics.length > 0) {
+          topicRowsHTML = topics.topics.map(function(t) {
+            return '<div class="classifier-label-row">'
+              + '<span class="classifier-label-name">' + escapeHtml(t.category) + '</span>'
+              + '<div class="topic-confidence-bar"><div class="topic-confidence-fill" style="width: ' + (t.confidence * 100).toFixed(0) + '%"></div></div>'
+              + '<span class="topic-confidence-value">' + (t.confidence * 100).toFixed(0) + '%</span>'
+              + '</div>';
+          }).join('');
+        }
+
+        var indicators = [];
+        if (topics.primary_topic) indicators.push('<span class="classifier-tag primary">' + escapeHtml(topics.primary_topic) + '</span>');
+        if (topics.language_hint) indicators.push('<span class="classifier-tag language">' + escapeHtml(topics.language_hint) + '</span>');
+        if (topics.has_speech === true) indicators.push('<span class="classifier-tag speech">Has Speech</span>');
+        else if (topics.has_speech === false) indicators.push('<span class="classifier-tag" style="border-color: #555; color: #666;">No Speech</span>');
+
+        html += '<div class="classifier-panel">'
+          + '<div class="classifier-panel-header" onclick="toggleClassifierPanel(\'transcript-' + sha256 + '\')">'
+          + '<span class="classifier-panel-title">Transcript Analysis</span>'
+          + '<span class="classifier-panel-toggle" id="toggle-transcript-' + sha256 + '">&#9660;</span>'
+          + '</div>'
+          + '<div class="classifier-panel-body" id="body-transcript-' + sha256 + '">'
+          + (indicators.length > 0 ? '<div class="classifier-tags">' + indicators.join('') + '</div>' : '')
+          + topicRowsHTML
+          + '</div></div>';
+      }
+
+      container.innerHTML = html;
+    }
+
+    // Legacy wrapper kept for swipe review compatibility
     async function loadClassifierDetail(sha256) {
       const container = document.getElementById(`classifier-detail-${sha256}`);
       if (!container || container.dataset.loaded === 'true') return;

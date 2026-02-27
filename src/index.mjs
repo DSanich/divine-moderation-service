@@ -201,29 +201,8 @@ export default {
         reviewed_at: row.reviewed_at
       }));
 
-      // Fetch classifier summaries from KV in parallel
-      const classifierPromises = videoRows.map(async (video) => {
-        try {
-          const raw = await env.MODERATION_KV.get(`classifier:${video.sha256}`);
-          if (!raw) return null;
-          const data = JSON.parse(raw);
-          return {
-            description: data.sceneClassification?.description || null,
-            topics: data.sceneClassification?.topics || null,
-            primaryTopic: data.topicProfile?.primary_topic || null,
-            hasSpeech: data.topicProfile?.has_speech ?? null,
-            mood: data.sceneClassification?.mood || null
-          };
-        } catch {
-          return null;
-        }
-      });
-
-      const classifierResults = await Promise.all(classifierPromises);
-      const videos = videoRows.map((video, i) => ({
-        ...video,
-        classifierSummary: classifierResults[i]
-      }));
+      // Classifier summaries fetched client-side via /admin/api/classifier/{sha256}
+      const videos = videoRows;
 
       console.log(`[${requestId}] Returning ${videos.length} videos in ${Date.now() - startTime}ms`);
       return new Response(JSON.stringify({
