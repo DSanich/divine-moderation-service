@@ -956,45 +956,51 @@ export default {
       }
 
       const sha256 = url.pathname.split('/')[3].replace('.mp4', '');
-
-      // Use public path with Bearer auth — bypasses VCL cache (Authorization header = pass)
-      // and Compute@Edge skips moderation status checks for admin tokens.
-      // NOTE: The /admin/api/blob/{hash}/content endpoint requires KV metadata which many
-      // blobs lack (uploaded via Cloud Run). Public path handles missing metadata gracefully.
-      const fetchHeaders = {};
-      if (env.BLOSSOM_WEBHOOK_SECRET) {
-        fetchHeaders['Authorization'] = `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}`;
-      }
-
-      const blossomUrl = `https://${env.CDN_DOMAIN}/${sha256}`;
-      console.log(`[ADMIN] Fetching video from Blossom with admin auth: ${blossomUrl}`);
+      const cdnUrl = `https://${env.CDN_DOMAIN}/${sha256}`;
+      const adminBypassUrl = `https://${env.CDN_DOMAIN}/admin/api/blob/${sha256}/content`;
 
       try {
-        const blossomResponse = await fetch(blossomUrl, { headers: fetchHeaders });
-
-        if (blossomResponse.ok) {
-          console.log(`[ADMIN] Serving video via admin auth proxy: ${sha256}`);
-          const moderationStatus = blossomResponse.headers.get('X-Moderation-Status');
-          return new Response(blossomResponse.body, {
+        // CDN fetch (unauthenticated) — works for SAFE/unmoderated content
+        const cdnResponse = await fetch(cdnUrl);
+        if (cdnResponse.ok) {
+          console.log(`[ADMIN] Serving video from CDN: ${sha256}`);
+          return new Response(cdnResponse.body, {
             headers: {
-              'Content-Type': blossomResponse.headers.get('Content-Type') || 'video/mp4',
+              'Content-Type': cdnResponse.headers.get('Content-Type') || 'video/mp4',
               'Cache-Control': 'private, no-store',
-              'X-Admin-Proxy': 'blossom-auth',
-              ...(moderationStatus && { 'X-Moderation-Status': moderationStatus })
+              'X-Admin-Proxy': 'cdn'
             }
           });
         }
 
-        const errorBody = await blossomResponse.text();
-        console.error(`[ADMIN] Blossom returned ${blossomResponse.status} for ${sha256}: ${errorBody}`);
+        // CDN returned non-200 (banned/restricted content returns 404)
+        // Fall back to admin bypass endpoint which serves regardless of moderation status
+        if (env.BLOSSOM_WEBHOOK_SECRET) {
+          console.log(`[ADMIN] CDN returned ${cdnResponse.status}, trying admin bypass for ${sha256}`);
+          const bypassResponse = await fetch(adminBypassUrl, {
+            headers: { 'Authorization': `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}` }
+          });
+          if (bypassResponse.ok) {
+            console.log(`[ADMIN] Serving video from admin bypass: ${sha256}`);
+            const moderationStatus = bypassResponse.headers.get('X-Moderation-Status');
+            return new Response(bypassResponse.body, {
+              headers: {
+                'Content-Type': bypassResponse.headers.get('Content-Type') || 'video/mp4',
+                'Cache-Control': 'private, no-store',
+                'X-Admin-Proxy': 'blossom-admin',
+                ...(moderationStatus && { 'X-Moderation-Status': moderationStatus })
+              }
+            });
+          }
+          console.error(`[ADMIN] Admin bypass returned ${bypassResponse.status} for ${sha256}`);
+        }
+
         return new Response(JSON.stringify({
-          error: 'Video not accessible',
-          sha256,
-          blossomStatus: blossomResponse.status,
-          details: errorBody
+          error: 'Video not found',
+          sha256
         }), {
-          status: blossomResponse.status,
-          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
+          status: 404,
+          headers: { 'Content-Type': 'application/json' }
         });
       } catch (error) {
         console.error(`[ADMIN] Blossom fetch error for ${sha256}:`, error);
@@ -1004,7 +1010,7 @@ export default {
           details: error.message
         }), {
           status: 502,
-          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
+          headers: { 'Content-Type': 'application/json' }
         });
       }
     }
