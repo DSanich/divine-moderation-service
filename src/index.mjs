@@ -5,7 +5,7 @@
 // ABOUTME: Consumes queue messages and processes videos for harmful content
 
 import { validateQueueMessage } from './schemas/queue-message.mjs';
-import { moderateVideo } from './moderation/pipeline.mjs';
+import { moderateVideo, classifyVideoOnly } from './moderation/pipeline.mjs';
 import { publishToFaro, publishToContentRelay, publishLabelEvent } from './nostr/publisher.mjs';
 import { requireAuth, getAuthenticatedUser } from './admin/auth.mjs';
 import { verifyZeroTrustJWT } from './admin/zerotrust.mjs';
@@ -957,34 +957,36 @@ export default {
 
       const sha256 = url.pathname.split('/')[3].replace('.mp4', '');
 
-      // Use Blossom's dedicated admin content endpoint — bypasses moderation status checks
-      // and avoids Fastly VCL cache which caches 404s for blocked content on public paths
+      // Use public path with Bearer auth — bypasses VCL cache (Authorization header = pass)
+      // and Compute@Edge skips moderation status checks for admin tokens.
+      // NOTE: The /admin/api/blob/{hash}/content endpoint requires KV metadata which many
+      // blobs lack (uploaded via Cloud Run). Public path handles missing metadata gracefully.
       const fetchHeaders = {};
       if (env.BLOSSOM_WEBHOOK_SECRET) {
         fetchHeaders['Authorization'] = `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}`;
       }
 
-      const blossomUrl = `https://${env.CDN_DOMAIN}/admin/api/blob/${sha256}/content`;
-      console.log(`[ADMIN] Fetching video from Blossom admin endpoint: ${blossomUrl}`);
+      const blossomUrl = `https://${env.CDN_DOMAIN}/${sha256}`;
+      console.log(`[ADMIN] Fetching video from Blossom with admin auth: ${blossomUrl}`);
 
       try {
         const blossomResponse = await fetch(blossomUrl, { headers: fetchHeaders });
 
         if (blossomResponse.ok) {
-          console.log(`[ADMIN] Serving video from Blossom admin endpoint: ${sha256}`);
+          console.log(`[ADMIN] Serving video via admin auth proxy: ${sha256}`);
           const moderationStatus = blossomResponse.headers.get('X-Moderation-Status');
           return new Response(blossomResponse.body, {
             headers: {
               'Content-Type': blossomResponse.headers.get('Content-Type') || 'video/mp4',
               'Cache-Control': 'private, no-store',
-              'X-Admin-Proxy': 'blossom-admin',
+              'X-Admin-Proxy': 'blossom-auth',
               ...(moderationStatus && { 'X-Moderation-Status': moderationStatus })
             }
           });
         }
 
         const errorBody = await blossomResponse.text();
-        console.error(`[ADMIN] Blossom admin endpoint returned ${blossomResponse.status} for ${sha256}: ${errorBody}`);
+        console.error(`[ADMIN] Blossom returned ${blossomResponse.status} for ${sha256}: ${errorBody}`);
         return new Response(JSON.stringify({
           error: 'Video not accessible',
           sha256,
@@ -992,17 +994,17 @@ export default {
           details: errorBody
         }), {
           status: blossomResponse.status,
-          headers: { 'Content-Type': 'application/json' }
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
         });
       } catch (error) {
-        console.error(`[ADMIN] Blossom admin endpoint error for ${sha256}:`, error);
+        console.error(`[ADMIN] Blossom fetch error for ${sha256}:`, error);
         return new Response(JSON.stringify({
           error: 'Failed to fetch video from Blossom',
           sha256,
           details: error.message
         }), {
           status: 502,
-          headers: { 'Content-Type': 'application/json' }
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
         });
       }
     }
@@ -1043,6 +1045,204 @@ export default {
         return new Response(JSON.stringify({ success: false, error: error.message }), {
           headers: { 'Content-Type': 'application/json' },
           status: 500
+        });
+      }
+    }
+
+    // Batch classification page - classify already-moderated videos missing classifier data
+    if (url.pathname === '/admin/classify') {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      return new Response(`<!DOCTYPE html>
+<html><head><title>Batch Video Classification</title></head>
+<body style="font-family:monospace;padding:20px;max-width:900px;margin:0 auto;background:#1a1a2e;color:#e0e0e0">
+<h1 style="color:#00d4ff">Batch Video Classification</h1>
+<p style="color:#aaa">Classifies already-moderated videos that are missing classifier data (VLM scene + VTT topics).<br>
+Skips expensive moderation — only runs classification pipeline.</p>
+<div style="margin:20px 0">
+  <label>Batch size: <input id="batchSize" type="number" value="10" min="1" max="50" style="width:60px;background:#222;color:#fff;border:1px solid #444;padding:4px"></label>
+  <button id="start" onclick="runClassification()" style="padding:8px 20px;font-size:14px;background:#00d4ff;color:#000;border:none;cursor:pointer;margin-left:10px">Start Batch Classification</button>
+  <button id="stop" onclick="stopClassification()" style="padding:8px 20px;font-size:14px;background:#ff4444;color:#fff;border:none;cursor:pointer;margin-left:5px;display:none">Stop</button>
+</div>
+<div id="stats" style="margin:10px 0;color:#aaa"></div>
+<pre id="log" style="background:#111;color:#0f0;padding:20px;height:500px;overflow:auto;border:1px solid #333;font-size:12px"></pre>
+<script>
+let running = false;
+function log(msg) {
+  const el = document.getElementById('log');
+  el.textContent += new Date().toISOString().substr(11,8) + ' ' + msg + '\\n';
+  el.scrollTop = el.scrollHeight;
+}
+function stopClassification() { running = false; }
+async function runClassification() {
+  if (running) return;
+  running = true;
+  const btn = document.getElementById('start');
+  const stopBtn = document.getElementById('stop');
+  const statsEl = document.getElementById('stats');
+  btn.disabled = true;
+  stopBtn.style.display = 'inline';
+  const batchSize = parseInt(document.getElementById('batchSize').value) || 10;
+  let offset = 0, totalClassified = 0, totalSkipped = 0, totalErrors = 0, batch = 0;
+  log('Starting batch classification (batchSize=' + batchSize + ')...');
+  while (running) {
+    batch++;
+    log('--- Batch ' + batch + ' (offset=' + offset + ') ---');
+    try {
+      const res = await fetch('/admin/api/classify-batch', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({cursor: offset, batchSize})
+      });
+      if (!res.ok) { log('ERROR: HTTP ' + res.status); break; }
+      const data = await res.json();
+      totalClassified += data.classified || 0;
+      totalSkipped += data.skipped || 0;
+      totalErrors += data.errors || 0;
+      log('Classified: ' + (data.classified||0) + ', Skipped: ' + (data.skipped||0) + ', Errors: ' + (data.errors||0));
+      if (data.details) data.details.forEach(d => log('  ' + d.sha256.substr(0,12) + '... ' + d.status + (d.error ? ' (' + d.error + ')' : '')));
+      statsEl.textContent = 'Total — Classified: ' + totalClassified + ' | Skipped: ' + totalSkipped + ' | Errors: ' + totalErrors;
+      if (!data.hasMore) { log('\\n✅ DONE! All videos processed.'); break; }
+      offset = data.offset;
+    } catch (err) {
+      log('FETCH ERROR: ' + err.message);
+      break;
+    }
+  }
+  running = false;
+  btn.disabled = false;
+  stopBtn.style.display = 'none';
+  log('Finished.');
+}
+</script>
+</body></html>`, { headers: { 'Content-Type': 'text/html' } });
+    }
+
+    // Batch classification API endpoint - classify videos missing classifier data
+    if (url.pathname === '/admin/api/classify-batch' && request.method === 'POST') {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      const body = await request.json().catch(() => ({}));
+      const offset = body.cursor || 0;
+      const batchSize = Math.min(body.batchSize || 10, 50);
+
+      console.log(`[CLASSIFY-BATCH] Starting batch, offset=${offset}, batchSize=${batchSize}`);
+
+      try {
+        // Query D1 for moderated videos
+        const rows = await env.MODERATION_DB.prepare(
+          'SELECT sha256 FROM moderation_results ORDER BY moderated_at LIMIT ? OFFSET ?'
+        ).bind(batchSize, offset).all();
+
+        if (!rows.results || rows.results.length === 0) {
+          return new Response(JSON.stringify({
+            classified: 0, skipped: 0, errors: 0, offset, hasMore: false,
+            message: 'No more videos to process'
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        const details = [];
+        let classified = 0, skipped = 0, errors = 0;
+
+        for (const row of rows.results) {
+          const { sha256 } = row;
+          try {
+            // Check if classifier data already exists
+            const existing = await env.MODERATION_KV.get(`classifier:${sha256}`);
+            if (existing) {
+              details.push({ sha256, status: 'skipped', reason: 'already has classifier data' });
+              skipped++;
+              continue;
+            }
+
+            // Run classify-only pipeline
+            const result = await classifyVideoOnly(sha256, env);
+
+            // Store in KV (same format as queue handler step 7.5, rawClassifierData: null)
+            const classifierPayload = {
+              sha256,
+              provider: 'classify-only',
+              moderatedAt: new Date().toISOString(),
+              rawClassifierData: null,
+              sceneClassification: result.sceneClassification ? formatForStorage(result.sceneClassification) : null,
+              topicProfile: result.topicProfile || null
+            };
+            await env.MODERATION_KV.put(
+              `classifier:${sha256}`,
+              JSON.stringify(classifierPayload),
+              { expirationTtl: 60 * 60 * 24 * 180 }
+            );
+
+            const hasScene = !!result.sceneClassification;
+            const hasTopics = !!result.topicProfile;
+            details.push({ sha256, status: 'classified', hasScene, hasTopics });
+            classified++;
+            console.log(`[CLASSIFY-BATCH] Classified ${sha256}: scene=${hasScene}, topics=${hasTopics}`);
+          } catch (err) {
+            details.push({ sha256, status: 'error', error: err.message });
+            errors++;
+            console.error(`[CLASSIFY-BATCH] Error classifying ${sha256}: ${err.message}`);
+          }
+        }
+
+        const nextOffset = offset + rows.results.length;
+        // Check if there are more rows beyond this batch
+        const countResult = await env.MODERATION_DB.prepare(
+          'SELECT COUNT(*) as total FROM moderation_results'
+        ).first();
+        const hasMore = nextOffset < (countResult?.total || 0);
+
+        return new Response(JSON.stringify({
+          classified, skipped, errors, offset: nextOffset, hasMore, details
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } catch (err) {
+        console.error(`[CLASSIFY-BATCH] Batch error: ${err.message}`);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500, headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // Single-video classification endpoint (useful for testing/debugging)
+    if (url.pathname.startsWith('/admin/api/classify/') && request.method === 'POST') {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      const sha256 = url.pathname.split('/admin/api/classify/')[1];
+      if (!sha256 || sha256.length !== 64) {
+        return new Response(JSON.stringify({ error: 'Invalid sha256 hash' }), {
+          status: 400, headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      try {
+        console.log(`[CLASSIFY-SINGLE] Classifying ${sha256}`);
+        const result = await classifyVideoOnly(sha256, env);
+
+        const classifierPayload = {
+          sha256,
+          provider: 'classify-only',
+          moderatedAt: new Date().toISOString(),
+          rawClassifierData: null,
+          sceneClassification: result.sceneClassification ? formatForStorage(result.sceneClassification) : null,
+          topicProfile: result.topicProfile || null
+        };
+        await env.MODERATION_KV.put(
+          `classifier:${sha256}`,
+          JSON.stringify(classifierPayload),
+          { expirationTtl: 60 * 60 * 24 * 180 }
+        );
+
+        console.log(`[CLASSIFY-SINGLE] Stored classifier data for ${sha256}`);
+        return new Response(JSON.stringify(classifierPayload), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (err) {
+        console.error(`[CLASSIFY-SINGLE] Error: ${err.message}`);
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500, headers: { 'Content-Type': 'application/json' }
         });
       }
     }
@@ -1624,6 +1824,91 @@ async function runMigration() {
         return new Response(JSON.stringify({ error: error.message }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // API: Classify-only endpoint — run VLM classification without full moderation
+    // Used by funnelcake janitor for bulk backfill of ~21k existing videos
+    if (url.pathname === '/api/v1/classify' && request.method === 'POST') {
+      // Require authentication (Zero Trust JWT, bearer token, or dev access)
+      let verification = { valid: false, error: 'Not verified' };
+      if (env.ALLOW_DEV_ACCESS === 'true') {
+        verification = { valid: true, email: 'dev@localhost', isServiceToken: false };
+      } else {
+        const authHeader = request.headers.get('Authorization');
+        if (authHeader && authHeader.startsWith('Bearer ') && env.SERVICE_API_TOKEN) {
+          const token = authHeader.slice(7);
+          if (token === env.SERVICE_API_TOKEN) {
+            verification = { valid: true, email: 'service@internal', isServiceToken: true };
+          }
+        }
+        if (!verification.valid) {
+          try {
+            verification = await verifyZeroTrustJWT(request, env);
+          } catch (e) {
+            verification = { valid: false, error: e.message };
+          }
+        }
+      }
+      if (!verification.valid) {
+        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+          status: 401, headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      try {
+        const body = await request.json();
+        const { sha256, url: videoUrl } = body;
+
+        if (!sha256 || sha256.length !== 64) {
+          return new Response(JSON.stringify({ error: 'Invalid or missing sha256 (must be 64 hex chars)' }), {
+            status: 400, headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        console.log(`[API] POST /api/v1/classify — sha256=${sha256}, url=${videoUrl || 'auto-resolve'}`);
+
+        // Check if classifier data already exists
+        const existing = await env.MODERATION_KV.get(`classifier:${sha256}`);
+        if (existing) {
+          console.log(`[API] Classifier data already exists for ${sha256}, returning existing`);
+          return new Response(JSON.stringify({
+            sha256,
+            status: 'already_classified',
+            classifier_data: JSON.parse(existing)
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        // Run classify-only pipeline (synchronous — VLM takes ~7s)
+        const result = await classifyVideoOnly(sha256, env, { videoUrl });
+
+        // Store in KV (same format as queue handler step 7.5)
+        const classifierPayload = {
+          sha256,
+          provider: 'classify-only',
+          moderatedAt: new Date().toISOString(),
+          rawClassifierData: null,
+          sceneClassification: result.sceneClassification ? formatForStorage(result.sceneClassification) : null,
+          topicProfile: result.topicProfile || null
+        };
+        await env.MODERATION_KV.put(
+          `classifier:${sha256}`,
+          JSON.stringify(classifierPayload),
+          { expirationTtl: 60 * 60 * 24 * 180 }
+        );
+
+        console.log(`[API] Classify-only complete for ${sha256}: scene=${!!result.sceneClassification}, topics=${!!result.topicProfile}`);
+
+        return new Response(JSON.stringify({
+          sha256,
+          status: 'classified',
+          classifier_data: classifierPayload
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } catch (error) {
+        console.error(`[API] Error in /api/v1/classify:`, error);
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500, headers: { 'Content-Type': 'application/json' }
         });
       }
     }

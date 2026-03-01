@@ -12,6 +12,99 @@ import { classifyVideo } from '../classification/pipeline.mjs';
 import { extractTopics } from '../classification/topic-extractor.mjs';
 
 /**
+ * Run classify-only pipeline on a video that already has moderation results.
+ * Skips expensive HiveAI moderation + Sightengine calls. Only runs:
+ *   - VLM scene classification (Hive VLM)
+ *   - VTT topic extraction
+ *
+ * @param {string} sha256 - Video hash
+ * @param {Object} env - Environment variables
+ * @param {Object} [options] - Options
+ * @param {string} [options.videoUrl] - Explicit video URL (skips Nostr/CDN resolution)
+ * @param {Function} [options.fetchFn] - Fetch function (for testing)
+ * @returns {Promise<Object>} { sceneClassification, topicProfile, sha256 }
+ */
+export async function classifyVideoOnly(sha256, env, options = {}) {
+  const fetchFn = options.fetchFn || fetch;
+
+  if (!options.videoUrl && !env.CDN_DOMAIN) {
+    throw new Error('CDN_DOMAIN not configured and no videoUrl provided');
+  }
+
+  // Resolve video URL — use explicit URL, or try Nostr metadata, fall back to CDN
+  let videoUrl = options.videoUrl || `https://${env.CDN_DOMAIN}/${sha256}.mp4`;
+  if (!options.videoUrl) {
+    try {
+      const relays = env.NOSTR_RELAY_URL ? [env.NOSTR_RELAY_URL] : ['wss://relay.divine.video'];
+      const event = await fetchNostrEventBySha256(sha256, relays);
+      if (event) {
+        const nostrContext = parseVideoEventMetadata(event);
+        if (nostrContext.url) {
+          videoUrl = nostrContext.url;
+          console.log(`[CLASSIFY-ONLY] Using video URL from Nostr event for ${sha256}: ${videoUrl}`);
+        }
+      }
+    } catch (error) {
+      console.log(`[CLASSIFY-ONLY] Nostr lookup failed for ${sha256}, using CDN fallback: ${error.message}`);
+    }
+  } else {
+    console.log(`[CLASSIFY-ONLY] Using provided video URL for ${sha256}: ${videoUrl}`);
+  }
+
+  // Run VLM scene classification and VTT topic extraction in parallel
+  const [sceneResult, topicResult] = await Promise.allSettled([
+    // Scene classification via Hive VLM
+    (async () => {
+      try {
+        const result = await classifyVideo(videoUrl, env, { sha256, fetchFn });
+        if (result && !result.skipped) {
+          console.log(`[CLASSIFY-ONLY] Scene classification complete for ${sha256}: ${result.labels?.length || 0} labels`);
+          return result;
+        }
+        console.log(`[CLASSIFY-ONLY] Scene classification skipped for ${sha256}: ${result?.reason || 'unknown'}`);
+        return null;
+      } catch (error) {
+        console.error(`[CLASSIFY-ONLY] Scene classification failed for ${sha256}: ${error.message}`);
+        return null;
+      }
+    })(),
+    // VTT topic extraction
+    (async () => {
+      try {
+        const vttUrl = `https://media.divine.video/${sha256}.vtt`;
+        const vttResponse = await fetchFn(vttUrl);
+        if (vttResponse.status === 404) {
+          console.log(`[CLASSIFY-ONLY] No VTT transcript for ${sha256} (404)`);
+          return null;
+        }
+        if (!vttResponse.ok) {
+          console.warn(`[CLASSIFY-ONLY] VTT fetch returned ${vttResponse.status} for ${sha256}`);
+          return null;
+        }
+        const vttContent = await vttResponse.text();
+        const { parseVttText } = await import('./text-classifier.mjs');
+        const plainText = parseVttText(vttContent);
+        if (plainText.trim().length > 0) {
+          const profile = extractTopics(plainText);
+          console.log(`[CLASSIFY-ONLY] Topic extraction for ${sha256}: primary_topic=${profile.primary_topic}, ${profile.topics.length} topics`);
+          return profile;
+        }
+        console.log(`[CLASSIFY-ONLY] VTT transcript for ${sha256} contains no extractable text`);
+        return null;
+      } catch (error) {
+        console.error(`[CLASSIFY-ONLY] VTT/topic extraction failed for ${sha256}: ${error.message}`);
+        return null;
+      }
+    })()
+  ]);
+
+  const sceneClassification = sceneResult.status === 'fulfilled' ? sceneResult.value : null;
+  const topicProfile = topicResult.status === 'fulfilled' ? topicResult.value : null;
+
+  return { sha256, sceneClassification, topicProfile };
+}
+
+/**
  * Run full moderation pipeline on a video
  * @param {Object} videoData - Video information from queue message
  * @param {string} videoData.sha256 - Video hash
