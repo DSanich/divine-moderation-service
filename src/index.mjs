@@ -1132,7 +1132,7 @@ async function runClassification() {
 
       try {
         // Query D1 for moderated videos
-        const rows = await env.MODERATION_DB.prepare(
+        const rows = await env.BLOSSOM_DB.prepare(
           'SELECT sha256 FROM moderation_results ORDER BY moderated_at LIMIT ? OFFSET ?'
         ).bind(batchSize, offset).all();
 
@@ -1189,7 +1189,7 @@ async function runClassification() {
 
         const nextOffset = offset + rows.results.length;
         // Check if there are more rows beyond this batch
-        const countResult = await env.MODERATION_DB.prepare(
+        const countResult = await env.BLOSSOM_DB.prepare(
           'SELECT COUNT(*) as total FROM moderation_results'
         ).first();
         const hasMore = nextOffset < (countResult?.total || 0);
