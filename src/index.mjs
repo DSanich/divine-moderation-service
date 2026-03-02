@@ -1064,115 +1064,245 @@ export default {
 <html><head><title>Batch Video Classification</title></head>
 <body style="font-family:monospace;padding:20px;max-width:900px;margin:0 auto;background:#1a1a2e;color:#e0e0e0">
 <h1 style="color:#00d4ff">Batch Video Classification</h1>
-<p style="color:#aaa">Classifies already-moderated videos that are missing classifier data (VLM scene + VTT topics).<br>
-Skips expensive moderation — only runs classification pipeline.</p>
+<p style="color:#aaa">Classifies already-moderated videos missing classifier data (VLM scene + VTT topics).</p>
+
 <div style="margin:20px 0">
   <label>Batch size: <input id="batchSize" type="number" value="10" min="1" max="50" style="width:60px;background:#222;color:#fff;border:1px solid #444;padding:4px"></label>
-  <button id="start" onclick="runClassification()" style="padding:8px 20px;font-size:14px;background:#00d4ff;color:#000;border:none;cursor:pointer;margin-left:10px">Start Batch Classification</button>
+  <label style="margin-left:15px">Start offset: <input id="startOffset" type="number" value="0" min="0" style="width:80px;background:#222;color:#fff;border:1px solid #444;padding:4px"></label>
+  <label style="margin-left:15px"><input id="purge" type="checkbox" checked> Purge empty KV entries</label>
+  <button id="start" onclick="runClassification()" style="padding:8px 20px;font-size:14px;background:#00d4ff;color:#000;border:none;cursor:pointer;margin-left:10px">Start</button>
   <button id="stop" onclick="stopClassification()" style="padding:8px 20px;font-size:14px;background:#ff4444;color:#fff;border:none;cursor:pointer;margin-left:5px;display:none">Stop</button>
 </div>
-<div id="stats" style="margin:10px 0;color:#aaa"></div>
+<p style="color:#666;font-size:11px">Source: funnelcake REST API (relay.divine.video/api/videos). Purge mode deletes KV entries with null scene+topics and re-classifies them.</p>
+
+<div id="live-stats" style="background:#111;border:1px solid #333;padding:15px;margin:15px 0;border-radius:4px">
+  <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;text-align:center">
+    <div><div id="s-classified" style="font-size:20px;color:#0f0">0</div><div style="color:#888;font-size:10px">Classified</div></div>
+    <div><div id="s-scene" style="font-size:20px;color:#0af">0</div><div style="color:#888;font-size:10px">With Scene</div></div>
+    <div><div id="s-topics" style="font-size:20px;color:#fa0">0</div><div style="color:#888;font-size:10px">With Topics</div></div>
+    <div><div id="s-skipped" style="font-size:20px;color:#888">0</div><div style="color:#888;font-size:10px">Skipped</div></div>
+    <div><div id="s-empty" style="font-size:20px;color:#f84">0</div><div style="color:#888;font-size:10px">Empty/Purged</div></div>
+    <div><div id="s-errors" style="font-size:20px;color:#f44">0</div><div style="color:#888;font-size:10px">Errors</div></div>
+  </div>
+  <div id="rate-info" style="color:#666;font-size:11px;margin-top:8px"></div>
+</div>
+
 <pre id="log" style="background:#111;color:#0f0;padding:20px;height:500px;overflow:auto;border:1px solid #333;font-size:12px"></pre>
 <script>
 let running = false;
-function log(msg) {
+let stats = {classified:0, scene:0, topics:0, skipped:0, empty:0, errors:0};
+let startTime = null;
+function log(msg, color) {
   const el = document.getElementById('log');
-  el.textContent += new Date().toISOString().substr(11,8) + ' ' + msg + '\\n';
+  const line = document.createElement('div');
+  line.textContent = new Date().toISOString().substr(11,8) + '  ' + msg;
+  if (color) line.style.color = color;
+  el.appendChild(line);
   el.scrollTop = el.scrollHeight;
+}
+function updateStats() {
+  document.getElementById('s-classified').textContent = stats.classified;
+  document.getElementById('s-scene').textContent = stats.scene;
+  document.getElementById('s-topics').textContent = stats.topics;
+  document.getElementById('s-skipped').textContent = stats.skipped;
+  document.getElementById('s-empty').textContent = stats.empty;
+  document.getElementById('s-errors').textContent = stats.errors;
+  if (startTime && (stats.classified + stats.skipped) > 0) {
+    const elapsed = (Date.now() - startTime) / 1000;
+    const total = stats.classified + stats.skipped + stats.errors;
+    const rate = (stats.classified / elapsed * 3600).toFixed(0);
+    document.getElementById('rate-info').textContent =
+      'Processed: ' + total + ' | Rate: ' + rate + '/hr | Elapsed: ' + Math.floor(elapsed/60) + 'm';
+  }
 }
 function stopClassification() { running = false; }
 async function runClassification() {
   if (running) return;
   running = true;
-  const btn = document.getElementById('start');
-  const stopBtn = document.getElementById('stop');
-  const statsEl = document.getElementById('stats');
-  btn.disabled = true;
-  stopBtn.style.display = 'inline';
+  startTime = Date.now();
+  stats = {classified:0, scene:0, topics:0, skipped:0, empty:0, errors:0};
+  document.getElementById('log').innerHTML = '';
+  document.getElementById('start').disabled = true;
+  document.getElementById('stop').style.display = 'inline';
   const batchSize = parseInt(document.getElementById('batchSize').value) || 10;
-  let offset = 0, totalClassified = 0, totalSkipped = 0, totalErrors = 0, batch = 0;
-  log('Starting batch classification (batchSize=' + batchSize + ')...');
+  const purge = document.getElementById('purge').checked;
+  let offset = parseInt(document.getElementById('startOffset').value) || 0;
+  let batch = 0;
+  log('Starting (batchSize=' + batchSize + ', purge=' + purge + ', source=funnelcake)...');
   while (running) {
     batch++;
-    log('--- Batch ' + batch + ' (offset=' + offset + ') ---');
     try {
       const res = await fetch('/admin/api/classify-batch', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({cursor: offset, batchSize})
+        body: JSON.stringify({cursor: offset, batchSize, purge})
       });
-      if (!res.ok) { log('ERROR: HTTP ' + res.status); break; }
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        log('HTTP ' + res.status + ': ' + errText.substr(0, 300), '#f44');
+        stats.errors++;
+        updateStats();
+        break;
+      }
       const data = await res.json();
-      totalClassified += data.classified || 0;
-      totalSkipped += data.skipped || 0;
-      totalErrors += data.errors || 0;
-      log('Classified: ' + (data.classified||0) + ', Skipped: ' + (data.skipped||0) + ', Errors: ' + (data.errors||0));
-      if (data.details) data.details.forEach(d => log('  ' + d.sha256.substr(0,12) + '... ' + d.status + (d.error ? ' (' + d.error + ')' : '')));
-      statsEl.textContent = 'Total — Classified: ' + totalClassified + ' | Skipped: ' + totalSkipped + ' | Errors: ' + totalErrors;
-      if (!data.hasMore) { log('\\n✅ DONE! All videos processed.'); break; }
+      if (data.error) {
+        log('API ERROR: ' + data.error, '#f44');
+        stats.errors++;
+        updateStats();
+        break;
+      }
+      stats.classified += data.classified || 0;
+      stats.skipped += data.skipped || 0;
+      stats.errors += data.errors || 0;
+      if (data.details) {
+        for (const d of data.details) {
+          if (d.hasScene) stats.scene++;
+          if (d.hasTopics) stats.topics++;
+          if (d.status === 'classified') {
+            const sceneStr = d.hasScene ? d.sceneLabels + ' labels [' + (d.sceneSummary||'') + ']' : 'NO SCENE';
+            const topicStr = d.hasTopics ? d.primaryTopic : 'no topics';
+            const recoStr = 'reco:' + (d.recoLabels||0);
+            log(d.sha256.substr(0,12) + ' OK scene=' + sceneStr + ' topic=' + topicStr + ' ' + recoStr, '#0f0');
+          } else if (d.status === 'purged') {
+            stats.empty++;
+            log(d.sha256.substr(0,12) + ' PURGED empty KV entry, will re-classify', '#fa0');
+          } else if (d.status === 'skipped') {
+            // Don't log individual skips — just count them
+          } else if (d.status === 'empty') {
+            stats.empty++;
+            log(d.sha256.substr(0,12) + ' VLM empty: ' + (d.rawContent||'').substr(0,80) + ' url=' + (d.videoUrl||''), '#f84');
+          } else {
+            log(d.sha256.substr(0,12) + ' ERROR: ' + (d.error||'unknown'), '#f44');
+          }
+        }
+      }
+      updateStats();
+      if (data.skipped > 0 && data.classified === 0 && data.errors === 0) {
+        log('batch ' + batch + ': skipped ' + data.skipped + ' (already have data) — offset now ' + data.offset, '#666');
+      }
+      if (!data.hasMore) { log('DONE - all videos processed', '#0f0'); break; }
       offset = data.offset;
     } catch (err) {
-      log('FETCH ERROR: ' + err.message);
+      log('FETCH ERROR: ' + err.message, '#f44');
       break;
     }
   }
   running = false;
-  btn.disabled = false;
-  stopBtn.style.display = 'none';
-  log('Finished.');
+  document.getElementById('start').disabled = false;
+  document.getElementById('stop').style.display = 'none';
+  log('Finished. ' + stats.classified + ' classified (' + stats.scene + ' scene, ' + stats.topics + ' topics), ' + stats.skipped + ' skipped, ' + stats.empty + ' empty/purged, ' + stats.errors + ' errors. Final offset: ' + offset);
 }
 </script>
 </body></html>`, { headers: { 'Content-Type': 'text/html' } });
     }
 
-    // Batch classification API endpoint - classify videos missing classifier data
+    // Batch classification API endpoint - fetches videos from funnelcake REST API,
+    // classifies those missing KV data using VLM + VTT topic extraction.
     if (url.pathname === '/admin/api/classify-batch' && request.method === 'POST') {
-      const authError = await requireAuth(request, env);
-      if (authError) return authError;
+      // Accept both Zero Trust and bearer token auth
+      const batchAuthHeader = request.headers.get('Authorization');
+      let batchAuthed = false;
+      if (batchAuthHeader && batchAuthHeader.startsWith('Bearer ') && env.SERVICE_API_TOKEN) {
+        batchAuthed = batchAuthHeader.slice(7) === env.SERVICE_API_TOKEN;
+      }
+      if (!batchAuthed) {
+        const authError = await requireAuth(request, env);
+        if (authError) return authError;
+      }
 
       const body = await request.json().catch(() => ({}));
       const offset = body.cursor || 0;
       const batchSize = Math.min(body.batchSize || 10, 50);
+      const purge = body.purge || false; // if true, delete bad KV entries (null scene+topics)
 
-      console.log(`[CLASSIFY-BATCH] Starting batch, offset=${offset}, batchSize=${batchSize}`);
+      console.log(`[CLASSIFY-BATCH] Starting batch, offset=${offset}, batchSize=${batchSize}, purge=${purge}`);
 
       try {
-        // Query D1 for moderated videos
-        const rows = await env.MODERATION_DB.prepare(
-          'SELECT sha256 FROM moderation_results ORDER BY moderated_at LIMIT ? OFFSET ?'
-        ).bind(batchSize, offset).all();
+        // Fetch videos from funnelcake REST API (has video_url, d_tag=sha256)
+        const funnelcakeUrl = `https://relay.divine.video/api/videos?limit=${batchSize}&offset=${offset}&sort=recent`;
+        const fcResp = await fetch(funnelcakeUrl);
+        if (!fcResp.ok) {
+          return new Response(JSON.stringify({
+            error: `Funnelcake API returned ${fcResp.status}`, funnelcakeUrl
+          }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+        }
+        const videos = await fcResp.json();
 
-        if (!rows.results || rows.results.length === 0) {
+        if (!videos || videos.length === 0) {
           return new Response(JSON.stringify({
             classified: 0, skipped: 0, errors: 0, offset, hasMore: false,
-            message: 'No more videos to process'
+            message: 'No more videos from funnelcake'
           }), { headers: { 'Content-Type': 'application/json' } });
         }
 
         const details = [];
-        let classified = 0, skipped = 0, errors = 0;
+        let classified = 0, skipped = 0, errors = 0, purged = 0;
 
-        for (const row of rows.results) {
-          const { sha256 } = row;
+        for (const video of videos) {
+          const videoUrl = video.video_url;
+          // Extract sha256 from video URL path (works for both new videos and imported Vines)
+          // URL format: https://media.divine.video/{sha256} or https://media.divine.video/{sha256}.mp4
+          const urlPath = videoUrl ? videoUrl.split('/').pop().replace(/\.\w+$/, '') : null;
+          const sha256 = (urlPath && /^[0-9a-f]{64}$/.test(urlPath)) ? urlPath : video.d_tag;
+
+          if (!sha256 || !/^[0-9a-f]{64}$/.test(sha256) || !videoUrl) {
+            details.push({ sha256: sha256 || video.d_tag || '?', status: 'error', error: 'no sha256 (d_tag=' + (video.d_tag||'?') + ', url=' + (videoUrl||'?') + ')' });
+            errors++;
+            continue;
+          }
+
           try {
-            // Check if classifier data already exists
+            // Check if classifier data already exists in KV
             const existing = await env.MODERATION_KV.get(`classifier:${sha256}`);
             if (existing) {
-              details.push({ sha256, status: 'skipped', reason: 'already has classifier data' });
-              skipped++;
+              // If purge mode, check if data is empty and delete it
+              if (purge) {
+                try {
+                  const parsed = JSON.parse(existing);
+                  if (!parsed.sceneClassification && !parsed.topicProfile) {
+                    await env.MODERATION_KV.delete(`classifier:${sha256}`);
+                    details.push({ sha256, status: 'purged', reason: 'empty classifier data deleted' });
+                    purged++;
+                    // Fall through to re-classify below
+                  } else {
+                    details.push({ sha256, status: 'skipped', reason: 'has valid classifier data' });
+                    skipped++;
+                    continue;
+                  }
+                } catch (e) {
+                  await env.MODERATION_KV.delete(`classifier:${sha256}`);
+                  purged++;
+                }
+              } else {
+                details.push({ sha256, status: 'skipped' });
+                skipped++;
+                continue;
+              }
+            }
+
+            // Run classify-only pipeline with the video URL from funnelcake
+            const result = await classifyVideoOnly(sha256, env, { videoUrl });
+
+            const sceneResult = result.sceneClassification;
+            const hasScene = sceneResult && sceneResult.labels && sceneResult.labels.length > 0;
+            const hasTopics = !!result.topicProfile;
+
+            // Don't store empty results — VLM object exists but all arrays empty
+            if (!hasScene && !hasTopics) {
+              const rawContent = sceneResult?.raw?.choices?.[0]?.message?.content || 'no raw';
+              details.push({ sha256, status: 'empty', error: 'VLM returned no labels', videoUrl, rawContent: rawContent.slice(0, 200) });
+              errors++;
               continue;
             }
 
-            // Run classify-only pipeline
-            const result = await classifyVideoOnly(sha256, env);
-
-            // Store in KV (same format as queue handler step 7.5, rawClassifierData: null)
+            // Store in KV
+            const sceneForStorage = result.sceneClassification ? formatForStorage(result.sceneClassification) : null;
             const classifierPayload = {
               sha256,
               provider: 'classify-only',
               moderatedAt: new Date().toISOString(),
               rawClassifierData: null,
-              sceneClassification: result.sceneClassification ? formatForStorage(result.sceneClassification) : null,
+              sceneClassification: sceneForStorage,
               topicProfile: result.topicProfile || null
             };
             await env.MODERATION_KV.put(
@@ -1181,27 +1311,34 @@ async function runClassification() {
               { expirationTtl: 60 * 60 * 24 * 180 }
             );
 
-            const hasScene = !!result.sceneClassification;
-            const hasTopics = !!result.topicProfile;
-            details.push({ sha256, status: 'classified', hasScene, hasTopics });
+            // Count recommendation labels
+            const recoLabelList = [];
+            if (sceneForStorage) recoLabelList.push(...formatForGorse(sceneForStorage));
+            if (result.topicProfile) recoLabelList.push(...topicsToLabels(result.topicProfile));
+
+            const sceneLabels = sceneForStorage?.labels?.length || 0;
+            const sceneSummary = sceneForStorage?.labels?.slice(0, 5)?.map(l => `${l.namespace}:${l.label}`)?.join(', ') || 'none';
+            const primaryTopic = result.topicProfile?.primary_topic || null;
+            details.push({
+              sha256, status: 'classified', hasScene, hasTopics,
+              sceneLabels, sceneSummary, primaryTopic,
+              kvStored: true, recoLabels: recoLabelList.length, videoUrl
+            });
             classified++;
-            console.log(`[CLASSIFY-BATCH] Classified ${sha256}: scene=${hasScene}, topics=${hasTopics}`);
+            console.log(`[CLASSIFY-BATCH] ${sha256}: scene=${sceneLabels} topics=${primaryTopic} url=${videoUrl}`);
           } catch (err) {
-            details.push({ sha256, status: 'error', error: err.message });
+            details.push({ sha256, status: 'error', error: err.message, videoUrl });
             errors++;
-            console.error(`[CLASSIFY-BATCH] Error classifying ${sha256}: ${err.message}`);
+            console.error(`[CLASSIFY-BATCH] Error ${sha256}: ${err.message}`);
           }
         }
 
-        const nextOffset = offset + rows.results.length;
-        // Check if there are more rows beyond this batch
-        const countResult = await env.MODERATION_DB.prepare(
-          'SELECT COUNT(*) as total FROM moderation_results'
-        ).first();
-        const hasMore = nextOffset < (countResult?.total || 0);
+        const nextOffset = offset + videos.length;
+        const hasMore = videos.length === batchSize; // if we got a full page, there's probably more
 
         return new Response(JSON.stringify({
-          classified, skipped, errors, offset: nextOffset, hasMore, details
+          classified, skipped, errors, purged, offset: nextOffset, hasMore, details,
+          source: 'funnelcake'
         }), { headers: { 'Content-Type': 'application/json' } });
       } catch (err) {
         console.error(`[CLASSIFY-BATCH] Batch error: ${err.message}`);
@@ -1248,6 +1385,64 @@ async function runClassification() {
       } catch (err) {
         console.error(`[CLASSIFY-SINGLE] Error: ${err.message}`);
         return new Response(JSON.stringify({ error: err.message }), {
+          status: 500, headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // VLM debug endpoint — calls Hive VLM and returns the raw API response
+    if (url.pathname === '/admin/api/vlm-debug' && request.method === 'POST') {
+      // Accept both Zero Trust and bearer token auth
+      const authHeader = request.headers.get('Authorization');
+      let authed = false;
+      if (authHeader && authHeader.startsWith('Bearer ') && env.SERVICE_API_TOKEN) {
+        authed = authHeader.slice(7) === env.SERVICE_API_TOKEN;
+      }
+      if (!authed) {
+        const authError = await requireAuth(request, env);
+        if (authError) return authError;
+      }
+
+      const { callVLMClassificationAPI } = await import('./classification/providers/hiveai/client.mjs');
+      const { parseVLMContent } = await import('./classification/providers/hiveai/normalizer.mjs');
+
+      const body = await request.json().catch(() => ({}));
+      const videoUrl = body.videoUrl;
+      if (!videoUrl) {
+        return new Response(JSON.stringify({ error: 'videoUrl required' }), {
+          status: 400, headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (!env.HIVE_VLM_API_KEY) {
+        return new Response(JSON.stringify({ error: 'HIVE_VLM_API_KEY not configured' }), {
+          status: 500, headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      try {
+        console.log(`[VLM-DEBUG] Calling VLM API with: ${videoUrl}`);
+        const startTime = Date.now();
+        const rawResponse = await callVLMClassificationAPI(videoUrl, env.HIVE_VLM_API_KEY, {
+          prompt: env.HIVE_VLM_PROMPT || undefined
+        });
+        const elapsed = Date.now() - startTime;
+
+        // Also parse it to show what the normalizer extracts
+        const parsed = parseVLMContent(rawResponse);
+
+        return new Response(JSON.stringify({
+          elapsed,
+          videoUrl,
+          rawResponse,
+          parsed,
+          contentString: rawResponse?.choices?.[0]?.message?.content || null,
+          finishReason: rawResponse?.choices?.[0]?.finish_reason || null,
+          model: rawResponse?.model || null,
+          usage: rawResponse?.usage || null
+        }, null, 2), { headers: { 'Content-Type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message, videoUrl }), {
           status: 500, headers: { 'Content-Type': 'application/json' }
         });
       }
