@@ -166,9 +166,9 @@ export default {
       const params = [];
 
       if (actionFilter === 'FLAGGED') {
-        whereClause = "WHERE action IN ('REVIEW', 'AGE_RESTRICTED', 'PERMANENT_BAN')";
+        whereClause = "WHERE action IN ('REVIEW', 'AGE_RESTRICTED', 'PERMANENT_BAN') AND reviewed_by IS NULL";
       } else if (actionFilter === 'QUARANTINE') {
-        whereClause = "WHERE action IN ('AGE_RESTRICTED', 'PERMANENT_BAN')";
+        whereClause = "WHERE action IN ('AGE_RESTRICTED', 'PERMANENT_BAN') AND reviewed_by IS NULL";
       } else if (actionFilter !== 'all') {
         whereClause = 'WHERE action = ?';
         params.push(actionFilter.toUpperCase());
