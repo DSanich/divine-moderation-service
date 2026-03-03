@@ -2341,6 +2341,16 @@ async function notifyBlossom(sha256, action, env) {
     return { success: true, skipped: true };
   }
 
+  // Only forward actions that Blossom understands. Blossom has four states
+  // (Active/Restricted/Pending/Banned) and returns 400 for unrecognized actions.
+  // REVIEW and QUARANTINE are internal classification tiers; content in those
+  // states stays publicly accessible (equivalent to Blossom's Pending).
+  const blossomActions = ['SAFE', 'AGE_RESTRICTED', 'PERMANENT_BAN'];
+  if (!blossomActions.includes(action)) {
+    console.log(`[BLOSSOM] Skipping notification for internal action: ${action}`);
+    return { success: true, skipped: true };
+  }
+
   try {
     const headers = {
       'Content-Type': 'application/json',
