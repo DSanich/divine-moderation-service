@@ -130,7 +130,7 @@ describe('Moderation Pipeline', () => {
     // Check that Sightengine was called with correct URL (URL encoded)
     const callUrl = mockFetch.mock.calls[0][0];
     const decodedUrl = decodeURIComponent(callUrl);
-    expect(decodedUrl).toContain(`https://cdn.divine.video/${sha256}.mp4`);
+    expect(decodedUrl).toContain(`https://cdn.divine.video/${sha256}`);
   });
 
   it('should include metadata in result', async () => {

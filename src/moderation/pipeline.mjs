@@ -32,7 +32,7 @@ export async function classifyVideoOnly(sha256, env, options = {}) {
   }
 
   // Resolve video URL — use explicit URL, or try Nostr metadata, fall back to CDN
-  let videoUrl = options.videoUrl || `https://${env.CDN_DOMAIN}/${sha256}.mp4`;
+  let videoUrl = options.videoUrl || `https://${env.CDN_DOMAIN}/${sha256}`;
   if (!options.videoUrl) {
     try {
       const relays = env.NOSTR_RELAY_URL ? [env.NOSTR_RELAY_URL] : ['wss://relay.divine.video'];
@@ -125,7 +125,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
 
   // Step 1: Determine video URL - prefer metadata.videoUrl if provided (e.g., from relay-poller)
   let nostrContext = null;
-  let videoUrl = metadata?.videoUrl || `https://${env.CDN_DOMAIN}/${sha256}.mp4`; // Default fallback
+  let videoUrl = metadata?.videoUrl || `https://${env.CDN_DOMAIN}/${sha256}`; // Default: blossom content-addressed URL
   let nostrEventId = metadata?.eventId || null;
 
   // If we don't have a video URL from metadata, try to fetch from Nostr relay

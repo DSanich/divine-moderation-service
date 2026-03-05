@@ -211,10 +211,10 @@ export function parseVideoEventMetadata(event) {
         break;
       case 'imeta':
         // Extract URL from imeta tag - format: "url https://..."
-        // This is the ACTUAL video file URL (e.g., cdn.divine.video)
+        // Blossom URLs use content-addressed hashes without file extensions
         for (let i = 1; i < tag.length; i++) {
           const param = tag[i];
-          if (param && param.startsWith('url ') && param.includes('.mp4')) {
+          if (param && param.startsWith('url ') && param.length > 4) {
             metadata.url = param.substring(4).trim();
             break;
           }

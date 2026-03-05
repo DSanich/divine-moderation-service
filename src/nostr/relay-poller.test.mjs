@@ -111,6 +111,34 @@ describe('Relay Poller - SHA256 Extraction', () => {
 });
 
 describe('Relay Poller - Video URL Extraction', () => {
+  // Helper that mirrors the extractVideoUrlFromEvent logic
+  function extractVideoUrlFromEvent(event, env = {}) {
+    if (!event || !event.tags) return null;
+
+    // Check imeta tag for URL first (most reliable)
+    for (const tag of event.tags) {
+      if (tag[0] === 'imeta') {
+        let imetaUrl = null;
+        for (let i = 1; i < tag.length; i++) {
+          const param = tag[i];
+          if (param && param.startsWith('url ')) {
+            imetaUrl = param.substring(4).trim();
+          }
+        }
+        if (imetaUrl) return imetaUrl;
+      }
+    }
+
+    // Check r tags (any http URL)
+    for (const tag of event.tags) {
+      if (tag[0] === 'r' && tag[1] && tag[1].startsWith('http')) {
+        return tag[1];
+      }
+    }
+
+    return null;
+  }
+
   it('should extract video URL from r tag', () => {
     const event = {
       tags: [
@@ -119,17 +147,7 @@ describe('Relay Poller - Video URL Extraction', () => {
       ]
     };
 
-    let url = null;
-    for (const tag of event.tags) {
-      if (tag[0] === 'r' && tag[1]) {
-        const candidate = tag[1];
-        if (candidate.includes('.mp4') || candidate.includes('/video/')) {
-          url = candidate;
-          break;
-        }
-      }
-    }
-
+    const url = extractVideoUrlFromEvent(event);
     expect(url).toBe('https://cdn.divine.video/test.mp4');
   });
 
@@ -140,20 +158,43 @@ describe('Relay Poller - Video URL Extraction', () => {
       ]
     };
 
-    let url = null;
-    for (const tag of event.tags) {
-      if (tag[0] === 'imeta') {
-        for (let i = 1; i < tag.length; i++) {
-          const param = tag[i];
-          if (param && param.startsWith('url ')) {
-            url = param.substring(4).trim();
-            break;
-          }
-        }
-      }
-    }
-
+    const url = extractVideoUrlFromEvent(event);
     expect(url).toBe('https://cdn.divine.video/video123.mp4');
+  });
+
+  it('should extract blossom URL without file extension from imeta', () => {
+    const event = {
+      tags: [
+        ['imeta', 'url https://blossom.example.com/abcdef1234567890', 'm video/mp4', 'x abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890']
+      ]
+    };
+
+    const url = extractVideoUrlFromEvent(event);
+    expect(url).toBe('https://blossom.example.com/abcdef1234567890');
+  });
+
+  it('should extract blossom URL without file extension from r tag', () => {
+    const event = {
+      tags: [
+        ['r', 'https://blossom.other.server/abcdef1234567890'],
+        ['title', 'External Video']
+      ]
+    };
+
+    const url = extractVideoUrlFromEvent(event);
+    expect(url).toBe('https://blossom.other.server/abcdef1234567890');
+  });
+
+  it('should prefer imeta URL over r tag URL', () => {
+    const event = {
+      tags: [
+        ['r', 'https://old.server.com/video'],
+        ['imeta', 'url https://blossom.server.com/abc123', 'm video/mp4', 'x abc123']
+      ]
+    };
+
+    const url = extractVideoUrlFromEvent(event);
+    expect(url).toBe('https://blossom.server.com/abc123');
   });
 });
 
