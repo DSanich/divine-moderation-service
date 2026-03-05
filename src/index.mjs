@@ -11,6 +11,8 @@ import { requireAuth, getAuthenticatedUser } from './admin/auth.mjs';
 import { verifyZeroTrustJWT } from './admin/zerotrust.mjs';
 import { fetchNostrEventBySha256, parseVideoEventMetadata } from './nostr/relay-client.mjs';
 import { pollRelayForVideos, getLastPollTimestamp, setLastPollTimestamp, getPollingStatus } from './nostr/relay-poller.mjs';
+import { getPublicKey } from 'nostr-tools/pure';
+import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import dashboardHTML from './admin/dashboard.html';
 import swipeReviewHTML from './admin/swipe-review.html';
 import { initReportsTable, addReport } from './reports.mjs';
@@ -361,7 +363,7 @@ export default {
             thumbnailUrl: row.thumbnail_url,
             receivedAt: row.received_at,
             status: 'UNTRIAGED',
-            cdnUrl: `https://${env.CDN_DOMAIN}/${row.sha256}.mp4`,
+            cdnUrl: `https://${env.CDN_DOMAIN}/${row.sha256}`,
             nostrContext: {
               title: nostr.title,
               author: nostr.author,
@@ -869,6 +871,22 @@ export default {
       console.log(`[ADMIN] Thresholds reset to defaults`);
 
       return new Response(JSON.stringify({ success: true, thresholds: DEFAULT_THRESHOLDS, source: 'defaults' }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Get moderation service's Nostr pubkey (for adding to relay ADMIN_PUBKEYS)
+    if (url.pathname === '/admin/api/nostr-pubkey') {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      if (!env.NOSTR_PRIVATE_KEY) {
+        return new Response(JSON.stringify({ error: 'NOSTR_PRIVATE_KEY not configured' }), {
+          status: 500, headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      const pubkey = bytesToHex(getPublicKey(hexToBytes(env.NOSTR_PRIVATE_KEY)));
+      return new Response(JSON.stringify({ pubkey, note: 'Add this to ADMIN_PUBKEYS on the funnelcake relay' }), {
         headers: { 'Content-Type': 'application/json' }
       });
     }

@@ -246,24 +246,37 @@ function extractVideoUrlFromEvent(event, env) {
     return null;
   }
 
-  // Check 'r' tags for video URL
+  // Check imeta tag for URL first (most reliable — includes mime type context)
   for (const tag of event.tags) {
-    if (tag[0] === 'r' && tag[1]) {
-      const url = tag[1];
-      if (url.includes('.mp4') || url.includes('/video/')) {
-        return url;
+    if (tag[0] === 'imeta') {
+      let imetaUrl = null;
+      let isVideo = false;
+      for (let i = 1; i < tag.length; i++) {
+        const param = tag[i];
+        if (param && param.startsWith('url ')) {
+          imetaUrl = param.substring(4).trim();
+        }
+        if (param && (param.startsWith('m video/') || param === 'm video/mp4')) {
+          isVideo = true;
+        }
+      }
+      // Accept if URL looks like video or mime says video
+      if (imetaUrl && (isVideo || imetaUrl.includes('.mp4') || imetaUrl.includes('/video/'))) {
+        return imetaUrl;
+      }
+      // For kind 34236 (video events), accept any imeta URL — it's already a video event
+      if (imetaUrl) {
+        return imetaUrl;
       }
     }
   }
 
-  // Check imeta tag for URL
+  // Check 'r' tags for video URL (blossom URLs may not have .mp4 extension)
   for (const tag of event.tags) {
-    if (tag[0] === 'imeta') {
-      for (let i = 1; i < tag.length; i++) {
-        const param = tag[i];
-        if (param && param.startsWith('url ')) {
-          return param.substring(4).trim();
-        }
+    if (tag[0] === 'r' && tag[1]) {
+      const url = tag[1];
+      if (url.startsWith('http')) {
+        return url;
       }
     }
   }
@@ -271,7 +284,7 @@ function extractVideoUrlFromEvent(event, env) {
   // Fallback: construct URL from SHA256
   const sha256 = extractSha256FromImeta(event);
   if (sha256 && env.CDN_DOMAIN) {
-    return `https://${env.CDN_DOMAIN}/${sha256}.mp4`;
+    return `https://${env.CDN_DOMAIN}/${sha256}`;
   }
 
   return null;
