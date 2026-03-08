@@ -1,0 +1,709 @@
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+  If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Messages - Divine Moderation</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .header {
+      padding: 16px 20px;
+      border-bottom: 2px solid #333;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .header h1 {
+      color: #fff;
+      font-size: 22px;
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .header-actions a,
+    .header-actions button {
+      background: #333;
+      color: #e0e0e0;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      text-decoration: none;
+      transition: background 0.2s;
+    }
+
+    .header-actions a:hover,
+    .header-actions button:hover {
+      background: #444;
+    }
+
+    .header-actions .btn-primary {
+      background: #2563eb;
+      color: white;
+    }
+
+    .header-actions .btn-primary:hover {
+      background: #1d4ed8;
+    }
+
+    .main-container {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+    }
+
+    /* --- Left Panel: Conversation List --- */
+    .conversation-list {
+      width: 30%;
+      min-width: 280px;
+      border-right: 1px solid #333;
+      display: flex;
+      flex-direction: column;
+      background: #0f0f0f;
+    }
+
+    .conversation-list-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid #222;
+      font-size: 13px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .conversation-items {
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    .conversation-item {
+      padding: 14px 16px;
+      border-bottom: 1px solid #1a1a1a;
+      cursor: pointer;
+      transition: background 0.15s;
+      position: relative;
+    }
+
+    .conversation-item:hover {
+      background: #1a1a1a;
+    }
+
+    .conversation-item.active {
+      background: #1a2332;
+      border-left: 3px solid #2563eb;
+    }
+
+    .conversation-item .pubkey {
+      font-size: 13px;
+      font-weight: 600;
+      color: #fff;
+      font-family: "SF Mono", "Fira Code", monospace;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .conversation-item .preview {
+      font-size: 12px;
+      color: #888;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 4px;
+    }
+
+    .conversation-item .meta {
+      font-size: 11px;
+      color: #555;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .badge-report {
+      background: #7f1d1d;
+      color: #fca5a5;
+    }
+
+    .badge-moderation {
+      background: #713f12;
+      color: #fde68a;
+    }
+
+    .badge-general {
+      background: #1e3a5f;
+      color: #93c5fd;
+    }
+
+    .unread-dot {
+      width: 8px;
+      height: 8px;
+      background: #2563eb;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .empty-state {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: #555;
+      font-size: 14px;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 3px solid #333;
+      border-top-color: #2563eb;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .loading-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 12px;
+      color: #555;
+      font-size: 13px;
+    }
+
+    /* --- Right Panel: Thread View --- */
+    .thread-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .thread-header {
+      padding: 12px 20px;
+      border-bottom: 1px solid #222;
+      background: #0f0f0f;
+      flex-shrink: 0;
+    }
+
+    .thread-header .thread-pubkey {
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+      font-family: "SF Mono", "Fira Code", monospace;
+    }
+
+    .thread-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .message-bubble {
+      max-width: 70%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.5;
+      word-wrap: break-word;
+    }
+
+    .message-bubble.incoming {
+      align-self: flex-start;
+      background: #2a2a2a;
+      color: #e0e0e0;
+      border-bottom-left-radius: 4px;
+    }
+
+    .message-bubble.outgoing {
+      align-self: flex-end;
+      background: #2563eb;
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .message-bubble .bubble-meta {
+      font-size: 11px;
+      margin-top: 6px;
+      opacity: 0.6;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .message-bubble .video-link {
+      display: inline-block;
+      margin-top: 6px;
+      font-size: 12px;
+      color: #93c5fd;
+      text-decoration: none;
+    }
+
+    .message-bubble.outgoing .video-link {
+      color: #bfdbfe;
+    }
+
+    .message-bubble .video-link:hover {
+      text-decoration: underline;
+    }
+
+    .message-bubble .type-tag {
+      display: inline-block;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 10px;
+      background: rgba(255,255,255,0.15);
+    }
+
+    /* --- Compose Box --- */
+    .compose-box {
+      padding: 16px 20px;
+      border-top: 1px solid #333;
+      background: #0f0f0f;
+      flex-shrink: 0;
+    }
+
+    .compose-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    .compose-box textarea {
+      flex: 1;
+      background: #1a1a1a;
+      color: #e0e0e0;
+      border: 1px solid #333;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-family: inherit;
+      resize: none;
+      min-height: 42px;
+      max-height: 120px;
+    }
+
+    .compose-box textarea:focus {
+      outline: none;
+      border-color: #2563eb;
+    }
+
+    .compose-box .send-btn {
+      background: #2563eb;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      transition: background 0.2s;
+      align-self: flex-end;
+    }
+
+    .compose-box .send-btn:hover {
+      background: #1d4ed8;
+    }
+
+    .compose-box .send-btn:disabled {
+      background: #333;
+      color: #666;
+      cursor: not-allowed;
+    }
+
+    .compose-extras {
+      margin-top: 8px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .compose-extras label {
+      font-size: 11px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .compose-extras input {
+      background: #1a1a1a;
+      color: #e0e0e0;
+      border: 1px solid #333;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: "SF Mono", "Fira Code", monospace;
+      width: 200px;
+    }
+
+    .compose-extras input:focus {
+      outline: none;
+      border-color: #2563eb;
+    }
+
+    /* --- Responsive --- */
+    @media (max-width: 768px) {
+      .main-container {
+        flex-direction: column;
+      }
+
+      .conversation-list {
+        width: 100%;
+        min-width: unset;
+        max-height: 40vh;
+        border-right: none;
+        border-bottom: 1px solid #333;
+      }
+
+      .thread-panel {
+        min-height: 0;
+      }
+
+      .message-bubble {
+        max-width: 85%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Messages</h1>
+    <div class="header-actions">
+      <a href="/admin/dashboard">Back to Dashboard</a>
+      <button class="btn-primary" onclick="refreshAll()">Refresh</button>
+    </div>
+  </div>
+
+  <div class="main-container">
+    <!-- Left Panel -->
+    <div class="conversation-list">
+      <div class="conversation-list-header">Conversations</div>
+      <div class="conversation-items" id="conversation-items">
+        <div class="loading-state" id="conv-loading">
+          <div class="spinner"></div>
+          <span>Loading conversations...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Panel -->
+    <div class="thread-panel" id="thread-panel">
+      <div class="empty-state" id="thread-placeholder">
+        Select a conversation to view messages
+      </div>
+      <div id="thread-content" style="display: none; flex-direction: column; height: 100%;">
+        <div class="thread-header">
+          <span class="thread-pubkey" id="thread-pubkey"></span>
+        </div>
+        <div class="thread-messages" id="thread-messages">
+          <div class="loading-state" id="thread-loading" style="display: none;">
+            <div class="spinner"></div>
+            <span>Loading messages...</span>
+          </div>
+        </div>
+        <div class="compose-box">
+          <div class="compose-row">
+            <textarea id="compose-input" placeholder="Type a message..." rows="1"
+              onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
+            <button class="send-btn" id="send-btn" onclick="sendMessage()">Send</button>
+          </div>
+          <div class="compose-extras">
+            <label>Link video:</label>
+            <input type="text" id="compose-sha256" placeholder="sha256 (optional)">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let selectedPubkey = null;
+    let conversations = [];
+
+    // --- Helpers ---
+
+    function truncatePubkey(hex) {
+      if (!hex) return '(unknown)';
+      if (hex.length <= 16) return hex;
+      return hex.slice(0, 8) + '...' + hex.slice(-8);
+    }
+
+    function relativeTime(ts) {
+      if (!ts) return '';
+      const now = Date.now();
+      const date = typeof ts === 'number' ? ts * 1000 : new Date(ts).getTime();
+      const diff = Math.max(0, now - date);
+      const seconds = Math.floor(diff / 1000);
+      if (seconds < 60) return 'just now';
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return minutes + 'm ago';
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return hours + 'h ago';
+      const days = Math.floor(hours / 24);
+      if (days < 30) return days + 'd ago';
+      return new Date(date).toLocaleDateString();
+    }
+
+    function badgeClass(messageType) {
+      if (!messageType) return 'badge-general';
+      if (messageType.includes('report')) return 'badge-report';
+      if (messageType.includes('moderation') || messageType.includes('quarantine') || messageType.includes('ban')) return 'badge-moderation';
+      return 'badge-general';
+    }
+
+    function badgeLabel(messageType) {
+      if (!messageType) return '';
+      // Convert snake_case to Title Case
+      return messageType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    // --- Fetch conversations ---
+
+    async function fetchConversations() {
+      const container = document.getElementById('conversation-items');
+      const loading = document.getElementById('conv-loading');
+      loading.style.display = 'flex';
+
+      try {
+        const res = await fetch('/admin/api/messages?limit=50');
+        if (!res.ok) throw new Error('Failed to fetch conversations');
+        const data = await res.json();
+        conversations = data.conversations || data || [];
+        renderConversations();
+      } catch (err) {
+        container.innerHTML = '<div class="empty-state">Failed to load conversations</div>';
+        console.error('fetchConversations error:', err);
+      }
+    }
+
+    function renderConversations() {
+      const container = document.getElementById('conversation-items');
+
+      if (!conversations.length) {
+        container.innerHTML = '<div class="empty-state">No conversations yet</div>';
+        return;
+      }
+
+      container.innerHTML = conversations.map(conv => {
+        const pubkey = conv.participant_pubkey || conv.pubkey || '';
+        const preview = (conv.latest_message || conv.preview || '').slice(0, 80);
+        const ts = conv.last_message_at || conv.updated_at || conv.created_at;
+        const msgType = conv.message_type || conv.latest_message_type || '';
+        const unread = conv.unread || conv.has_unread || false;
+        const isActive = pubkey === selectedPubkey;
+
+        return `
+          <div class="conversation-item ${isActive ? 'active' : ''}" onclick="selectConversation('${pubkey}')">
+            <div class="pubkey">
+              ${unread ? '<span class="unread-dot"></span>' : ''}
+              ${truncatePubkey(pubkey)}
+            </div>
+            <div class="preview">${escapeHtml(preview) || '(no messages)'}</div>
+            <div class="meta">
+              <span>${relativeTime(ts)}</span>
+              ${msgType ? '<span class="badge ' + badgeClass(msgType) + '">' + badgeLabel(msgType) + '</span>' : ''}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    // --- Select conversation & load thread ---
+
+    async function selectConversation(pubkey) {
+      selectedPubkey = pubkey;
+      renderConversations();
+
+      document.getElementById('thread-placeholder').style.display = 'none';
+      const content = document.getElementById('thread-content');
+      content.style.display = 'flex';
+
+      document.getElementById('thread-pubkey').textContent = truncatePubkey(pubkey);
+      document.getElementById('compose-input').value = '';
+      document.getElementById('compose-sha256').value = '';
+
+      await loadThread(pubkey);
+    }
+
+    async function loadThread(pubkey) {
+      const container = document.getElementById('thread-messages');
+      const loading = document.getElementById('thread-loading');
+      loading.style.display = 'flex';
+      // Clear old messages but keep loading indicator
+      Array.from(container.children).forEach(child => {
+        if (child.id !== 'thread-loading') child.remove();
+      });
+
+      try {
+        const res = await fetch('/admin/api/messages/' + encodeURIComponent(pubkey));
+        if (!res.ok) throw new Error('Failed to load thread');
+        const data = await res.json();
+        const messages = data.messages || data || [];
+        loading.style.display = 'none';
+        renderThread(messages);
+      } catch (err) {
+        loading.style.display = 'none';
+        container.innerHTML += '<div class="empty-state">Failed to load messages</div>';
+        console.error('loadThread error:', err);
+      }
+    }
+
+    function renderThread(messages) {
+      const container = document.getElementById('thread-messages');
+      // Clear all except loading indicator
+      Array.from(container.children).forEach(child => {
+        if (child.id !== 'thread-loading') child.remove();
+      });
+
+      if (!messages.length) {
+        const el = document.createElement('div');
+        el.className = 'empty-state';
+        el.textContent = 'No messages in this conversation';
+        container.appendChild(el);
+        return;
+      }
+
+      messages.forEach(msg => {
+        const direction = msg.direction || (msg.from_moderator ? 'outgoing' : 'incoming');
+        const bubble = document.createElement('div');
+        bubble.className = 'message-bubble ' + direction;
+
+        let html = '<div>' + escapeHtml(msg.content || msg.message || '') + '</div>';
+
+        if (msg.sha256) {
+          html += '<a class="video-link" href="/admin/video/' + encodeURIComponent(msg.sha256) + '" target="_blank">View video: ' + msg.sha256.slice(0, 12) + '...</a>';
+        }
+
+        const ts = msg.created_at || msg.timestamp;
+        const msgType = msg.message_type;
+        html += '<div class="bubble-meta">';
+        html += '<span>' + relativeTime(ts) + '</span>';
+        if (msgType) {
+          html += '<span class="type-tag">' + badgeLabel(msgType) + '</span>';
+        }
+        html += '</div>';
+
+        bubble.innerHTML = html;
+        container.appendChild(bubble);
+      });
+
+      // Auto-scroll to bottom
+      container.scrollTop = container.scrollHeight;
+    }
+
+    // --- Send message ---
+
+    async function sendMessage() {
+      if (!selectedPubkey) return;
+      const input = document.getElementById('compose-input');
+      const sha256Input = document.getElementById('compose-sha256');
+      const sendBtn = document.getElementById('send-btn');
+      const text = input.value.trim();
+      if (!text) return;
+
+      sendBtn.disabled = true;
+      const body = { message: text };
+      const sha256 = sha256Input.value.trim();
+      if (sha256) body.sha256 = sha256;
+
+      try {
+        const res = await fetch('/admin/api/messages/' + encodeURIComponent(selectedPubkey), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        if (!res.ok) throw new Error('Failed to send message');
+
+        input.value = '';
+        sha256Input.value = '';
+        await loadThread(selectedPubkey);
+      } catch (err) {
+        alert('Failed to send message: ' + err.message);
+        console.error('sendMessage error:', err);
+      } finally {
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    }
+
+    // --- Refresh ---
+
+    async function refreshAll() {
+      try {
+        // Trigger sync first
+        await fetch('/admin/api/messages/sync', { method: 'POST' }).catch(() => {});
+      } catch (e) {
+        // sync endpoint may not exist yet; ignore
+      }
+      await fetchConversations();
+      if (selectedPubkey) {
+        await loadThread(selectedPubkey);
+      }
+    }
+
+    // --- Auto-resize textarea ---
+
+    document.getElementById('compose-input').addEventListener('input', function() {
+      this.style.height = 'auto';
+      this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+    });
+
+    // --- Init ---
+    fetchConversations();
+  </script>
+</body>
+</html>

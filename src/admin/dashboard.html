@@ -1322,6 +1322,7 @@
           <button id="undo-btn" onclick="undoLastAction()" style="background: #2563eb; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px;">Undo</button>
           <button onclick="clearUndo()" style="background: none; border: none; color: #666; cursor: pointer; font-size: 18px;">×</button>
         </div>
+        <button onclick="window.location.href='/admin/messages'" style="background: #333; color: #e0e0e0; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; position: relative;">Messages <span id="unread-badge" style="display:none; position:absolute; top:-4px; right:-4px; background:#ef4444; color:white; font-size:10px; font-weight:700; padding:2px 6px; border-radius:10px; min-width:16px; text-align:center;"></span></button>
         <button class="btn-primary" onclick="window.location.href='/admin/review'" style="background: #2563eb; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">Quick Review</button>
         <button onclick="openThresholdsModal()" style="background: #333; color: #e0e0e0; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">Settings</button>
         <button class="logout" onclick="logout()">Logout</button>
@@ -3321,6 +3322,25 @@
     loadRealStats();
     // Set filter dropdown to TRIAGE
     document.getElementById('filter-action').value = 'TRIAGE';
+
+    // Fetch unread message count for badge
+    (async function() {
+      try {
+        const res = await fetch('/admin/api/messages?limit=50');
+        if (res.ok) {
+          const data = await res.json();
+          const convs = data.conversations || data || [];
+          const unread = convs.filter(c => c.unread || c.has_unread).length;
+          if (unread > 0) {
+            const badge = document.getElementById('unread-badge');
+            if (badge) {
+              badge.textContent = unread > 99 ? '99+' : unread;
+              badge.style.display = 'inline-block';
+            }
+          }
+        }
+      } catch (e) { /* messages API may not exist yet */ }
+    })();
   </script>
 
   <!-- Edit Scores Modal -->

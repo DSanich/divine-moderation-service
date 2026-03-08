@@ -15,6 +15,7 @@ import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import dashboardHTML from './admin/dashboard.html';
 import swipeReviewHTML from './admin/swipe-review.html';
+import messagesHTML from './admin/messages.html';
 import { initReportsTable, addReport } from './reports.mjs';
 import { initOffenderTable, updateUploaderStats, getUploaderStats } from './offender-tracker.mjs';
 import { formatForStorage, formatForGorse, formatForFunnelcake } from './classification/pipeline.mjs';
@@ -448,6 +449,15 @@ export default {
       }
 
       return new Response(swipeReviewHTML, {
+        headers: { 'Content-Type': 'text/html' }
+      });
+    }
+
+    if (url.pathname === '/admin/messages') {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      return new Response(messagesHTML, {
         headers: { 'Content-Type': 'text/html' }
       });
     }
@@ -898,6 +908,25 @@ export default {
 
       console.log(`[ADMIN] Updated ${sha256} from ${previousAction} to ${action} (blossom: ${blossomResult.success})`);
 
+      // DM creator about moderation action (non-blocking)
+      let dmSent = false;
+      if (['PERMANENT_BAN', 'AGE_RESTRICTED', 'QUARANTINE'].includes(action) && env.MODERATOR_NSEC) {
+        try {
+          // Look up uploaded_by from D1
+          const uploaderRow = await env.BLOSSOM_DB.prepare(
+            'SELECT uploaded_by FROM moderation_results WHERE sha256 = ?'
+          ).bind(sha256).first();
+          if (uploaderRow?.uploaded_by) {
+            const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
+            await sendModerationDM(uploaderRow.uploaded_by, sha256, action, reason || 'Manual moderator action', env, null);
+            dmSent = true;
+            console.log(`[ADMIN] DM sent to creator ${uploaderRow.uploaded_by.substring(0, 16)}...`);
+          }
+        } catch (dmErr) {
+          console.error(`[ADMIN] DM to creator failed:`, dmErr.message);
+        }
+      }
+
       return new Response(JSON.stringify({
         success: true,
         sha256,
@@ -905,7 +934,8 @@ export default {
         previousAction,
         message: `Content updated to ${action}`,
         blossom_notified: blossomResult.success || false,
-        report_published: reportPublished
+        report_published: reportPublished,
+        dm_sent: dmSent
       }), {
         headers: { 'Content-Type': 'application/json' }
       });
@@ -1769,6 +1799,57 @@ async function runMigration() {
       }
     }
 
+    // Admin API: Trigger immediate DM inbox sync
+    if (url.pathname === '/admin/api/messages/sync' && request.method === 'POST') {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      const { syncInbox } = await import('./nostr/dm-reader.mjs');
+      const result = await syncInbox(env);
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Admin API: List DM conversations
+    if (url.pathname === '/admin/api/messages' && request.method === 'GET') {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      const limit = parseInt(url.searchParams.get('limit') || '20');
+      const offset = parseInt(url.searchParams.get('offset') || '0');
+      const { getConversations } = await import('./nostr/dm-store.mjs');
+      const conversations = await getConversations(env.BLOSSOM_DB, { limit, offset });
+      return new Response(JSON.stringify(conversations), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Admin API: Get full DM thread by pubkey
+    if (url.pathname.startsWith('/admin/api/messages/') && request.method === 'GET' && url.pathname.split('/').length === 5) {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      const pubkey = url.pathname.split('/')[4];
+      const { getConversationByPubkey } = await import('./nostr/dm-store.mjs');
+      const messages = await getConversationByPubkey(env.BLOSSOM_DB, pubkey);
+      if (!messages) {
+        return new Response(JSON.stringify({ error: 'No conversation found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify(messages), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Admin API: Send DM reply to a user
+    if (url.pathname.startsWith('/admin/api/messages/') && request.method === 'POST' && url.pathname.split('/').length === 5) {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      const pubkey = url.pathname.split('/')[4];
+      const { message, sha256 } = await request.json();
+      if (!message) {
+        return new Response(JSON.stringify({ error: 'message is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      const { sendModeratorReply } = await import('./nostr/dm-sender.mjs');
+      await sendModeratorReply(pubkey, message, sha256 || null, env, null);
+      return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
     // API: Submit a user report for a piece of content (NIP-56)
     // Auth: Bearer token or Cloudflare Access JWT
     if (url.pathname === '/api/v1/scan' && request.method === 'POST') {
@@ -2380,8 +2461,8 @@ async function runMigration() {
         // Store result in D1
         await env.BLOSSOM_DB.prepare(`
           INSERT OR REPLACE INTO moderation_results
-          (sha256, action, provider, scores, categories, raw_response, moderated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          (sha256, action, provider, scores, categories, raw_response, moderated_at, uploaded_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           sha256,
           result.action,
@@ -2389,7 +2470,8 @@ async function runMigration() {
           JSON.stringify(result.scores || {}),
           JSON.stringify(result.categories || []),
           JSON.stringify(result.rawResponse || {}),
-          new Date().toISOString()
+          new Date().toISOString(),
+          result.uploadedBy || null
         ).run();
         console.log(`[MODERATION] Step 7: D1 write successful`);
 
@@ -2434,6 +2516,15 @@ async function runMigration() {
         console.log(`[MODERATION] Step 8: Handling result (action=${result.action})`);
         await handleModerationResult(result, env);
         console.log(`[MODERATION] Step 9: Result handled`);
+
+        // Update uploader stats for repeat offender tracking
+        if (result.uploadedBy) {
+          try {
+            await updateUploaderStats(env.BLOSSOM_DB, result.uploadedBy, result.action);
+          } catch (statsErr) {
+            console.error(`[MODERATION] Failed to update uploader stats:`, statsErr.message);
+          }
+        }
 
         // Acknowledge successful processing
         message.ack();
@@ -2531,6 +2622,17 @@ async function runMigration() {
         console.error('[RELAY-POLLER] Failed to store error:', kvError);
       }
     }
+
+    // Sync DM inbox from relay
+    if (env.MODERATOR_NSEC) {
+      try {
+        const { syncInbox } = await import('./nostr/dm-reader.mjs');
+        const syncResult = await syncInbox(env);
+        console.log(`[CRON] DM inbox sync: ${syncResult.synced} new, ${syncResult.skipped} deduped, ${syncResult.errors} errors`);
+      } catch (err) {
+        console.error('[CRON] DM inbox sync failed:', err);
+      }
+    }
   }
 };
 
@@ -2539,7 +2641,7 @@ async function runMigration() {
  * Action is already stored in D1, this just handles notifications
  */
 async function handleModerationResult(result, env) {
-  const { sha256, action, scores, reason, flaggedFrames, severity, cdnUrl } = result;
+  const { sha256, action, scores, reason, flaggedFrames, severity, cdnUrl, uploadedBy } = result;
 
   console.log(`[MODERATION] handleModerationResult called for ${sha256} with action ${action}`);
 
@@ -2579,6 +2681,17 @@ async function handleModerationResult(result, env) {
 
   if (!blossomResult.success && !blossomResult.skipped) {
     console.warn(`[MODERATION] Blossom notification failed: ${blossomResult.error}`);
+  }
+
+  // Send DM to creator for non-SAFE actions (non-blocking)
+  if (['PERMANENT_BAN', 'AGE_RESTRICTED', 'QUARANTINE'].includes(action) && uploadedBy && env.MODERATOR_NSEC) {
+    try {
+      const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
+      await sendModerationDM(uploadedBy, sha256, action, reason, env, null);
+      console.log(`[MODERATION] ${sha256} - DM notification sent to creator ${uploadedBy.substring(0, 16)}...`);
+    } catch (dmErr) {
+      console.error(`[MODERATION] ${sha256} - DM notification failed:`, dmErr.message);
+    }
   }
 
   console.log(`[MODERATION] handleModerationResult finished for ${sha256}`);

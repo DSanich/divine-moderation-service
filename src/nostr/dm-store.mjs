@@ -1,0 +1,88 @@
+// ABOUTME: DM conversation storage and retrieval for admin dashboard
+// ABOUTME: Provides D1-backed message log with conversation grouping
+
+import { bytesToHex } from '@noble/hashes/utils';
+import { sha256 } from '@noble/hashes/sha256';
+
+export function computeConversationId(pubkeyA, pubkeyB) {
+  const sorted = [pubkeyA, pubkeyB].sort().join('');
+  return bytesToHex(sha256(sorted));
+}
+
+export async function initDmLogTable(db) {
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS dm_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id TEXT NOT NULL,
+      sha256 TEXT,
+      direction TEXT NOT NULL,
+      sender_pubkey TEXT NOT NULL,
+      recipient_pubkey TEXT NOT NULL,
+      message_type TEXT,
+      content TEXT NOT NULL,
+      nostr_event_id TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_dm_conversation ON dm_log(conversation_id)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_dm_recipient ON dm_log(recipient_pubkey)').run();
+  await db.prepare('CREATE INDEX IF NOT EXISTS idx_dm_sha256 ON dm_log(sha256)').run();
+}
+
+export async function logDm(db, { conversationId, sha256, direction, senderPubkey, recipientPubkey, messageType, content, nostrEventId }) {
+  // Dedup by nostr_event_id if provided
+  if (nostrEventId) {
+    const existing = await db.prepare('SELECT id FROM dm_log WHERE nostr_event_id = ?').bind(nostrEventId).first();
+    if (existing) return existing;
+  }
+
+  const result = await db.prepare(`
+    INSERT INTO dm_log (conversation_id, sha256, direction, sender_pubkey, recipient_pubkey, message_type, content, nostr_event_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(conversationId, sha256 || null, direction, senderPubkey, recipientPubkey, messageType || null, content, nostrEventId || null).run();
+
+  return { id: result.meta.last_row_id };
+}
+
+export async function getConversations(db, { limit = 20, offset = 0 } = {}) {
+  const rows = await db.prepare(`
+    SELECT
+      conversation_id,
+      MAX(created_at) as last_message_at,
+      COUNT(*) as message_count,
+      sender_pubkey,
+      recipient_pubkey,
+      content as last_message,
+      sha256 as last_sha256,
+      message_type as last_message_type
+    FROM dm_log
+    WHERE id IN (
+      SELECT MAX(id) FROM dm_log GROUP BY conversation_id
+    )
+    ORDER BY last_message_at DESC
+    LIMIT ? OFFSET ?
+  `).bind(limit, offset).all();
+  return rows.results || [];
+}
+
+export async function getConversation(db, conversationId) {
+  const rows = await db.prepare(`
+    SELECT * FROM dm_log
+    WHERE conversation_id = ?
+    ORDER BY created_at ASC
+  `).bind(conversationId).all();
+  return rows.results || [];
+}
+
+export async function getConversationByPubkey(db, pubkey) {
+  // Find conversations where this pubkey is a participant
+  const rows = await db.prepare(`
+    SELECT DISTINCT conversation_id FROM dm_log
+    WHERE sender_pubkey = ? OR recipient_pubkey = ?
+  `).bind(pubkey, pubkey).all();
+
+  if (!rows.results || rows.results.length === 0) return null;
+
+  // Return the first conversation's messages
+  return getConversation(db, rows.results[0].conversation_id);
+}
