@@ -20,7 +20,7 @@
       background: #0a0a0a;
       color: #e0e0e0;
       overflow: hidden;
-      height: 100vh;
+      height: 100dvh;
       display: flex;
       flex-direction: column;
     }
@@ -74,23 +74,26 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
+      justify-content: flex-start;
       position: relative;
-      overflow: hidden;
+      overflow-y: auto;
+      overflow-x: hidden;
+      -webkit-overflow-scrolling: touch;
+      padding: 10px 0;
     }
 
     .video-card-swipe {
       position: relative;
       width: 90%;
       max-width: 600px;
-      max-height: 90vh;
+      max-height: none;
       background: #1a1a1a;
       border: 2px solid #333;
       border-radius: 12px;
       overflow-y: auto;
       overflow-x: hidden;
       transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.3s;
-      touch-action: none;
+      touch-action: pan-y;
       user-select: none;
     }
 
@@ -116,7 +119,7 @@
     .video-wrapper {
       position: relative;
       width: 100%;
-      height: 50vh;
+      height: 40vh;
       max-height: 600px;
       background: #0a0a0a;
       display: flex;
@@ -479,6 +482,7 @@
     let startY = 0;
     let currentX = 0;
     let currentY = 0;
+    let swipeDirection = null; // 'horizontal' or 'vertical'
 
     async function loadReviewQueue() {
       try {
@@ -558,8 +562,12 @@
       const card = container.querySelector('.video-card-swipe');
       setupSwipeHandlers(card);
 
-      // Auto-play video
+      // Use preloaded video if available
       const videoEl = card.querySelector('video');
+      if (videoEl && video._preloadedVideo) {
+        videoEl.src = video._preloadedVideo.src;
+        delete video._preloadedVideo;
+      }
       if (videoEl) {
         videoEl.play().catch(() => {
           // Auto-play might be blocked, that's ok
@@ -580,6 +588,34 @@
             }
           }
         });
+      }
+
+      // Preload next video
+      preloadNext();
+    }
+
+    function preloadNext() {
+      const nextIdx = currentIndex + 1;
+      if (nextIdx >= reviewQueue.length) return;
+
+      const next = reviewQueue[nextIdx];
+
+      // Preload classifier data
+      if (!next.classifierSummary) {
+        fetchClassifierSummary(next.sha256).then(summary => {
+          if (summary) next.classifierSummary = summary;
+        });
+      }
+
+      // Preload video element
+      if (!next._preloadedVideo) {
+        const videoUrl = next.isUntriaged
+          ? (next.cdnUrl || 'https://media.divine.video/' + next.sha256 + '.mp4')
+          : '/admin/video/' + next.sha256 + '.mp4';
+        const vid = document.createElement('video');
+        vid.preload = 'auto';
+        vid.src = videoUrl;
+        next._preloadedVideo = vid;
       }
     }
 
@@ -753,6 +789,7 @@
       // Mouse/touch start
       const handleStart = (e) => {
         isDragging = true;
+        swipeDirection = null;
         const point = e.touches ? e.touches[0] : e;
         startX = point.clientX;
         startY = point.clientY;
@@ -762,11 +799,27 @@
       // Mouse/touch move
       const handleMove = (e) => {
         if (!isDragging) return;
-        e.preventDefault();
 
         const point = e.touches ? e.touches[0] : e;
-        currentX = point.clientX - startX;
-        currentY = point.clientY - startY;
+        const deltaX = point.clientX - startX;
+        const deltaY = point.clientY - startY;
+
+        // On first significant movement, lock direction
+        if (!swipeDirection && (Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10)) {
+          swipeDirection = Math.abs(deltaX) > Math.abs(deltaY) ? 'horizontal' : 'vertical';
+        }
+
+        // If vertical scroll, let the browser handle it natively
+        if (swipeDirection === 'vertical') {
+          isDragging = false;
+          card.classList.remove('swiping');
+          return;
+        }
+
+        // Horizontal swipe — prevent scroll and move card
+        e.preventDefault();
+        currentX = deltaX;
+        currentY = deltaY;
 
         card.style.transform = `translate(${currentX}px, ${currentY}px) rotate(${currentX * 0.1}deg)`;
 
