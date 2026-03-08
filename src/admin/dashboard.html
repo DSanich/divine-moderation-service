@@ -2095,21 +2095,18 @@
       // Set up video pause handlers after rendering
       setTimeout(setupVideoPauseHandlers, 100);
 
-      // Render Nostr context from KV (already fetched during moderation)
+      // Render Nostr context — use cached data or fetch from API
       videos.forEach((video) => {
         const nostrContainer = document.getElementById(`nostr-${video.sha256}`);
         if (!nostrContainer) return;
 
         if (video.nostrContext) {
           nostrContainer.innerHTML = createNostrMetadataHTML(video.nostrContext);
+          updateDivineLink(video.sha256, video.nostrContext);
         } else {
-          nostrContainer.innerHTML = '<div class="nostr-not-found">No Nostr event found</div>';
-        }
-
-        // Update divine.video link with event ID if available
-        const divineLink = document.getElementById(`divine-link-${video.sha256}`);
-        if (divineLink && video.nostrContext && video.nostrContext.eventId) {
-          divineLink.href = `https://divine.video/video/${video.nostrContext.eventId}?source=discovery&index=0`;
+          // Async fetch nostr context for moderated videos
+          nostrContainer.innerHTML = '<div class="nostr-not-found" style="opacity:0.5">Loading...</div>';
+          loadNostrContext(video.sha256, nostrContainer);
         }
 
         // Load classifier inline summary + detail panels (async, non-blocking)
@@ -2117,11 +2114,52 @@
       });
     }
 
+    function updateDivineLink(sha256, metadata) {
+      const divineLink = document.getElementById(`divine-link-${sha256}`);
+      if (divineLink && metadata && metadata.eventId) {
+        divineLink.href = `https://divine.video/video/${metadata.eventId}?source=discovery&index=0`;
+      }
+    }
+
+    async function loadNostrContext(sha256, container) {
+      try {
+        const resp = await fetch(`/admin/api/nostr-context/${sha256}`);
+        if (!resp.ok) throw new Error('fetch failed');
+        const data = await resp.json();
+        if (data.found && data.metadata) {
+          container.innerHTML = createNostrMetadataHTML(data.metadata);
+          updateDivineLink(sha256, data.metadata);
+        } else {
+          container.innerHTML = '<div class="nostr-not-found">No Nostr event found</div>';
+        }
+      } catch (e) {
+        container.innerHTML = '<div class="nostr-not-found">No Nostr event found</div>';
+      }
+    }
+
     /**
      * Create HTML for Nostr metadata display
      */
     function createNostrMetadataHTML(metadata) {
       const parts = [];
+
+      // Show published date prominently — critical for identifying pre-AI-era content
+      if (metadata.publishedAt) {
+        const pubDate = new Date(metadata.publishedAt * 1000);
+        const year = pubDate.getFullYear();
+        const dateStr = pubDate.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        const isPreAI = year < 2022; // AI video generation wasn't viable before ~2022
+        const isVineEra = year >= 2013 && year <= 2017;
+
+        let badge = '';
+        if (isVineEra) {
+          badge = `<span style="background:#7c3aed;color:white;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;margin-left:6px;">VINE ERA ${year}</span>`;
+        } else if (isPreAI) {
+          badge = `<span style="background:#d97706;color:white;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;margin-left:6px;">PRE-AI ${year}</span>`;
+        }
+
+        parts.push(`<div style="font-size:12px;margin-bottom:4px;"><span style="color:#9ca3af;">Published:</span> <span style="color:${isPreAI ? '#fbbf24' : '#d1d5db'};font-weight:${isPreAI ? '600' : '400'};">${dateStr}</span>${badge}</div>`);
+      }
 
       if (metadata.title) {
         parts.push(`<div class="nostr-title">${escapeHtml(metadata.title)}</div>`);
