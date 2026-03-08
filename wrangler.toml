@@ -12,7 +12,8 @@ workers_dev = false
 
 # Custom domains (requires divine.video zone in the same Cloudflare account)
 routes = [
-  { pattern = "moderation.admin.divine.video/*", zone_name = "divine.video" }
+  { pattern = "moderation.admin.divine.video/*", zone_name = "divine.video" },
+  { pattern = "moderation-api.divine.video/*", zone_name = "divine.video" }
 ]
 
 # KV for storing moderation results
