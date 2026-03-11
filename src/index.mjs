@@ -491,7 +491,7 @@ export default {
 
       // Query D1 with pagination
       const query = `
-        SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at
+        SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, uploaded_by
         FROM moderation_results
         ${whereClause}
         ORDER BY moderated_at DESC
@@ -513,7 +513,8 @@ export default {
         processedAt: new Date(row.moderated_at).getTime(),
         moderated_at: row.moderated_at,
         reviewed_by: row.reviewed_by,
-        reviewed_at: row.reviewed_at
+        reviewed_at: row.reviewed_at,
+        uploaded_by: row.uploaded_by || null
       }));
 
       // Classifier summaries fetched client-side via /admin/api/classifier/{sha256}
@@ -914,11 +915,11 @@ export default {
         try {
           // Look up uploaded_by from D1
           const uploaderRow = await env.BLOSSOM_DB.prepare(
-            'SELECT uploaded_by FROM moderation_results WHERE sha256 = ?'
+            'SELECT uploaded_by, categories FROM moderation_results WHERE sha256 = ?'
           ).bind(sha256).first();
           if (uploaderRow?.uploaded_by) {
             const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
-            await sendModerationDM(uploaderRow.uploaded_by, sha256, action, reason || 'Manual moderator action', env, null);
+            await sendModerationDM(uploaderRow.uploaded_by, sha256, action, reason || 'Manual moderator action', env, null, uploaderRow?.categories);
             dmSent = true;
             console.log(`[ADMIN] DM sent to creator ${uploaderRow.uploaded_by.substring(0, 16)}...`);
           }
@@ -1850,6 +1851,20 @@ async function runMigration() {
       return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
     }
 
+    // Admin API: Resolve Nostr profiles for pubkeys
+    if (url.pathname === '/admin/api/profiles' && request.method === 'GET') {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      const pubkeys = (url.searchParams.get('pubkeys') || '').split(',').filter(Boolean).slice(0, 50);
+      if (pubkeys.length === 0) {
+        return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+      }
+      const { resolveProfiles } = await import('./nostr/profile-resolver.mjs');
+      const profiles = await resolveProfiles(pubkeys, env);
+      return new Response(JSON.stringify(profiles), { headers: { 'Content-Type': 'application/json' } });
+    }
+
     // Admin API: Get divine-realness AI verification results for a video
     if (url.pathname.startsWith('/admin/api/realness/') && request.method === 'GET') {
       const authError = await requireAuth(request, env);
@@ -2089,7 +2104,7 @@ async function runMigration() {
         const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200);
         const offset = parseInt(url.searchParams.get('offset') || '0', 10);
 
-        let query = 'SELECT sha256, action, provider, scores, moderated_at, reviewed_by, reviewed_at FROM moderation_results';
+        let query = 'SELECT sha256, action, provider, scores, moderated_at, reviewed_by, reviewed_at, uploaded_by FROM moderation_results';
         const conditions = [];
         const bindings = [];
 
@@ -2776,7 +2791,7 @@ async function handleModerationResult(result, env) {
   if (['PERMANENT_BAN', 'AGE_RESTRICTED', 'QUARANTINE'].includes(action) && uploadedBy && env.MODERATOR_NSEC) {
     try {
       const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
-      await sendModerationDM(uploadedBy, sha256, action, reason, env, null);
+      await sendModerationDM(uploadedBy, sha256, action, reason, env, null, result.categories);
       console.log(`[MODERATION] ${sha256} - DM notification sent to creator ${uploadedBy.substring(0, 16)}...`);
     } catch (dmErr) {
       console.error(`[MODERATION] ${sha256} - DM notification failed:`, dmErr.message);
