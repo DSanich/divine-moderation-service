@@ -224,6 +224,7 @@ export function classifyModerationResult(moderationData, env = {}) {
 
   // Determine action based on category and score
   let action, severity, reason, category;
+  let requiresSecondaryVerification = false;
 
   // Check for PERMANENT_BAN categories (self-harm, hate speech)
   if (scores.self_harm >= (thresholds.self_harm?.high || DEFAULT_SELF_HARM_HIGH)) {
@@ -245,16 +246,18 @@ export function classifyModerationResult(moderationData, env = {}) {
     reason = 'Extreme gore content detected - immediate removal required';
   }
   else if (scores.ai_generated >= (thresholds.ai_generated?.high || DEFAULT_AI_GENERATED_HIGH)) {
-    action = 'PERMANENT_BAN';
-    severity = 'critical';
+    action = 'QUARANTINE';
+    severity = 'high';
     category = 'ai_generated';
-    reason = 'AI-generated content detected - not permitted on platform';
+    reason = 'AI-generated content detected by primary provider - quarantined pending secondary verification';
+    requiresSecondaryVerification = true;
   }
-  else if (scores.deepfake >= (thresholds.deepfake?.high || DEFAULT_AI_GENERATED_HIGH)) {
-    action = 'PERMANENT_BAN';
-    severity = 'critical';
+  else if (scores.deepfake >= (thresholds.deepfake?.high || DEFAULT_DEEPFAKE_HIGH)) {
+    action = 'QUARANTINE';
+    severity = 'high';
     category = 'deepfake';
-    reason = 'Deepfake content detected - not permitted on platform';
+    reason = 'Deepfake content detected by primary provider - quarantined pending secondary verification';
+    requiresSecondaryVerification = true;
   }
   // Check for text-based PERMANENT_BAN (hate speech or threats in transcript)
   else if (text_scores && text_scores.hate_speech > (parseFloat(env.TEXT_HATE_SPEECH_THRESHOLD_HIGH) || DEFAULT_TEXT_HATE_SPEECH_HIGH)) {
@@ -325,7 +328,8 @@ export function classifyModerationResult(moderationData, env = {}) {
     primaryConcern,
     category,
     scores,
-    flaggedFrames
+    flaggedFrames,
+    requiresSecondaryVerification
   };
 }
 

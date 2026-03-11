@@ -1850,6 +1850,20 @@ async function runMigration() {
       return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
     }
 
+    // Admin API: Get divine-realness AI verification results for a video
+    if (url.pathname.startsWith('/admin/api/realness/') && request.method === 'GET') {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      const sha256 = url.pathname.split('/').pop();
+      const { getRealnessResult } = await import('./moderation/realness-client.mjs');
+      const result = await getRealnessResult(sha256, env);
+      if (!result) {
+        return new Response(JSON.stringify({ error: 'No realness verification found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    }
+
     // API: Submit a user report for a piece of content (NIP-56)
     // Auth: Bearer token or Cloudflare Access JWT
     if (url.pathname === '/api/v1/scan' && request.method === 'POST') {
@@ -2679,6 +2693,33 @@ async function runMigration() {
         console.log(`[CRON] DM inbox sync: ${syncResult.synced} new, ${syncResult.skipped} deduped, ${syncResult.errors} errors`);
       } catch (err) {
         console.error('[CRON] DM inbox sync failed:', err);
+      }
+    }
+
+    // Poll pending Reality Defender results and update moderation decisions
+    if (env.REALITY_DEFENDER_API_KEY && env.MODERATION_KV) {
+      try {
+        const pendingKeys = await env.MODERATION_KV.list({ prefix: 'rd:', limit: 20 });
+        let polled = 0;
+        for (const key of pendingKeys.keys) {
+          const cached = await env.MODERATION_KV.get(key.name);
+          if (!cached) continue;
+          const parsed = JSON.parse(cached);
+          if (parsed.status !== 'pending') continue;
+
+          const sha256 = key.name.replace('rd:', '');
+          const { pollRealityDefender } = await import('./moderation/realness-client.mjs');
+          const result = await pollRealityDefender(sha256, env);
+          if (result && result.status === 'complete') {
+            polled++;
+            console.log(`[CRON] Reality Defender result for ${sha256}: ${result.verdict} (score=${result.score})`);
+          }
+        }
+        if (polled > 0) {
+          console.log(`[CRON] Polled ${polled} Reality Defender results`);
+        }
+      } catch (err) {
+        console.error('[CRON] Reality Defender polling failed:', err);
       }
     }
   }

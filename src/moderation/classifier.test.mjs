@@ -173,7 +173,7 @@ describe('Moderation Classifier', () => {
     expect(result.flaggedFrames).toEqual(flaggedFrames);
   });
 
-  it('should classify high AI-generated score as PERMANENT_BAN', () => {
+  it('should classify high AI-generated score as QUARANTINE pending secondary verification', () => {
     const result = classifyModerationResult({
       maxScores: {
         nudity: 0.1,
@@ -182,10 +182,12 @@ describe('Moderation Classifier', () => {
       }
     });
 
-    expect(result.action).toBe('PERMANENT_BAN');
-    expect(result.severity).toBe('critical');
+    expect(result.action).toBe('QUARANTINE');
+    expect(result.severity).toBe('high');
     expect(result.category).toBe('ai_generated');
     expect(result.reason).toContain('AI-generated');
+    expect(result.reason).toContain('secondary verification');
+    expect(result.requiresSecondaryVerification).toBe(true);
   });
 
   it('should classify medium AI-generated score as REVIEW', () => {
@@ -284,7 +286,7 @@ describe('Moderation Classifier', () => {
     expect(result.severity).toBe('high');
   });
 
-  it('should classify very high deepfake score as PERMANENT_BAN', () => {
+  it('should classify very high deepfake score as QUARANTINE pending secondary verification', () => {
     const result = classifyModerationResult({
       maxScores: {
         deepfake: 0.96,
@@ -293,9 +295,10 @@ describe('Moderation Classifier', () => {
       }
     });
 
-    expect(result.action).toBe('PERMANENT_BAN');
-    expect(result.severity).toBe('critical');
+    expect(result.action).toBe('QUARANTINE');
+    expect(result.severity).toBe('high');
     expect(result.category).toBe('deepfake');
+    expect(result.requiresSecondaryVerification).toBe(true);
   });
 
   it('should classify medium deepfake score (0.85) as QUARANTINE not ban', () => {

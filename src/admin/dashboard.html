@@ -2111,6 +2111,13 @@
 
         // Load classifier inline summary + detail panels (async, non-blocking)
         loadClassifierData(video.sha256);
+
+        // Load realness secondary verification for AI-flagged videos
+        const aiScore = video.scores?.ai_generated || 0;
+        const deepfakeScore = video.scores?.deepfake || 0;
+        if (aiScore >= 0.3 || deepfakeScore >= 0.3) {
+          loadRealnessResult(video.sha256);
+        }
       });
     }
 
@@ -2312,7 +2319,7 @@
       const providerBadgeHTML = createProviderBadge(provider);
 
       // Generate AI detection alert for ai_generated or deepfake
-      const aiDetectionHTML = createAIDetectionAlert(scores, detailedCategories);
+      const aiDetectionHTML = createAIDetectionAlert(scores, detailedCategories, sha256);
 
       // Generate moderation history
       const historyHTML = createModerationHistory(video);
@@ -2403,7 +2410,7 @@
       return `<span class="provider-badge ${badgeClass}">${icon} ${displayName}</span>`;
     }
 
-    function createAIDetectionAlert(scores, detailedCategories) {
+    function createAIDetectionAlert(scores, detailedCategories, sha256) {
       if (!scores) return '';
 
       const aiScore = scores.ai_generated || 0;
@@ -2442,8 +2449,68 @@
         <div class="ai-detection-alert ${alertClass}">
           <div class="ai-detection-title">${title}</div>
           <div class="ai-detection-details">${details.join(' · ')}</div>
+          <div class="realness-result" id="realness-${sha256}" style="margin-top:6px;font-size:11px;color:#888;">
+            Loading secondary verification...
+          </div>
         </div>
       `;
+    }
+
+    async function loadRealnessResult(sha256) {
+      const container = document.getElementById(`realness-${sha256}`);
+      if (!container) return;
+
+      try {
+        const resp = await fetch(`/admin/api/realness/${sha256}`);
+        if (resp.status === 404) {
+          container.innerHTML = '<span style="color:#666;">No secondary verification available</span>';
+          return;
+        }
+        if (!resp.ok) throw new Error('fetch failed');
+        const data = await resp.json();
+
+        const verdictColors = {
+          authentic: '#22c55e',
+          likely_ai: '#ef4444',
+          disputed: '#f59e0b',
+          uncertain: '#888',
+          pending: '#666',
+        };
+
+        const verdictLabels = {
+          authentic: 'AUTHENTIC',
+          likely_ai: 'LIKELY AI',
+          disputed: 'DISPUTED (providers disagree)',
+          uncertain: 'UNCERTAIN',
+          pending: 'PENDING...',
+        };
+
+        let html = `<strong style="color:${verdictColors[data.overallVerdict] || '#888'}">Secondary: ${verdictLabels[data.overallVerdict] || data.overallVerdict}</strong>`;
+
+        // Show per-provider details (prioritize Reality Defender, it's the key new signal)
+        const providerDetails = [];
+        for (const [name, info] of Object.entries(data.providers || {})) {
+          // Skip Hive from realness — we already have Hive from primary moderation
+          if (name === 'hive') continue;
+          const label = name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+          if (info.status === 'complete') {
+            const scoreStr = info.score != null ? ` ${(info.score * 100).toFixed(0)}%` : '';
+            const color = info.verdict === 'authentic' ? '#22c55e' : info.verdict === 'likely_ai' ? '#ef4444' : '#888';
+            providerDetails.push(`<span style="color:${color}">${label}: ${info.verdict}${scoreStr}</span>`);
+          } else if (info.status === 'pending') {
+            providerDetails.push(`<span style="color:#666">${label}: pending</span>`);
+          } else if (info.status === 'error') {
+            providerDetails.push(`<span style="color:#666">${label}: error</span>`);
+          }
+        }
+        if (providerDetails.length > 0) {
+          html += '<br>' + providerDetails.join(' · ');
+        }
+
+        container.innerHTML = html;
+      } catch (err) {
+        container.innerHTML = '<span style="color:#666;">Verification unavailable</span>';
+      }
     }
 
     function createModerationHistory(video) {

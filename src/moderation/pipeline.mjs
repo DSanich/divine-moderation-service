@@ -268,6 +268,22 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     text_scores: textScores
   }, effectiveEnv);
 
+  // Step 4.5: If AI-flagged, submit to Reality Defender for secondary verification (fire-and-forget)
+  if (classification.requiresSecondaryVerification && env.REALITY_DEFENDER_API_KEY) {
+    try {
+      const { submitToRealityDefender } = await import('./realness-client.mjs');
+      const rdResult = await submitToRealityDefender(sha256, videoUrl, env);
+      if (rdResult.submitted) {
+        console.log(`[MODERATION] ${sha256} - Submitted to Reality Defender for secondary AI verification (requestId=${rdResult.requestId})`);
+      } else if (!rdResult.cached) {
+        console.warn(`[MODERATION] ${sha256} - Failed to submit to Reality Defender: ${rdResult.error}`);
+      }
+    } catch (err) {
+      console.error(`[MODERATION] ${sha256} - Reality Defender submission error:`, err.message);
+      // Non-fatal: don't block moderation if Reality Defender is unavailable
+    }
+  }
+
   // Step 5: Return complete result
   return {
     // Classification

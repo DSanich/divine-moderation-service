@@ -108,4 +108,5 @@ crons = ["*/5 * * * *"]
 #   Pricing: ~$0.001/video (much cheaper than V2 scene classification)
 # HIVE_VLM_PROMPT - (optional) Custom prompt for VLM classification (overrides default)
 # RELAY_ADMIN_URL - Funnelcake admin API endpoint for cache purge / event deletion
+# REALITY_DEFENDER_API_KEY - Reality Defender API key for secondary AI verification (api.prd.realitydefender.xyz)
 # ADMIN_PASSWORD_HASH - SHA-256 hash of admin dashboard password
