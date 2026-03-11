@@ -2049,6 +2049,18 @@ async function runMigration() {
       });
     }
 
+    // API: Canonical moderation vocabulary (public, no auth required)
+    if (url.pathname === '/api/v1/moderation/vocabulary' && request.method === 'GET') {
+      const { CANONICAL_LABELS, ALIASES } = await import('./moderation/vocabulary.mjs');
+      return corsResponse(new Response(JSON.stringify({
+        labels: [...CANONICAL_LABELS],
+        aliases: { ...ALIASES },
+        version: '1.0',
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      }));
+    }
+
     // API: Moderation decisions list (for divine-relay-manager integration)
     // Auth: Bearer token or Cloudflare Access JWT
     if (url.pathname === '/api/v1/decisions' && request.method === 'GET') {
@@ -2329,15 +2341,16 @@ async function runMigration() {
         // GET /api/v1/classifier/{sha256}/recommendations — pre-formatted for gorse/funnelcake
         if (subRoute === 'recommendations') {
           const parsed = JSON.parse(classifierData);
+          const { classifierCategoryToLabels } = await import('./moderation/vocabulary.mjs');
 
-          // Collect labels from all three classification layers
-          const allLabels = [];
+          // Collect content labels from all classification layers
+          const contentLabels = [];
           const allFeatures = {};
 
           // Layer 1: VLM scene classification labels (topics, setting, objects, activities, mood)
           if (parsed.sceneClassification) {
             const sceneLabels = formatForGorse(parsed.sceneClassification);
-            allLabels.push(...sceneLabels);
+            contentLabels.push(...sceneLabels);
             const sceneFeatures = formatForFunnelcake(parsed.sceneClassification);
             Object.assign(allFeatures, sceneFeatures);
           }
@@ -2345,18 +2358,30 @@ async function runMigration() {
           // Layer 2: VTT topic labels
           if (parsed.topicProfile) {
             const topicLabels = topicsToLabels(parsed.topicProfile);
-            allLabels.push(...topicLabels);
+            contentLabels.push(...topicLabels);
             const topicFeatures = topicsToWeightedFeatures(parsed.topicProfile);
             Object.assign(allFeatures, topicFeatures);
           }
 
-          // Layer 3: Raw moderation scores as features (for safety signals)
+          // Layer 3: Raw moderation scores — extract moderation labels and content features
+          const moderationLabels = [];
+          const moderationSources = {};
           if (parsed.rawClassifierData) {
-            // Extract top-level moderation scores for safety signals
             const rawData = parsed.rawClassifierData;
             if (rawData.maxScores) {
               for (const [key, value] of Object.entries(rawData.maxScores)) {
                 if (typeof value === 'number') {
+                  // Check if this category maps to a moderation label
+                  const modLabels = classifierCategoryToLabels(key, value);
+                  if (modLabels.length > 0 && value >= 0.5) {
+                    for (const ml of modLabels) {
+                      if (!moderationLabels.includes(ml)) {
+                        moderationLabels.push(ml);
+                        moderationSources[ml] = ['divine-hive'];
+                      }
+                    }
+                  }
+                  // Keep all scores as features for compatibility
                   allFeatures[key] = value;
                 }
               }
@@ -2365,16 +2390,39 @@ async function runMigration() {
 
           // Determine safety from moderation result
           const moderationResult = await env.BLOSSOM_DB.prepare(
-            'SELECT action FROM moderation_results WHERE sha256 = ?'
+            'SELECT action, scores FROM moderation_results WHERE sha256 = ?'
           ).bind(sha256).first();
 
           const action = moderationResult?.action || 'UNKNOWN';
           const isSafe = action === 'SAFE';
 
+          // Also extract moderation labels from D1 moderation scores
+          if (moderationResult?.scores) {
+            try {
+              const scores = JSON.parse(moderationResult.scores);
+              for (const [cat, score] of Object.entries(scores)) {
+                if (typeof score === 'number' && score >= 0.5) {
+                  const modLabels = classifierCategoryToLabels(cat, score);
+                  for (const ml of modLabels) {
+                    if (!moderationLabels.includes(ml)) {
+                      moderationLabels.push(ml);
+                      moderationSources[ml] = ['divine-hive'];
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              // Ignore parse errors
+            }
+          }
+
           return new Response(JSON.stringify({
             sha256,
+            content_labels: [...new Set(contentLabels)],
+            moderation_labels: moderationLabels,
+            moderation_sources: moderationSources,
             gorse: {
-              labels: [...new Set(allLabels)],  // deduplicate
+              labels: [...new Set(contentLabels)],  // content labels only, no moderation
               features: allFeatures
             },
             description: parsed.sceneClassification?.description || null,
@@ -2400,7 +2448,7 @@ async function runMigration() {
       }
     }
 
-    return new Response('Divine Moderation API\n\nPublic endpoints:\nGET  /health\nGET  /check-result/{sha256}\n\nAuthenticated endpoints:\nPOST /test-moderate {"sha256":"..."}\nGET  /api/v1/decisions\nGET  /api/v1/decisions/{sha256}\nPOST /api/v1/quarantine/{sha256}\nPOST /api/v1/moderate\nPOST /api/v1/report\nPOST /api/v1/classify\nGET  /api/v1/classifier/{sha256}\nGET  /api/v1/classifier/{sha256}/recommendations\n\nAdmin UI: https://moderation.admin.divine.video/admin', {
+    return new Response('Divine Moderation API\n\nPublic endpoints:\nGET  /health\nGET  /check-result/{sha256}\nGET  /api/v1/moderation/vocabulary\n\nAuthenticated endpoints:\nPOST /test-moderate {"sha256":"..."}\nGET  /api/v1/decisions\nGET  /api/v1/decisions/{sha256}\nPOST /api/v1/quarantine/{sha256}\nPOST /api/v1/moderate\nPOST /api/v1/report\nPOST /api/v1/classify\nGET  /api/v1/classifier/{sha256}\nGET  /api/v1/classifier/{sha256}/recommendations\n\nAdmin UI: https://moderation.admin.divine.video/admin', {
       headers: { 'Content-Type': 'text/plain' }
     });
   },
@@ -2692,6 +2740,19 @@ async function handleModerationResult(result, env) {
     } catch (dmErr) {
       console.error(`[MODERATION] ${sha256} - DM notification failed:`, dmErr.message);
     }
+  }
+
+  // Write normalized moderation labels to ClickHouse
+  try {
+    const { writeModerationLabels } = await import('./moderation/label-writer.mjs');
+    await writeModerationLabels(sha256, result, env, {
+      sourceId: result.provider || 'divine-hive',
+      sourceOwner: 'divine',
+      sourceType: 'machine-labeler',
+      transport: 'moderation-api',
+    });
+  } catch (err) {
+    console.error('[MODERATION] Failed to write moderation labels:', err.message);
   }
 
   console.log(`[MODERATION] handleModerationResult finished for ${sha256}`);
