@@ -42,6 +42,74 @@ const TEMPLATES = {
     `Thank you for your report. After review, the reported content has been ${action}. We appreciate your help keeping the community safe.`,
 };
 
+// --- Category-Specific Templates ---
+
+const CATEGORY_TEMPLATES = {
+  nudity: {
+    reason: 'sexual or nude content',
+    policy: 'https://divine.video/policies#sexual-content',
+  },
+  ai_generated: {
+    reason: 'AI-generated content without disclosure',
+    policy: 'https://divine.video/policies#ai-content',
+  },
+  deepfake: {
+    reason: 'deepfake or manipulated media',
+    policy: 'https://divine.video/policies#manipulated-media',
+  },
+  offensive: {
+    reason: 'offensive or hateful content',
+    policy: 'https://divine.video/policies#hate-speech',
+  },
+  self_harm: {
+    reason: 'content depicting self-harm',
+    policy: 'https://divine.video/policies#self-harm',
+    extra: '\n\nIf you or someone you know is struggling, please reach out: 988 Suicide & Crisis Lifeline (call or text 988).',
+  },
+  scam: {
+    reason: 'fraudulent or scam content',
+    policy: 'https://divine.video/policies#fraud',
+  },
+};
+
+/**
+ * Select a category-specific template for a moderation action.
+ * Falls back to generic reason if no category match.
+ * @param {string} action - PERMANENT_BAN, AGE_RESTRICTED, or QUARANTINE
+ * @param {string|null} reason - Human-readable reason
+ * @param {string|null} categories - JSON string of categories or plain category string
+ * @returns {string|null} Message text or null if action has no template
+ */
+export function selectTemplate(action, reason, categories) {
+  let categoryInfo = null;
+  if (categories && typeof categories === 'string') {
+    try {
+      const parsed = JSON.parse(categories);
+      for (const cat of Object.keys(parsed)) {
+        if (CATEGORY_TEMPLATES[cat]) {
+          categoryInfo = CATEGORY_TEMPLATES[cat];
+          break;
+        }
+      }
+    } catch { /* not JSON, try as plain string */ }
+    if (!categoryInfo && CATEGORY_TEMPLATES[categories]) {
+      categoryInfo = CATEGORY_TEMPLATES[categories];
+    }
+  }
+
+  const specificReason = categoryInfo?.reason || reason || 'content policy violation';
+  const policyLink = categoryInfo?.policy || 'https://divine.video/policies';
+  const extra = categoryInfo?.extra || '';
+
+  const templates = {
+    PERMANENT_BAN: `Your video has been removed for: ${specificReason}.\n\nPolicy: ${policyLink}\n\nIf you believe this is an error, reply to this message to appeal.${extra}`,
+    AGE_RESTRICTED: `Your video has been age-restricted: ${specificReason}. It remains available but will only be shown to users who have confirmed their age.\n\nPolicy: ${policyLink}`,
+    QUARANTINE: `Your video has been temporarily hidden pending review: ${specificReason}. A moderator will review it shortly — you can reply with context.\n\nPolicy: ${policyLink}`,
+  };
+
+  return templates[action] || null;
+}
+
 /**
  * Get message text for a given moderation action.
  * @param {string} action - PERMANENT_BAN, AGE_RESTRICTED, or QUARANTINE
@@ -421,9 +489,10 @@ function publishToSingleRelay(event, relayUrl, env) {
  * @param {string} reason - Human-readable reason
  * @param {Object} env - Cloudflare Workers env
  * @param {Object} ctx - Execution context (for waitUntil)
+ * @param {string} [categories] - JSON string of categories from moderation result
  * @returns {Promise<{ sent: boolean, reason?: string }>}
  */
-export async function sendModerationDM(recipientPubkey, sha256, action, reason, env, ctx) {
+export async function sendModerationDM(recipientPubkey, sha256, action, reason, env, ctx, categories) {
   try {
     // Validate inputs
     if (!recipientPubkey || typeof recipientPubkey !== 'string') {
@@ -442,12 +511,11 @@ export async function sendModerationDM(recipientPubkey, sha256, action, reason, 
       return { sent: false, reason: err.message };
     }
 
-    // Build message from template
-    const templateFn = TEMPLATES[action];
-    if (!templateFn) {
+    // Build message: prefer category-specific template, fall back to generic
+    const message = selectTemplate(action, reason, categories);
+    if (!message) {
       return { sent: false, reason: `Unknown action: ${action}` };
     }
-    const message = templateFn(reason || 'content policy violation');
 
     // Check rate limit
     const withinLimit = await checkRateLimit(recipientPubkey, env);

@@ -94,6 +94,34 @@
       color: #888;
       text-transform: uppercase;
       letter-spacing: 0.5px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .conversation-list-header input {
+      width: 100%;
+      padding: 6px 10px;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 4px;
+      color: #fff;
+      font-size: 12px;
+      text-transform: none;
+      letter-spacing: normal;
+      outline: none;
+    }
+
+    .conversation-list-header input:focus {
+      border-color: #2563eb;
+    }
+
+    .conv-avatar {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      object-fit: cover;
+      flex-shrink: 0;
     }
 
     .conversation-items {
@@ -423,7 +451,11 @@
   <div class="main-container">
     <!-- Left Panel -->
     <div class="conversation-list">
-      <div class="conversation-list-header">Conversations</div>
+      <div class="conversation-list-header">
+        <span>Conversations</span>
+        <input type="text" id="search-input" placeholder="Search by name or pubkey..."
+          oninput="filterConversations(this.value)">
+      </div>
       <div class="conversation-items" id="conversation-items">
         <div class="loading-state" id="conv-loading">
           <div class="spinner"></div>
@@ -465,6 +497,7 @@
   <script>
     let selectedPubkey = null;
     let conversations = [];
+    let profileCache = {};
 
     // --- Helpers ---
 
@@ -503,6 +536,56 @@
       return messageType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
     }
 
+    // --- Profile Resolution ---
+
+    async function fetchProfiles(pubkeys) {
+      if (!pubkeys.length) return;
+      const unique = [...new Set(pubkeys)].filter(p => !profileCache[p]);
+      if (!unique.length) return;
+      try {
+        const res = await fetch('/admin/api/profiles?pubkeys=' + unique.join(','));
+        if (res.ok) {
+          const data = await res.json();
+          Object.assign(profileCache, data);
+        }
+      } catch (err) {
+        console.error('fetchProfiles error:', err);
+      }
+    }
+
+    function displayName(pubkey) {
+      const profile = profileCache[pubkey];
+      return profile?.display_name || profile?.name || truncatePubkey(pubkey);
+    }
+
+    function avatarHtml(pubkey) {
+      const profile = profileCache[pubkey];
+      if (profile?.picture) {
+        return `<img class="conv-avatar" src="${escapeHtml(profile.picture)}" alt="">`;
+      }
+      return '';
+    }
+
+    // --- Search / Filter ---
+
+    function filterConversations(query) {
+      const q = query.toLowerCase().trim();
+      if (!q) {
+        renderConversationList(conversations);
+        return;
+      }
+
+      const filtered = conversations.filter(conv => {
+        const pubkey = conv.participant_pubkey || conv.pubkey || '';
+        const profile = profileCache[pubkey];
+        const name = (profile?.display_name || profile?.name || '').toLowerCase();
+        const nip05 = (profile?.nip05 || '').toLowerCase();
+        return pubkey.includes(q) || name.includes(q) || nip05.includes(q);
+      });
+
+      renderConversationList(filtered);
+    }
+
     // --- Fetch conversations ---
 
     async function fetchConversations() {
@@ -515,6 +598,11 @@
         if (!res.ok) throw new Error('Failed to fetch conversations');
         const data = await res.json();
         conversations = data.conversations || data || [];
+
+        // Fetch profiles for all participants
+        const pubkeys = conversations.map(c => c.participant_pubkey || c.pubkey).filter(Boolean);
+        await fetchProfiles(pubkeys);
+
         renderConversations();
       } catch (err) {
         container.innerHTML = '<div class="empty-state">Failed to load conversations</div>';
@@ -523,14 +611,18 @@
     }
 
     function renderConversations() {
+      renderConversationList(conversations);
+    }
+
+    function renderConversationList(list) {
       const container = document.getElementById('conversation-items');
 
-      if (!conversations.length) {
+      if (!list.length) {
         container.innerHTML = '<div class="empty-state">No conversations yet</div>';
         return;
       }
 
-      container.innerHTML = conversations.map(conv => {
+      container.innerHTML = list.map(conv => {
         const pubkey = conv.participant_pubkey || conv.pubkey || '';
         const preview = (conv.latest_message || conv.preview || '').slice(0, 80);
         const ts = conv.last_message_at || conv.updated_at || conv.created_at;
@@ -542,7 +634,8 @@
           <div class="conversation-item ${isActive ? 'active' : ''}" onclick="selectConversation('${pubkey}')">
             <div class="pubkey">
               ${unread ? '<span class="unread-dot"></span>' : ''}
-              ${truncatePubkey(pubkey)}
+              ${avatarHtml(pubkey)}
+              ${escapeHtml(displayName(pubkey))}
             </div>
             <div class="preview">${escapeHtml(preview) || '(no messages)'}</div>
             <div class="meta">
@@ -571,7 +664,16 @@
       const content = document.getElementById('thread-content');
       content.style.display = 'flex';
 
-      document.getElementById('thread-pubkey').textContent = truncatePubkey(pubkey);
+      const profile = profileCache[pubkey];
+      const threadHeader = document.getElementById('thread-pubkey');
+      if (profile) {
+        threadHeader.innerHTML = (profile.picture ? `<img class="conv-avatar" src="${escapeHtml(profile.picture)}" alt=""> ` : '')
+          + escapeHtml(profile.display_name || profile.name || truncatePubkey(pubkey))
+          + (profile.nip05 ? ` <span style="color:#888;font-size:12px;">(${escapeHtml(profile.nip05)})</span>` : '')
+          + ` <span style="color:#555;font-size:11px;font-family:monospace;">${truncatePubkey(pubkey)}</span>`;
+      } else {
+        threadHeader.textContent = truncatePubkey(pubkey);
+      }
       document.getElementById('compose-input').value = '';
       document.getElementById('compose-sha256').value = '';
 
@@ -703,7 +805,18 @@
     });
 
     // --- Init ---
-    fetchConversations();
+    (async function init() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const preselectedPubkey = urlParams.get('pubkey');
+
+      await fetchConversations();
+
+      if (preselectedPubkey) {
+        // Fetch profile for the preselected pubkey if not already cached
+        await fetchProfiles([preselectedPubkey]);
+        await selectConversation(preselectedPubkey);
+      }
+    })();
   </script>
 </body>
 </html>

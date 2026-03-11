@@ -2369,6 +2369,13 @@
                 View on divine.video →
               </a>
             </div>
+            ${video.uploaded_by ? `
+            <div class="divine-link">
+              <a href="/admin/messages?pubkey=${video.uploaded_by}" target="_blank" rel="noopener noreferrer">
+                Message Creator →
+              </a>
+            </div>
+            ` : ''}
 
             <div class="action-buttons">
               <button class="action-btn approve" onclick="quickAction('${sha256}', 'SAFE')">Approve</button>
