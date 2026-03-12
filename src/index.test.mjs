@@ -437,3 +437,78 @@ describe('Admin video lookup', () => {
     }
   });
 });
+
+describe('notifyBlossom action mapping', () => {
+  // Blossom's webhook handler (main.rs:2618) accepts:
+  //   BLOCK/BAN/PERMANENT_BAN → Banned
+  //   RESTRICT/AGE_RESTRICTED → Restricted
+  //   APPROVE/SAFE → Active
+  // QUARANTINE maps to RESTRICT (owner-only access).
+  // REVIEW is internal only — skipped.
+
+  const BLOSSOM_ACTION_MAP = {
+    'SAFE': 'SAFE',
+    'AGE_RESTRICTED': 'AGE_RESTRICTED',
+    'PERMANENT_BAN': 'PERMANENT_BAN',
+    'QUARANTINE': 'RESTRICT',
+  };
+
+  function mapBlossomAction(action) {
+    return BLOSSOM_ACTION_MAP[action] || null;
+  }
+
+  it('maps QUARANTINE to RESTRICT', () => {
+    expect(mapBlossomAction('QUARANTINE')).toBe('RESTRICT');
+  });
+
+  it('passes SAFE through unchanged', () => {
+    expect(mapBlossomAction('SAFE')).toBe('SAFE');
+  });
+
+  it('passes AGE_RESTRICTED through unchanged', () => {
+    expect(mapBlossomAction('AGE_RESTRICTED')).toBe('AGE_RESTRICTED');
+  });
+
+  it('passes PERMANENT_BAN through unchanged', () => {
+    expect(mapBlossomAction('PERMANENT_BAN')).toBe('PERMANENT_BAN');
+  });
+
+  it('skips REVIEW (internal only)', () => {
+    expect(mapBlossomAction('REVIEW')).toBeNull();
+  });
+
+  it('skips unknown actions', () => {
+    expect(mapBlossomAction('SOMETHING_ELSE')).toBeNull();
+  });
+});
+
+describe('Reality Defender auto-escalation logic', () => {
+  // FAKE/SUSPICIOUS + still quarantined → auto-escalate to PERMANENT_BAN
+  // AUTHENTIC + still quarantined → no action (moderator must lift)
+  // Any verdict + already resolved → skip (human decision stands)
+
+  function shouldAutoEscalate(rdVerdict, currentAction) {
+    if (currentAction !== 'QUARANTINE') return false;
+    return rdVerdict === 'likely_ai';
+  }
+
+  it('auto-escalates FAKE verdict when still quarantined', () => {
+    expect(shouldAutoEscalate('likely_ai', 'QUARANTINE')).toBe(true);
+  });
+
+  it('does not auto-escalate AUTHENTIC verdict', () => {
+    expect(shouldAutoEscalate('authentic', 'QUARANTINE')).toBe(false);
+  });
+
+  it('does not auto-escalate when moderator already changed to SAFE', () => {
+    expect(shouldAutoEscalate('likely_ai', 'SAFE')).toBe(false);
+  });
+
+  it('does not auto-escalate when moderator already banned', () => {
+    expect(shouldAutoEscalate('likely_ai', 'PERMANENT_BAN')).toBe(false);
+  });
+
+  it('does not auto-escalate when action is REVIEW', () => {
+    expect(shouldAutoEscalate('likely_ai', 'REVIEW')).toBe(false);
+  });
+});

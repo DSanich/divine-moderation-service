@@ -3302,11 +3302,12 @@ async function runMigration() {
       }
     }
 
-    // Poll pending Reality Defender results and update moderation decisions
+    // Poll pending Reality Defender results and auto-escalate confirmed fakes
     if (env.REALITY_DEFENDER_API_KEY && env.MODERATION_KV) {
       try {
         const pendingKeys = await env.MODERATION_KV.list({ prefix: 'rd:', limit: 20 });
         let polled = 0;
+        let escalated = 0;
         for (const key of pendingKeys.keys) {
           const cached = await env.MODERATION_KV.get(key.name);
           if (!cached) continue;
@@ -3319,10 +3320,88 @@ async function runMigration() {
           if (result && result.status === 'complete') {
             polled++;
             console.log(`[CRON] Reality Defender result for ${sha256}: ${result.verdict} (score=${result.score})`);
+
+            // Auto-escalate confirmed fakes if content is still quarantined.
+            // De-escalation (AUTHENTIC → SAFE) requires moderator action.
+            // Human decisions are never overridden.
+            if (result.verdict === 'likely_ai') {
+              const moderationData = await env.MODERATION_KV.get(`moderation:${sha256}`);
+              if (moderationData) {
+                const moderation = JSON.parse(moderationData);
+                if (moderation.action === 'QUARANTINE') {
+                  console.log(`[CRON] Auto-escalating ${sha256} from QUARANTINE to PERMANENT_BAN (RD verdict: ${result.verdict})`);
+
+                  // Update KV classification
+                  moderation.action = 'PERMANENT_BAN';
+                  moderation.reason = `Auto-escalated: Reality Defender confirmed AI-generated (score=${result.score})`;
+                  moderation.reviewedAt = new Date().toISOString();
+                  moderation.reviewedBy = 'reality-defender-auto';
+                  await env.MODERATION_KV.put(
+                    `moderation:${sha256}`,
+                    JSON.stringify(moderation),
+                    { expirationTtl: 60 * 60 * 24 * 90 }
+                  );
+
+                  // Update action-specific KV keys
+                  await env.MODERATION_KV.delete(`quarantine:${sha256}`);
+                  await env.MODERATION_KV.put(`permanent-ban:${sha256}`, JSON.stringify({
+                    category: moderation.category || 'ai_generated',
+                    reason: moderation.reason,
+                    timestamp: Date.now(),
+                    autoEscalated: true,
+                  }));
+
+                  // Update D1
+                  try {
+                    await env.BLOSSOM_DB.prepare(`
+                      UPDATE moderation_results
+                      SET action = ?, review_notes = ?, reviewed_by = ?, reviewed_at = ?
+                      WHERE sha256 = ?
+                    `).bind(
+                      'PERMANENT_BAN',
+                      moderation.reason,
+                      'reality-defender-auto',
+                      new Date().toISOString(),
+                      sha256
+                    ).run();
+                  } catch (dbErr) {
+                    console.error(`[CRON] D1 update failed for ${sha256}:`, dbErr.message);
+                  }
+
+                  // Notify Blossom (PERMANENT_BAN → Banned)
+                  const blossomResult = await notifyBlossom(sha256, 'PERMANENT_BAN', env);
+                  if (!blossomResult.success && !blossomResult.skipped) {
+                    console.warn(`[CRON] Blossom notification failed for ${sha256}: ${blossomResult.error}`);
+                  }
+
+                  // Delete event from relay (critical for externally-hosted content)
+                  const relayDeleteResult = await deleteEventFromRelayBySha256(sha256, env, 'rd-auto-escalation');
+                  if (relayDeleteResult?.success) {
+                    console.log(`[CRON] Deleted relay event ${relayDeleteResult.eventId} for auto-escalated ${sha256}`);
+                  }
+
+                  // Send moderation DM to creator
+                  const uploadedBy = moderation.uploadedBy;
+                  if (uploadedBy && env.NOSTR_PRIVATE_KEY) {
+                    try {
+                      const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
+                      await sendModerationDM(uploadedBy, sha256, 'PERMANENT_BAN', moderation.reason, env);
+                      console.log(`[CRON] DM sent to creator for auto-escalated ${sha256}`);
+                    } catch (dmErr) {
+                      console.error(`[CRON] DM failed for ${sha256}:`, dmErr.message);
+                    }
+                  }
+
+                  escalated++;
+                } else {
+                  console.log(`[CRON] Skipping auto-escalation for ${sha256}: no longer quarantined (action=${moderation.action})`);
+                }
+              }
+            }
           }
         }
         if (polled > 0) {
-          console.log(`[CRON] Polled ${polled} Reality Defender results`);
+          console.log(`[CRON] Polled ${polled} Reality Defender results, auto-escalated ${escalated}`);
         }
       } catch (err) {
         console.error('[CRON] Reality Defender polling failed:', err);
@@ -3387,7 +3466,9 @@ async function handleModerationResult(result, env) {
   }
 
   // Send DM to creator for non-SAFE actions (non-blocking)
-  if (['PERMANENT_BAN', 'AGE_RESTRICTED', 'QUARANTINE'].includes(action) && uploadedBy && env.NOSTR_PRIVATE_KEY) {
+  // DMs sent for permanent actions only. QUARANTINE is temporary (pending secondary
+  // verification) — DM fires when it resolves to PERMANENT_BAN via auto-escalation.
+  if (['PERMANENT_BAN', 'AGE_RESTRICTED'].includes(action) && uploadedBy && env.NOSTR_PRIVATE_KEY) {
     try {
       const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
       await sendModerationDM(uploadedBy, sha256, action, reason, env, null, result.categories);
@@ -3417,7 +3498,7 @@ async function handleModerationResult(result, env) {
  * Notify divine-blossom of moderation decision via webhook
  * This allows blossom to update blob status and enforce blocking
  * @param {string} sha256 - The blob hash
- * @param {string} action - The moderation action (SAFE, REVIEW, AGE_RESTRICTED, PERMANENT_BAN)
+ * @param {string} action - The moderation action (SAFE, REVIEW, QUARANTINE, AGE_RESTRICTED, PERMANENT_BAN)
  * @param {Object} env - Environment with BLOSSOM_WEBHOOK_URL and BLOSSOM_WEBHOOK_SECRET
  * @returns {Promise<{success: boolean, error?: string}>}
  */
@@ -3428,13 +3509,21 @@ async function notifyBlossom(sha256, action, env) {
     return { success: true, skipped: true };
   }
 
-  // Forward actions that Blossom understands. Blossom maps:
-  //   SAFE/APPROVE → Active, AGE_RESTRICTED/RESTRICT → Restricted,
-  //   QUARANTINE → Restricted (shadow-restricted, needs review),
-  //   PERMANENT_BAN/BLOCK → Banned
-  // REVIEW is the only internal-only tier that stays publicly accessible.
-  const blossomActions = ['SAFE', 'AGE_RESTRICTED', 'PERMANENT_BAN', 'QUARANTINE'];
-  if (!blossomActions.includes(action)) {
+  // Map internal actions to Blossom-understood actions.
+  // Blossom has five states (Active/Restricted/Pending/Banned/Deleted).
+  // Its webhook handler accepts: SAFE→Active, AGE_RESTRICTED→Restricted,
+  // PERMANENT_BAN→Banned, RESTRICT→Restricted.
+  // QUARANTINE maps to RESTRICT (owner can view, public gets 404).
+  // REVIEW is internal only — content stays publicly accessible.
+  const BLOSSOM_ACTION_MAP = {
+    'SAFE': 'SAFE',
+    'AGE_RESTRICTED': 'AGE_RESTRICTED',
+    'PERMANENT_BAN': 'PERMANENT_BAN',
+    'QUARANTINE': 'RESTRICT',
+  };
+
+  const blossomAction = BLOSSOM_ACTION_MAP[action];
+  if (!blossomAction) {
     console.log(`[BLOSSOM] Skipping notification for internal action: ${action}`);
     return { success: true, skipped: true };
   }
@@ -3449,14 +3538,14 @@ async function notifyBlossom(sha256, action, env) {
       headers['Authorization'] = `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}`;
     }
 
-    console.log(`[BLOSSOM] Notifying blossom of ${action} for ${sha256}`);
+    console.log(`[BLOSSOM] Notifying blossom of ${action} (as ${blossomAction}) for ${sha256}`);
 
     const response = await fetch(env.BLOSSOM_WEBHOOK_URL, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         sha256,
-        action,
+        action: blossomAction,
         timestamp: new Date().toISOString(),
       }),
     });
