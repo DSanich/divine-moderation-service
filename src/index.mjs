@@ -3326,6 +3326,13 @@ async function runMigration() {
             // Auto-escalate confirmed fakes if content is still quarantined.
             // De-escalation (AUTHENTIC → SAFE) requires moderator action.
             // Human decisions are never overridden.
+            //
+            // Note: pollRealityDefender() caches the complete result to rd:{sha256}
+            // before we reach this block. If any step below fails (KV, D1, Blossom),
+            // the cron won't retry because the rd: key is no longer 'pending'.
+            // Fallback: manual moderator action via the admin dashboard.
+            // KV and D1 may temporarily diverge on partial failure — acceptable
+            // given the dual-store architecture; dashboard reads KV first.
             if (result.verdict === 'likely_ai') {
               const moderationData = await env.MODERATION_KV.get(`moderation:${sha256}`);
               if (moderationData) {

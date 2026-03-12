@@ -648,9 +648,10 @@ describe('DM exclusion for QUARANTINE via admin moderate', () => {
     }
   });
 
-  it('sends DM when action is PERMANENT_BAN with NOSTR_PRIVATE_KEY set', async () => {
+  it('attempts DM when action is PERMANENT_BAN with NOSTR_PRIVATE_KEY set', async () => {
     const uploaderPubkey = 'ab'.repeat(32);
     const kvStore = new Map();
+    let dmImportAttempted = false;
 
     const env = {
       ALLOW_DEV_ACCESS: 'true',
@@ -679,8 +680,14 @@ describe('DM exclusion for QUARANTINE via admin moderate', () => {
       MODERATION_QUEUE: { async send() {} },
     };
 
+    // Track whether the DM code path is entered by watching for relay WebSocket connections
     const origFetch = globalThis.fetch;
-    globalThis.fetch = async () => new Response('{}', { status: 200 });
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.startsWith('wss:')) {
+        dmImportAttempted = true;
+      }
+      return new Response('{}', { status: 200 });
+    };
 
     try {
       const response = await worker.fetch(
@@ -694,9 +701,10 @@ describe('DM exclusion for QUARANTINE via admin moderate', () => {
 
       expect(response.status).toBe(200);
       const body = await response.json();
-      // DM is attempted (dm_sent may be true or false depending on relay connectivity,
-      // but the code path is entered — the key assertion is that QUARANTINE above is false)
-      // The real test is that QUARANTINE does NOT attempt DM, while PERMANENT_BAN does.
+      // dm_sent depends on whether sendModerationDM succeeds against the mock,
+      // but the key contrast is: QUARANTINE above → dm_sent:false,
+      // PERMANENT_BAN here → DM code path entered (dm_sent:true or throws trying)
+      expect(body.dm_sent).toBe(true);
     } finally {
       globalThis.fetch = origFetch;
     }
