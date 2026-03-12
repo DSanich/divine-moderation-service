@@ -1476,8 +1476,10 @@ export default {
       console.log(`[ADMIN] Updated ${sha256} from ${previousAction} to ${action} (blossom: ${blossomResult.success}, relayDelete: ${relayDeleteResult?.success ?? 'n/a'})`);
 
       // DM creator about moderation action (non-blocking)
+      // DMs sent for permanent actions only. QUARANTINE is temporary (pending secondary
+      // verification) — DM fires when it resolves to PERMANENT_BAN via auto-escalation.
       let dmSent = false;
-      if (['PERMANENT_BAN', 'AGE_RESTRICTED', 'QUARANTINE'].includes(action) && env.NOSTR_PRIVATE_KEY) {
+      if (['PERMANENT_BAN', 'AGE_RESTRICTED'].includes(action) && env.NOSTR_PRIVATE_KEY) {
         try {
           // Look up uploaded_by from D1
           const uploaderRow = await env.BLOSSOM_DB.prepare(

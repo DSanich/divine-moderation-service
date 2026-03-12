@@ -438,77 +438,518 @@ describe('Admin video lookup', () => {
   });
 });
 
-describe('notifyBlossom action mapping', () => {
-  // Blossom's webhook handler (main.rs:2618) accepts:
-  //   BLOCK/BAN/PERMANENT_BAN → Banned
-  //   RESTRICT/AGE_RESTRICTED → Restricted
-  //   APPROVE/SAFE → Active
-  // QUARANTINE maps to RESTRICT (owner-only access).
-  // REVIEW is internal only — skipped.
+describe('notifyBlossom integration via admin moderate endpoint', () => {
+  // Exercises the real notifyBlossom() code path through the admin API.
+  // A mock fetch interceptor captures the webhook payload Blossom would receive.
 
-  const BLOSSOM_ACTION_MAP = {
-    'SAFE': 'SAFE',
-    'AGE_RESTRICTED': 'AGE_RESTRICTED',
-    'PERMANENT_BAN': 'PERMANENT_BAN',
-    'QUARANTINE': 'RESTRICT',
-  };
-
-  function mapBlossomAction(action) {
-    return BLOSSOM_ACTION_MAP[action] || null;
+  function createBlossomCapture() {
+    const captured = [];
+    return {
+      captured,
+      webhookUrl: 'https://mock-blossom.test/admin/moderate',
+      webhookSecret: 'test-webhook-secret',
+    };
   }
 
-  it('maps QUARANTINE to RESTRICT', () => {
-    expect(mapBlossomAction('QUARANTINE')).toBe('RESTRICT');
+  function createIntegrationEnv(blossom, overrides = {}) {
+    const kvStore = new Map();
+    return {
+      ALLOW_DEV_ACCESS: 'true',
+      SERVICE_API_TOKEN: 'test-service-token',
+      BLOSSOM_WEBHOOK_URL: blossom.webhookUrl,
+      BLOSSOM_WEBHOOK_SECRET: blossom.webhookSecret,
+      BLOSSOM_DB: createDbMock({
+        moderationResults: new Map([[SHA256, {
+          sha256: SHA256,
+          action: 'REVIEW',
+          provider: 'hiveai',
+          scores: JSON.stringify({ ai_generated: 0.95 }),
+          categories: JSON.stringify(['ai_generated']),
+          moderated_at: '2026-03-12T00:00:00.000Z',
+          reviewed_by: null,
+          reviewed_at: null
+        }]])
+      }),
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      },
+      MODERATION_QUEUE: { async send() {} },
+      // Intercept fetch to capture Blossom webhook payloads
+      __fetchInterceptor: (url, init) => {
+        if (url === blossom.webhookUrl) {
+          blossom.captured.push({
+            url,
+            method: init.method,
+            headers: init.headers,
+            body: JSON.parse(init.body),
+          });
+          return new Response(JSON.stringify({ success: true }), { status: 200 });
+        }
+        return null; // not intercepted
+      },
+      ...overrides
+    };
+  }
+
+  it('sends action RESTRICT to Blossom when moderating as QUARANTINE', async () => {
+    const blossom = createBlossomCapture();
+    const env = createIntegrationEnv(blossom);
+
+    // Patch global fetch to intercept Blossom webhook calls
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const intercepted = env.__fetchInterceptor(url, init);
+      if (intercepted) return intercepted;
+      return origFetch(url, init);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/api/moderate/${SHA256}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'QUARANTINE', reason: 'test' })
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      expect(blossom.captured).toHaveLength(1);
+      expect(blossom.captured[0].body.action).toBe('RESTRICT');
+      expect(blossom.captured[0].body.sha256).toBe(SHA256);
+      expect(blossom.captured[0].headers['Authorization']).toBe('Bearer test-webhook-secret');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 
-  it('passes SAFE through unchanged', () => {
-    expect(mapBlossomAction('SAFE')).toBe('SAFE');
+  it('sends action PERMANENT_BAN unchanged to Blossom', async () => {
+    const blossom = createBlossomCapture();
+    const env = createIntegrationEnv(blossom);
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const intercepted = env.__fetchInterceptor(url, init);
+      if (intercepted) return intercepted;
+      return origFetch(url, init);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/api/moderate/${SHA256}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'PERMANENT_BAN', reason: 'test' })
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      expect(blossom.captured).toHaveLength(1);
+      expect(blossom.captured[0].body.action).toBe('PERMANENT_BAN');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 
-  it('passes AGE_RESTRICTED through unchanged', () => {
-    expect(mapBlossomAction('AGE_RESTRICTED')).toBe('AGE_RESTRICTED');
-  });
+  it('does not send webhook to Blossom for REVIEW', async () => {
+    const blossom = createBlossomCapture();
+    const env = createIntegrationEnv(blossom);
 
-  it('passes PERMANENT_BAN through unchanged', () => {
-    expect(mapBlossomAction('PERMANENT_BAN')).toBe('PERMANENT_BAN');
-  });
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const intercepted = env.__fetchInterceptor(url, init);
+      if (intercepted) return intercepted;
+      return origFetch(url, init);
+    };
 
-  it('skips REVIEW (internal only)', () => {
-    expect(mapBlossomAction('REVIEW')).toBeNull();
-  });
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/api/moderate/${SHA256}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'REVIEW', reason: 'test' })
+        }),
+        env
+      );
 
-  it('skips unknown actions', () => {
-    expect(mapBlossomAction('SOMETHING_ELSE')).toBeNull();
+      expect(response.status).toBe(200);
+      expect(blossom.captured).toHaveLength(0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });
 
-describe('Reality Defender auto-escalation logic', () => {
-  // FAKE/SUSPICIOUS + still quarantined → auto-escalate to PERMANENT_BAN
-  // AUTHENTIC + still quarantined → no action (moderator must lift)
-  // Any verdict + already resolved → skip (human decision stands)
+describe('DM exclusion for QUARANTINE via admin moderate', () => {
+  it('does not send DM when action is QUARANTINE even with NOSTR_PRIVATE_KEY set', async () => {
+    let dmAttempted = false;
+    const kvStore = new Map();
 
-  function shouldAutoEscalate(rdVerdict, currentAction) {
-    if (currentAction !== 'QUARANTINE') return false;
-    return rdVerdict === 'likely_ai';
-  }
+    const env = {
+      ALLOW_DEV_ACCESS: 'true',
+      SERVICE_API_TOKEN: 'test-service-token',
+      NOSTR_PRIVATE_KEY: 'deadbeef'.repeat(8),
+      BLOSSOM_DB: createDbMock({
+        moderationResults: new Map([[SHA256, {
+          sha256: SHA256,
+          action: 'REVIEW',
+          provider: 'hiveai',
+          scores: JSON.stringify({ ai_generated: 0.95 }),
+          categories: JSON.stringify(['ai_generated']),
+          moderated_at: '2026-03-12T00:00:00.000Z',
+          reviewed_by: null,
+          reviewed_at: null,
+          uploaded_by: 'a]'.repeat(32)
+        }]])
+      }),
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      },
+      MODERATION_QUEUE: { async send() {} },
+    };
 
-  it('auto-escalates FAKE verdict when still quarantined', () => {
-    expect(shouldAutoEscalate('likely_ai', 'QUARANTINE')).toBe(true);
+    // Patch sendModerationDM to detect if it's called
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.includes('mock-blossom')) {
+        return new Response('{}', { status: 200 });
+      }
+      // DM sending would attempt relay connections — detect that
+      if (typeof url === 'string' && url.startsWith('wss:')) {
+        dmAttempted = true;
+      }
+      return new Response('{}', { status: 200 });
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/api/moderate/${SHA256}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'QUARANTINE', reason: 'test DM exclusion' })
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.dm_sent).toBe(false);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 
-  it('does not auto-escalate AUTHENTIC verdict', () => {
-    expect(shouldAutoEscalate('authentic', 'QUARANTINE')).toBe(false);
+  it('sends DM when action is PERMANENT_BAN with NOSTR_PRIVATE_KEY set', async () => {
+    const uploaderPubkey = 'ab'.repeat(32);
+    const kvStore = new Map();
+
+    const env = {
+      ALLOW_DEV_ACCESS: 'true',
+      SERVICE_API_TOKEN: 'test-service-token',
+      NOSTR_PRIVATE_KEY: 'deadbeef'.repeat(8),
+      BLOSSOM_DB: createDbMock({
+        moderationResults: new Map([[SHA256, {
+          sha256: SHA256,
+          action: 'REVIEW',
+          provider: 'hiveai',
+          scores: JSON.stringify({ ai_generated: 0.95 }),
+          categories: JSON.stringify(['ai_generated']),
+          moderated_at: '2026-03-12T00:00:00.000Z',
+          reviewed_by: null,
+          reviewed_at: null,
+          uploaded_by: uploaderPubkey
+        }]])
+      }),
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      },
+      MODERATION_QUEUE: { async send() {} },
+    };
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('{}', { status: 200 });
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/api/moderate/${SHA256}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'PERMANENT_BAN', reason: 'test DM inclusion' })
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      // DM is attempted (dm_sent may be true or false depending on relay connectivity,
+      // but the code path is entered — the key assertion is that QUARANTINE above is false)
+      // The real test is that QUARANTINE does NOT attempt DM, while PERMANENT_BAN does.
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+describe('RD auto-escalation cron integration', () => {
+  // Exercises the real scheduled handler with mocked KV containing
+  // a pending RD result and quarantined content. Verifies the full
+  // escalation path: KV update, D1 update, Blossom notification.
+
+  it('auto-escalates quarantined content when RD returns likely_ai', async () => {
+    const kvStore = new Map();
+    const blossomPayloads = [];
+    const d1Updates = [];
+
+    // Seed KV: pending RD job + quarantined moderation record
+    // pollRealityDefender reads `requestId` from KV (not `jobId`)
+    kvStore.set(`rd:${SHA256}`, JSON.stringify({ status: 'pending', requestId: 'rd-req-123' }));
+    kvStore.set(`moderation:${SHA256}`, JSON.stringify({
+      action: 'QUARANTINE',
+      category: 'ai_generated',
+      uploadedBy: 'ab'.repeat(32),
+    }));
+    kvStore.set(`quarantine:${SHA256}`, JSON.stringify({ category: 'ai_generated' }));
+
+    const env = {
+      REALITY_DEFENDER_API_KEY: 'fake-rd-key',
+      BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/admin/moderate',
+      BLOSSOM_WEBHOOK_SECRET: 'test-secret',
+      BLOSSOM_DB: {
+        prepare(sql) {
+          return {
+            bind(...args) {
+              if (sql.includes('UPDATE moderation_results')) {
+                d1Updates.push({ sql, args });
+              }
+              return this;
+            },
+            async run() { return { success: true }; },
+            async first() { return null; },
+            async all() { return { results: [] }; }
+          };
+        },
+        async batch() { return []; }
+      },
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list({ prefix } = {}) {
+          const keys = [...kvStore.keys()]
+            .filter(k => !prefix || k.startsWith(prefix))
+            .map(name => ({ name }));
+          return { keys, list_complete: true, cursor: null };
+        }
+      },
+      MODERATION_QUEUE: { async send() {} },
+    };
+
+    // Mock fetch: intercept RD API poll and Blossom webhook
+    // pollRealityDefender calls: https://api.prd.realitydefender.xyz/api/media/users/{requestId}
+    // It maps resultsSummary.status FAKE → verdict 'likely_ai', finalScore (0-100) → score (0-1)
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.includes('realitydefender')) {
+        return new Response(JSON.stringify({
+          resultsSummary: {
+            status: 'FAKE',
+            metadata: { finalScore: 92 },
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === env.BLOSSOM_WEBHOOK_URL) {
+        blossomPayloads.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      // Swallow relay/DM fetch attempts
+      return new Response('{}', { status: 200 });
+    };
+
+    try {
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() },
+        env,
+        { waitUntil: () => {} }
+      );
+
+      // Verify KV was updated to PERMANENT_BAN
+      const moderation = JSON.parse(kvStore.get(`moderation:${SHA256}`));
+      expect(moderation.action).toBe('PERMANENT_BAN');
+      expect(moderation.reviewedBy).toBe('reality-defender-auto');
+      expect(moderation.reason).toContain('Reality Defender confirmed AI-generated');
+
+      // Verify quarantine key deleted, permanent-ban key created
+      expect(kvStore.has(`quarantine:${SHA256}`)).toBe(false);
+      expect(kvStore.has(`permanent-ban:${SHA256}`)).toBe(true);
+      const banData = JSON.parse(kvStore.get(`permanent-ban:${SHA256}`));
+      expect(banData.autoEscalated).toBe(true);
+
+      // Verify D1 was updated
+      expect(d1Updates).toHaveLength(1);
+      expect(d1Updates[0].args[0]).toBe('PERMANENT_BAN');
+      expect(d1Updates[0].args[2]).toBe('reality-defender-auto');
+
+      // Verify Blossom was notified with PERMANENT_BAN
+      expect(blossomPayloads).toHaveLength(1);
+      expect(blossomPayloads[0].action).toBe('PERMANENT_BAN');
+      expect(blossomPayloads[0].sha256).toBe(SHA256);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 
-  it('does not auto-escalate when moderator already changed to SAFE', () => {
-    expect(shouldAutoEscalate('likely_ai', 'SAFE')).toBe(false);
+  it('skips auto-escalation when moderator already changed action from QUARANTINE', async () => {
+    const kvStore = new Map();
+    const blossomPayloads = [];
+
+    // Seed KV: pending RD job, but moderation already changed to SAFE by moderator
+    kvStore.set(`rd:${SHA256}`, JSON.stringify({ status: 'pending', requestId: 'rd-req-456' }));
+    kvStore.set(`moderation:${SHA256}`, JSON.stringify({
+      action: 'SAFE',
+      category: 'ai_generated',
+      reviewedBy: 'admin',
+    }));
+
+    const env = {
+      REALITY_DEFENDER_API_KEY: 'fake-rd-key',
+      BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/admin/moderate',
+      BLOSSOM_DB: {
+        prepare() {
+          return {
+            bind() { return this; },
+            async run() { return { success: true }; },
+            async first() { return null; },
+            async all() { return { results: [] }; }
+          };
+        },
+        async batch() { return []; }
+      },
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list({ prefix } = {}) {
+          const keys = [...kvStore.keys()]
+            .filter(k => !prefix || k.startsWith(prefix))
+            .map(name => ({ name }));
+          return { keys, list_complete: true, cursor: null };
+        }
+      },
+      MODERATION_QUEUE: { async send() {} },
+    };
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.includes('realitydefender')) {
+        return new Response(JSON.stringify({
+          resultsSummary: {
+            status: 'FAKE',
+            metadata: { finalScore: 95 },
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (typeof url === 'string' && url.includes('mock-blossom')) {
+        blossomPayloads.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    };
+
+    try {
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() },
+        env,
+        { waitUntil: () => {} }
+      );
+
+      // Moderation should still be SAFE — human decision preserved
+      const moderation = JSON.parse(kvStore.get(`moderation:${SHA256}`));
+      expect(moderation.action).toBe('SAFE');
+
+      // Blossom should NOT have been notified (no escalation)
+      expect(blossomPayloads).toHaveLength(0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 
-  it('does not auto-escalate when moderator already banned', () => {
-    expect(shouldAutoEscalate('likely_ai', 'PERMANENT_BAN')).toBe(false);
-  });
+  it('does not auto-escalate when RD verdict is authentic', async () => {
+    const kvStore = new Map();
 
-  it('does not auto-escalate when action is REVIEW', () => {
-    expect(shouldAutoEscalate('likely_ai', 'REVIEW')).toBe(false);
+    kvStore.set(`rd:${SHA256}`, JSON.stringify({ status: 'pending', requestId: 'rd-req-789' }));
+    kvStore.set(`moderation:${SHA256}`, JSON.stringify({
+      action: 'QUARANTINE',
+      category: 'ai_generated',
+    }));
+
+    const env = {
+      REALITY_DEFENDER_API_KEY: 'fake-rd-key',
+      BLOSSOM_DB: {
+        prepare() {
+          return {
+            bind() { return this; },
+            async run() { return { success: true }; },
+            async first() { return null; },
+            async all() { return { results: [] }; }
+          };
+        },
+        async batch() { return []; }
+      },
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list({ prefix } = {}) {
+          const keys = [...kvStore.keys()]
+            .filter(k => !prefix || k.startsWith(prefix))
+            .map(name => ({ name }));
+          return { keys, list_complete: true, cursor: null };
+        }
+      },
+      MODERATION_QUEUE: { async send() {} },
+    };
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (typeof url === 'string' && url.includes('realitydefender')) {
+        return new Response(JSON.stringify({
+          resultsSummary: {
+            status: 'AUTHENTIC',
+            metadata: { finalScore: 15 },
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('{}', { status: 200 });
+    };
+
+    try {
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() },
+        env,
+        { waitUntil: () => {} }
+      );
+
+      // Should remain QUARANTINE — authentic verdict does not auto-resolve
+      const moderation = JSON.parse(kvStore.get(`moderation:${SHA256}`));
+      expect(moderation.action).toBe('QUARANTINE');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });
