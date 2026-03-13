@@ -5,7 +5,6 @@
 // ABOUTME: Sends gift-wrapped DMs to content creators about moderation actions
 
 import { wrapEvent } from 'nostr-tools/nip17';
-import { decode as nip19decode } from 'nostr-tools/nip19';
 import { hexToBytes } from '@noble/hashes/utils';
 import { getPublicKey } from 'nostr-tools/pure';
 
@@ -133,7 +132,7 @@ export function getReportOutcomeMessage(action) {
 // --- Key Management ---
 
 /**
- * Get moderator signing keys from MODERATOR_NSEC env var.
+ * Get moderator signing keys from NOSTR_PRIVATE_KEY env var (hex).
  * Results are cached per env object via WeakMap.
  * @param {Object} env
  * @returns {{ privateKey: Uint8Array, publicKey: string }}
@@ -143,25 +142,11 @@ export function getModeratorKeys(env) {
     return keyCache.get(env);
   }
 
-  if (!env.MODERATOR_NSEC) {
-    throw new Error('MODERATOR_NSEC not configured');
+  if (!env.NOSTR_PRIVATE_KEY) {
+    throw new Error('NOSTR_PRIVATE_KEY not configured');
   }
 
-  let privateKey;
-  const nsec = env.MODERATOR_NSEC;
-
-  if (nsec.startsWith('nsec1')) {
-    // Bech32-encoded nsec
-    const decoded = nip19decode(nsec);
-    if (decoded.type !== 'nsec') {
-      throw new Error('MODERATOR_NSEC is not a valid nsec');
-    }
-    privateKey = decoded.data;
-  } else {
-    // Assume hex-encoded private key for backward compatibility
-    privateKey = hexToBytes(nsec);
-  }
-
+  const privateKey = hexToBytes(env.NOSTR_PRIVATE_KEY);
   const publicKey = getPublicKey(privateKey);
   const keys = { privateKey, publicKey };
   keyCache.set(env, keys);

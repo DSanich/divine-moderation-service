@@ -5,24 +5,20 @@
 // ABOUTME: Syncs gift-wrapped DMs from relay and stores in D1 dm_log
 
 import { getPublicKey } from 'nostr-tools/pure';
-import { decode as nip19Decode } from 'nostr-tools/nip19';
+import { hexToBytes } from '@noble/hashes/utils';
 import { unwrapEvent } from 'nostr-tools/nip17';
 import { computeConversationId, logDm } from './dm-store.mjs';
 
 /**
- * Derive the moderator's hex pubkey from MODERATOR_NSEC
- * @param {Object} env - Environment with MODERATOR_NSEC
+ * Derive the moderator's hex pubkey from NOSTR_PRIVATE_KEY (hex)
+ * @param {Object} env - Environment with NOSTR_PRIVATE_KEY
  * @returns {string} Hex pubkey
  */
 export function getModeratorPubkey(env) {
-  if (!env.MODERATOR_NSEC) {
-    throw new Error('MODERATOR_NSEC not configured');
+  if (!env.NOSTR_PRIVATE_KEY) {
+    throw new Error('NOSTR_PRIVATE_KEY not configured');
   }
-  const decoded = nip19Decode(env.MODERATOR_NSEC);
-  if (decoded.type !== 'nsec') {
-    throw new Error('Invalid MODERATOR_NSEC: expected nsec bech32');
-  }
-  return getPublicKey(decoded.data);
+  return getPublicKey(env.NOSTR_PRIVATE_KEY);
 }
 
 /**
@@ -34,16 +30,11 @@ export function getModeratorPubkey(env) {
  * @returns {Promise<{synced: number, skipped: number, errors: number}>}
  */
 export async function syncInbox(env) {
-  if (!env.MODERATOR_NSEC) {
-    throw new Error('MODERATOR_NSEC not configured');
+  if (!env.NOSTR_PRIVATE_KEY) {
+    throw new Error('NOSTR_PRIVATE_KEY not configured');
   }
 
-  // Decode private key
-  const decoded = nip19Decode(env.MODERATOR_NSEC);
-  if (decoded.type !== 'nsec') {
-    throw new Error('Invalid MODERATOR_NSEC: expected nsec bech32');
-  }
-  const privateKey = decoded.data; // Uint8Array
+  const privateKey = hexToBytes(env.NOSTR_PRIVATE_KEY);
   const moderatorPubkey = getPublicKey(privateKey);
 
   // Get last sync timestamp from KV

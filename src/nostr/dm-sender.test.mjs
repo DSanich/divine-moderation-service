@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { nsecEncode } from 'nostr-tools/nip19';
+import { bytesToHex } from '@noble/hashes/utils';
 import {
   getMessageForAction,
   getReportOutcomeMessage,
@@ -17,9 +17,9 @@ import {
   selectTemplate
 } from './dm-sender.mjs';
 
-// Generate a stable test nsec for use across tests
+// Generate a stable test key in hex format (matching production usage)
 const testSecretKey = generateSecretKey();
-const testNsec = nsecEncode(testSecretKey);
+const testHex = bytesToHex(testSecretKey);
 const testPubkey = getPublicKey(testSecretKey);
 
 describe('DM Sender - Message Templates', () => {
@@ -67,8 +67,8 @@ describe('DM Sender - Message Templates', () => {
 });
 
 describe('DM Sender - getModeratorKeys', () => {
-  it('should derive correct pubkey from nsec', () => {
-    const env = { MODERATOR_NSEC: testNsec };
+  it('should derive correct pubkey from hex private key', () => {
+    const env = { NOSTR_PRIVATE_KEY: testHex };
     const { privateKey, publicKey } = getModeratorKeys(env);
 
     expect(publicKey).toBe(testPubkey);
@@ -76,16 +76,27 @@ describe('DM Sender - getModeratorKeys', () => {
     expect(privateKey.length).toBe(32);
   });
 
-  it('should throw when MODERATOR_NSEC is missing', () => {
-    expect(() => getModeratorKeys({})).toThrow('MODERATOR_NSEC not configured');
+  it('should throw when NOSTR_PRIVATE_KEY is missing', () => {
+    expect(() => getModeratorKeys({})).toThrow('NOSTR_PRIVATE_KEY not configured');
   });
 
-  it('should produce consistent results', () => {
-    const env = { MODERATOR_NSEC: testNsec };
+  it('should cache keys for the same env object', () => {
+    const env = { NOSTR_PRIVATE_KEY: testHex };
     const keys1 = getModeratorKeys(env);
     const keys2 = getModeratorKeys(env);
 
-    expect(keys1.publicKey).toBe(keys2.publicKey);
+    expect(keys1).toBe(keys2); // same reference, not just equal
+  });
+
+  it('should produce different keys for different env objects', () => {
+    const otherKey = generateSecretKey();
+    const env1 = { NOSTR_PRIVATE_KEY: testHex };
+    const env2 = { NOSTR_PRIVATE_KEY: bytesToHex(otherKey) };
+
+    const keys1 = getModeratorKeys(env1);
+    const keys2 = getModeratorKeys(env2);
+
+    expect(keys1.publicKey).not.toBe(keys2.publicKey);
   });
 });
 
@@ -203,14 +214,14 @@ describe('DM Sender - discoverUserRelays', () => {
 });
 
 describe('DM Sender - Error Handling', () => {
-  it('should not throw when MODERATOR_NSEC is missing', async () => {
+  it('should return failure when NOSTR_PRIVATE_KEY is missing', async () => {
     const env = {};
     const ctx = { waitUntil: vi.fn() };
 
-    // sendModerationDM should not throw
     const result = await sendModerationDM('b'.repeat(64), 'c'.repeat(64), 'PERMANENT_BAN', 'test', env, ctx);
     expect(result).toBeDefined();
     expect(result.sent).toBe(false);
+    expect(result.reason).toContain('NOSTR_PRIVATE_KEY');
   });
 
   it('should not throw when rate limited', async () => {
@@ -220,7 +231,7 @@ describe('DM Sender - Error Handling', () => {
       put: vi.fn()
     };
     const env = {
-      MODERATOR_NSEC: testNsec,
+      NOSTR_PRIVATE_KEY: testHex,
       MODERATION_KV: mockKV
     };
     const ctx = { waitUntil: vi.fn() };
@@ -236,7 +247,7 @@ describe('DM Sender - Error Handling', () => {
       put: vi.fn()
     };
     const env = {
-      MODERATOR_NSEC: testNsec,
+      NOSTR_PRIVATE_KEY: testHex,
       MODERATION_KV: mockKV
       // No BLOSSOM_DB — will skip D1 logging
     };

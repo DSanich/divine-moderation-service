@@ -4,28 +4,34 @@
 // ABOUTME: Tests for DM inbox reader module (dm-reader.mjs)
 // ABOUTME: Verifies pubkey derivation, inbox sync behavior, and error handling
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { nsecEncode } from 'nostr-tools/nip19';
+import { bytesToHex } from '@noble/hashes/utils';
 import { getModeratorPubkey } from './dm-reader.mjs';
 
-// Generate a stable test nsec
+// Generate a stable test key in hex format (matching production usage)
 const testSecretKey = generateSecretKey();
-const testNsec = nsecEncode(testSecretKey);
+const testHex = bytesToHex(testSecretKey);
 const testPubkey = getPublicKey(testSecretKey);
 
 describe('DM Reader - getModeratorPubkey', () => {
-  it('should derive correct pubkey from MODERATOR_NSEC', () => {
-    const env = { MODERATOR_NSEC: testNsec };
+  it('should derive correct pubkey from hex private key', () => {
+    const env = { NOSTR_PRIVATE_KEY: testHex };
     const pubkey = getModeratorPubkey(env);
     expect(pubkey).toBe(testPubkey);
   });
 
-  it('should throw when MODERATOR_NSEC is missing', () => {
-    expect(() => getModeratorPubkey({})).toThrow('MODERATOR_NSEC not configured');
+  it('should throw when NOSTR_PRIVATE_KEY is missing', () => {
+    expect(() => getModeratorPubkey({})).toThrow('NOSTR_PRIVATE_KEY not configured');
   });
 
-  it('should throw for invalid nsec', () => {
-    expect(() => getModeratorPubkey({ MODERATOR_NSEC: 'npub1invalid' })).toThrow();
+  it('should throw for invalid hex', () => {
+    expect(() => getModeratorPubkey({ NOSTR_PRIVATE_KEY: 'not-valid-hex' })).toThrow();
+  });
+
+  it('should return a 64-character hex string', () => {
+    const env = { NOSTR_PRIVATE_KEY: testHex };
+    const pubkey = getModeratorPubkey(env);
+    expect(pubkey).toMatch(/^[0-9a-f]{64}$/);
   });
 });

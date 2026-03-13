@@ -199,8 +199,8 @@ export async function publishLabelEvent(labelData, env) {
   const { sha256, category, status, score, cdnUrl, nostrEventId } = labelData;
 
   // Validate configuration
-  if (!env.MODERATOR_NSEC && !env.NOSTR_PRIVATE_KEY) {
-    console.log('[LABEL] No MODERATOR_NSEC or NOSTR_PRIVATE_KEY configured, skipping label publish');
+  if (!env.NOSTR_PRIVATE_KEY) {
+    console.log('[LABEL] No NOSTR_PRIVATE_KEY configured, skipping label publish');
     return { published: false, reason: 'No signing key configured' };
   }
 
@@ -210,8 +210,7 @@ export async function publishLabelEvent(labelData, env) {
     return { published: false, reason: 'No relay URL configured' };
   }
 
-  // Use moderator key if available, otherwise fall back to service key
-  const privateKeyHex = env.MODERATOR_NSEC || env.NOSTR_PRIVATE_KEY;
+  const privateKeyHex = env.NOSTR_PRIVATE_KEY;
 
   // Create the label event
   const event = createLabelEvent(labelData, privateKeyHex);

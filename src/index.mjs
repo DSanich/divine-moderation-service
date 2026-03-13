@@ -911,7 +911,7 @@ export default {
 
       // DM creator about moderation action (non-blocking)
       let dmSent = false;
-      if (['PERMANENT_BAN', 'AGE_RESTRICTED', 'QUARANTINE'].includes(action) && env.MODERATOR_NSEC) {
+      if (['PERMANENT_BAN', 'AGE_RESTRICTED', 'QUARANTINE'].includes(action) && env.NOSTR_PRIVATE_KEY) {
         try {
           // Look up uploaded_by from D1
           const uploaderRow = await env.BLOSSOM_DB.prepare(
@@ -1243,15 +1243,22 @@ export default {
       const authError = await requireAuth(request, env);
       if (authError) return authError;
 
-      if (!env.NOSTR_PRIVATE_KEY) {
-        return new Response(JSON.stringify({ error: 'NOSTR_PRIVATE_KEY not configured' }), {
+      try {
+        if (!env.NOSTR_PRIVATE_KEY) {
+          return new Response(JSON.stringify({ error: 'NOSTR_PRIVATE_KEY not configured' }), {
+            status: 500, headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        const pubkey = getPublicKey(env.NOSTR_PRIVATE_KEY);
+        return new Response(JSON.stringify({ pubkey }, null, 2), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }, null, 2), {
           status: 500, headers: { 'Content-Type': 'application/json' }
         });
       }
-      const pubkey = bytesToHex(getPublicKey(hexToBytes(env.NOSTR_PRIVATE_KEY)));
-      return new Response(JSON.stringify({ pubkey, note: 'Add this to ADMIN_PUBKEYS on the funnelcake relay' }), {
-        headers: { 'Content-Type': 'application/json' }
-      });
     }
 
     // Get relay polling status
@@ -2701,7 +2708,7 @@ async function runMigration() {
     }
 
     // Sync DM inbox from relay
-    if (env.MODERATOR_NSEC) {
+    if (env.NOSTR_PRIVATE_KEY) {
       try {
         const { syncInbox } = await import('./nostr/dm-reader.mjs');
         const syncResult = await syncInbox(env);
@@ -2788,7 +2795,7 @@ async function handleModerationResult(result, env) {
   }
 
   // Send DM to creator for non-SAFE actions (non-blocking)
-  if (['PERMANENT_BAN', 'AGE_RESTRICTED', 'QUARANTINE'].includes(action) && uploadedBy && env.MODERATOR_NSEC) {
+  if (['PERMANENT_BAN', 'AGE_RESTRICTED', 'QUARANTINE'].includes(action) && uploadedBy && env.NOSTR_PRIVATE_KEY) {
     try {
       const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
       await sendModerationDM(uploadedBy, sha256, action, reason, env, null, result.categories);
