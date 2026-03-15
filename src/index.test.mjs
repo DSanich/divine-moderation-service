@@ -815,6 +815,88 @@ describe('RD auto-escalation cron integration', () => {
       expect(blossomPayloads).toHaveLength(1);
       expect(blossomPayloads[0].action).toBe('PERMANENT_BAN');
       expect(blossomPayloads[0].sha256).toBe(SHA256);
+
+      // Verify rd: entry marked as escalated (prevents retry)
+      const rdAfter = JSON.parse(kvStore.get(`rd:${SHA256}`));
+      expect(rdAfter.escalated).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('retries escalation when rd: is complete but escalation previously failed', async () => {
+    const kvStore = new Map();
+    const blossomPayloads = [];
+
+    // Simulate a previous run where RD completed but escalation failed:
+    // rd: is complete+likely_ai but NOT escalated, content still quarantined
+    kvStore.set(`rd:${SHA256}`, JSON.stringify({
+      status: 'complete', verdict: 'likely_ai', score: 0.92, requestId: 'rd-req-retry'
+    }));
+    kvStore.set(`moderation:${SHA256}`, JSON.stringify({
+      action: 'QUARANTINE',
+      category: 'ai_generated',
+      uploadedBy: 'ab'.repeat(32),
+    }));
+    kvStore.set(`quarantine:${SHA256}`, JSON.stringify({ category: 'ai_generated' }));
+
+    const env = {
+      REALITY_DEFENDER_API_KEY: 'fake-rd-key',
+      BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/admin/moderate',
+      BLOSSOM_WEBHOOK_SECRET: 'test-secret',
+      BLOSSOM_DB: {
+        prepare(sql) {
+          return {
+            bind(...args) { return this; },
+            async run() { return { success: true }; },
+            async first() { return null; },
+            async all() { return { results: [] }; }
+          };
+        },
+        async batch() { return []; }
+      },
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list({ prefix } = {}) {
+          const keys = [...kvStore.keys()]
+            .filter(k => !prefix || k.startsWith(prefix))
+            .map(name => ({ name }));
+          return { keys, list_complete: true, cursor: null };
+        }
+      },
+      MODERATION_QUEUE: { async send() {} },
+    };
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (url === env.BLOSSOM_WEBHOOK_URL) {
+        blossomPayloads.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    };
+
+    try {
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() },
+        env,
+        { waitUntil: () => {} }
+      );
+
+      // Verify escalation happened on retry
+      const moderation = JSON.parse(kvStore.get(`moderation:${SHA256}`));
+      expect(moderation.action).toBe('PERMANENT_BAN');
+
+      // Verify Blossom was notified
+      expect(blossomPayloads).toHaveLength(1);
+      expect(blossomPayloads[0].action).toBe('PERMANENT_BAN');
+
+      // Verify rd: now marked as escalated
+      const rdAfter = JSON.parse(kvStore.get(`rd:${SHA256}`));
+      expect(rdAfter.escalated).toBe(true);
     } finally {
       globalThis.fetch = origFetch;
     }

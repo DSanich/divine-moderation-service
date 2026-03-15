@@ -3314,11 +3314,24 @@ async function runMigration() {
           const cached = await env.MODERATION_KV.get(key.name);
           if (!cached) continue;
           const parsed = JSON.parse(cached);
-          if (parsed.status !== 'pending') continue;
 
           const sha256 = key.name.replace('rd:', '');
-          const { pollRealityDefender } = await import('./moderation/realness-client.mjs');
-          const result = await pollRealityDefender(sha256, env);
+
+          // Two cases to handle:
+          // 1. pending → poll RD API for results
+          // 2. complete + likely_ai but not yet escalated → retry escalation
+          let result = null;
+          if (parsed.status === 'pending') {
+            const { pollRealityDefender } = await import('./moderation/realness-client.mjs');
+            result = await pollRealityDefender(sha256, env);
+          } else if (parsed.status === 'complete' && parsed.verdict === 'likely_ai' && !parsed.escalated) {
+            // Previous escalation attempt failed — retry
+            result = parsed;
+            console.log(`[CRON] Retrying failed escalation for ${sha256}`);
+          } else {
+            continue; // complete + escalated, or complete + authentic — nothing to do
+          }
+
           if (result && result.status === 'complete') {
             polled++;
             console.log(`[CRON] Reality Defender result for ${sha256}: ${result.verdict} (score=${result.score})`);
@@ -3326,13 +3339,6 @@ async function runMigration() {
             // Auto-escalate confirmed fakes if content is still quarantined.
             // De-escalation (AUTHENTIC → SAFE) requires moderator action.
             // Human decisions are never overridden.
-            //
-            // Note: pollRealityDefender() caches the complete result to rd:{sha256}
-            // before we reach this block. If any step below fails (KV, D1, Blossom),
-            // the cron won't retry because the rd: key is no longer 'pending'.
-            // Fallback: manual moderator action via the admin dashboard.
-            // KV and D1 may temporarily diverge on partial failure — acceptable
-            // given the dual-store architecture; dashboard reads KV first.
             if (result.verdict === 'likely_ai') {
               const moderationData = await env.MODERATION_KV.get(`moderation:${sha256}`);
               if (moderationData) {
@@ -3401,8 +3407,27 @@ async function runMigration() {
                     }
                   }
 
+                  // Mark escalation complete so cron doesn't retry
+                  const rdCached = await env.MODERATION_KV.get(`rd:${sha256}`);
+                  if (rdCached) {
+                    const rdData = JSON.parse(rdCached);
+                    rdData.escalated = true;
+                    await env.MODERATION_KV.put(`rd:${sha256}`, JSON.stringify(rdData), {
+                      expirationTtl: 86400 * 7
+                    });
+                  }
+
                   escalated++;
                 } else {
+                  // Human already resolved — mark so we don't re-check
+                  const rdCached = await env.MODERATION_KV.get(`rd:${sha256}`);
+                  if (rdCached) {
+                    const rdData = JSON.parse(rdCached);
+                    rdData.escalated = true; // nothing to escalate, but stop retrying
+                    await env.MODERATION_KV.put(`rd:${sha256}`, JSON.stringify(rdData), {
+                      expirationTtl: 86400 * 7
+                    });
+                  }
                   console.log(`[CRON] Skipping auto-escalation for ${sha256}: no longer quarantined (action=${moderation.action})`);
                 }
               }
