@@ -18,6 +18,7 @@ import swipeReviewHTML from './admin/swipe-review.html';
 import messagesHTML from './admin/messages.html';
 import { initReportsTable, addReport } from './reports.mjs';
 import { initOffenderTable, updateUploaderStats, getUploaderStats } from './offender-tracker.mjs';
+import { initUploaderEnforcementTable, getUploaderEnforcement, setUploaderEnforcement, applyUploaderEnforcementToResult } from './uploader-enforcement.mjs';
 import { formatForStorage, formatForGorse, formatForFunnelcake } from './classification/pipeline.mjs';
 import { topicsToLabels, topicsToWeightedFeatures } from './classification/topic-extractor.mjs';
 import { getKVThresholds, setKVThresholds, DEFAULT_THRESHOLDS } from './moderation/classifier.mjs';
@@ -43,6 +44,7 @@ const CATEGORY_TO_LABEL = {
 
 const ADMIN_HOSTNAME = 'moderation.admin.divine.video';
 const API_HOSTNAME = 'moderation-api.divine.video';
+const DEFAULT_RELAY_ADMIN_URL = 'https://relay.admin.divine.video';
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
 
@@ -203,6 +205,416 @@ function verifyLegacyBearerAuth(request, env) {
   }
 
   return null;
+}
+
+function isValidSha256(value) {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
+}
+
+function isValidLookupIdentifier(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 255;
+}
+
+function isValidPubkey(value) {
+  return isValidSha256(value);
+}
+
+function parseMaybeJson(value, fallback) {
+  if (value == null) {
+    return fallback;
+  }
+
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return fallback;
+    }
+  }
+
+  return value;
+}
+
+function getEventTagValue(tags, key) {
+  return tags?.find((tag) => tag[0] === key)?.[1] || null;
+}
+
+function parseImetaParams(tags) {
+  const imetaTag = tags?.find((tag) => tag[0] === 'imeta');
+  if (!imetaTag) {
+    return {};
+  }
+
+  const params = {};
+  for (let i = 1; i < imetaTag.length; i++) {
+    const entry = imetaTag[i];
+    if (!entry || typeof entry !== 'string') {
+      continue;
+    }
+
+    const separatorIndex = entry.indexOf(' ');
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const key = entry.slice(0, separatorIndex);
+    const value = entry.slice(separatorIndex + 1).trim();
+    if (key && value) {
+      params[key] = value;
+    }
+  }
+
+  return params;
+}
+
+function extractShaFromUrl(url) {
+  if (typeof url !== 'string') {
+    return null;
+  }
+
+  const match = url.match(/[0-9a-f]{64}/i);
+  return match ? match[0].toLowerCase() : null;
+}
+
+function extractMediaShaFromEvent(event) {
+  const tags = event?.tags || [];
+  const imeta = parseImetaParams(tags);
+  return extractShaFromUrl(imeta.x)
+    || extractShaFromUrl(getEventTagValue(tags, 'x'))
+    || extractShaFromUrl(imeta.url)
+    || extractShaFromUrl(getEventTagValue(tags, 'url'))
+    || null;
+}
+
+function buildFunnelcakeVideoLookup(eventResponse, identifier) {
+  if (!eventResponse?.event) {
+    return null;
+  }
+
+  const event = eventResponse.event;
+  const stats = eventResponse.stats || {};
+  const tags = event.tags || [];
+  const metadata = parseVideoEventMetadata(event) || {};
+  const imeta = parseImetaParams(tags);
+  const mediaSha = extractMediaShaFromEvent(event);
+  const videoUrl = metadata.url || imeta.url || getEventTagValue(tags, 'url') || null;
+  const thumbnailUrl = imeta.image || getEventTagValue(tags, 'thumb') || getEventTagValue(tags, 'image') || null;
+  const stableId = getEventTagValue(tags, 'd') || event.id || identifier;
+
+  return {
+    eventId: event.id,
+    stableId,
+    lookupId: identifier,
+    mediaSha,
+    videoUrl,
+    thumbnailUrl,
+    uploadedBy: event.pubkey || null,
+    createdAt: event.created_at ? new Date(event.created_at * 1000).toISOString() : null,
+    nostrContext: {
+      title: metadata.title || null,
+      author: metadata.author || stats.author_name || null,
+      client: metadata.client || null,
+      content: metadata.content || event.content || null,
+      pubkey: event.pubkey ? `${event.pubkey.substring(0, 16)}...` : null,
+      eventId: event.id,
+      platform: metadata.platform || null
+    },
+    divineUrl: `https://divine.video/video/${encodeURIComponent(stableId)}`
+  };
+}
+
+async function fetchFunnelcakeLookupVideo(identifier) {
+  const response = await fetch(`https://relay.divine.video/api/videos/${encodeURIComponent(identifier)}`, {
+    headers: {
+      'Accept': 'application/json'
+    }
+  });
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    throw new Error(`Funnelcake lookup failed with HTTP ${response.status}`);
+  }
+
+  return buildFunnelcakeVideoLookup(await response.json(), identifier);
+}
+
+function mergeLookupMetadata(baseVideo, funnelcakeVideo) {
+  if (!funnelcakeVideo) {
+    return baseVideo;
+  }
+
+  return {
+    ...baseVideo,
+    cdnUrl: baseVideo.cdnUrl || funnelcakeVideo.videoUrl || baseVideo.cdnUrl,
+    thumbnailUrl: baseVideo.thumbnailUrl || funnelcakeVideo.thumbnailUrl || null,
+    uploaded_by: baseVideo.uploaded_by || funnelcakeVideo.uploadedBy || null,
+    divineUrl: funnelcakeVideo.divineUrl || baseVideo.divineUrl,
+    lookupId: funnelcakeVideo.lookupId || baseVideo.lookupId,
+    nostrContext: {
+      ...(funnelcakeVideo.nostrContext || {}),
+      ...(baseVideo.nostrContext || {})
+    }
+  };
+}
+
+function getRelayAdminUrl(env) {
+  return env.RELAY_ADMIN_URL || DEFAULT_RELAY_ADMIN_URL;
+}
+
+function getRelayAdminHeaders(env) {
+  const headers = {
+    'Content-Type': 'application/json'
+  };
+
+  if (env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
+    headers['CF-Access-Client-Id'] = env.CF_ACCESS_CLIENT_ID;
+    headers['CF-Access-Client-Secret'] = env.CF_ACCESS_CLIENT_SECRET;
+  }
+
+  return headers;
+}
+
+async function callRelayAdminAction(env, payload) {
+  const response = await fetch(`${getRelayAdminUrl(env)}/api/moderate`, {
+    method: 'POST',
+    headers: getRelayAdminHeaders(env),
+    body: JSON.stringify(payload)
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data?.success === false) {
+    throw new Error(data?.error || `Relay admin error: HTTP ${response.status}`);
+  }
+
+  return data;
+}
+
+/**
+ * Look up the Nostr event for a SHA256 and delete it from the relay.
+ * Used to enforce PERMANENT_BAN on content that may be hosted externally.
+ */
+async function deleteEventFromRelayBySha256(sha256, env, source = 'unknown') {
+  try {
+    const event = await fetchNostrEventBySha256(sha256, ['wss://relay.divine.video'], env);
+    if (!event?.id) {
+      console.log(`[RELAY-ENFORCE] ${sha256} - No relay event found, skipping delete`);
+      return { success: false, reason: 'no_event_found' };
+    }
+
+    const result = await callRelayAdminAction(env, {
+      action: 'delete_event',
+      eventId: event.id,
+      reason: `PERMANENT_BAN enforcement (${source})`
+    });
+    console.log(`[RELAY-ENFORCE] ${sha256} - Deleted event ${event.id} from relay`);
+    return { success: true, eventId: event.id, result };
+  } catch (error) {
+    console.error(`[RELAY-ENFORCE] ${sha256} - Failed to delete from relay:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+async function fetchLookupNostrContext(hash, env) {
+  try {
+    const event = await fetchNostrEventBySha256(hash, ['wss://relay.divine.video'], env);
+    if (!event) {
+      return null;
+    }
+
+    const metadata = parseVideoEventMetadata(event) || {};
+    const tags = event.tags || [];
+    const stableId = getEventTagValue(tags, 'd') || event.id || hash;
+
+    return {
+      eventId: event.id,
+      uploadedBy: event.pubkey || null,
+      divineUrl: `https://divine.video/video/${encodeURIComponent(stableId)}`,
+      nostrContext: {
+        title: metadata.title || null,
+        author: metadata.author || null,
+        client: metadata.client || null,
+        content: metadata.content || event.content || null,
+        pubkey: event.pubkey ? `${event.pubkey.substring(0, 16)}...` : null,
+        eventId: event.id,
+        platform: metadata.platform || null
+      }
+    };
+  } catch (error) {
+    console.error(`[ADMIN] Failed to fetch Nostr context for ${hash}:`, error.message);
+    return null;
+  }
+}
+
+async function enrichAdminLookupVideo(video, env) {
+  if (!video) {
+    return null;
+  }
+
+  let enriched = { ...video };
+
+  if (enriched.sha256 && (!enriched.eventId || !enriched.divineUrl || !enriched.nostrContext)) {
+    const nostrContext = await fetchLookupNostrContext(enriched.sha256, env);
+    if (nostrContext) {
+      enriched = {
+        ...enriched,
+        eventId: enriched.eventId || nostrContext.eventId,
+        divineUrl: enriched.divineUrl || nostrContext.divineUrl,
+        nostrContext: {
+          ...(nostrContext.nostrContext || {}),
+          ...(enriched.nostrContext || {})
+        },
+        uploaded_by: enriched.uploaded_by || nostrContext.uploadedBy || null
+      };
+    }
+  }
+
+  if (enriched.uploaded_by) {
+    const [uploaderStats, uploaderEnforcement] = await Promise.all([
+      getUploaderStats(env.BLOSSOM_DB, enriched.uploaded_by).catch(() => null),
+      getUploaderEnforcement(env.BLOSSOM_DB, enriched.uploaded_by).catch(() => null)
+    ]);
+
+    enriched = {
+      ...enriched,
+      uploaderStats,
+      uploaderEnforcement: uploaderEnforcement || {
+        pubkey: enriched.uploaded_by,
+        approval_required: false,
+        relay_banned: false
+      }
+    };
+  }
+
+  return enriched;
+}
+
+async function getAdminLookupVideo(identifier, env, options = {}) {
+  const { allowFunnelcakeFallback = true } = options;
+  const hash = isValidSha256(identifier) ? identifier.toLowerCase() : null;
+  const cdnUrl = `https://${env.CDN_DOMAIN || 'media.divine.video'}/${hash}`;
+  if (hash) {
+    const moderatedRow = await env.BLOSSOM_DB.prepare(`
+      SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by
+      FROM moderation_results
+      WHERE sha256 = ?
+    `).bind(hash).first();
+
+    const kvModerationRaw = await env.MODERATION_KV.get(`moderation:${hash}`);
+    const kvModeration = parseMaybeJson(kvModerationRaw, null);
+
+    if (moderatedRow || kvModeration) {
+      const moderatedAt = kvModeration?.moderated_at || moderatedRow?.moderated_at || null;
+      return enrichAdminLookupVideo({
+        sha256: hash,
+        action: kvModeration?.action || moderatedRow?.action || 'REVIEW',
+        provider: kvModeration?.provider || moderatedRow?.provider || null,
+        scores: parseMaybeJson(kvModeration?.scores, null) || parseMaybeJson(moderatedRow?.scores, {}),
+        categories: parseMaybeJson(kvModeration?.categories, null) || parseMaybeJson(moderatedRow?.categories, []),
+        processedAt: moderatedAt ? new Date(moderatedAt).getTime() : null,
+        moderated_at: moderatedAt,
+        reviewed_by: moderatedRow?.reviewed_by || kvModeration?.reviewedBy || kvModeration?.overriddenBy || null,
+        reviewed_at: moderatedRow?.reviewed_at || null,
+        uploaded_by: moderatedRow?.uploaded_by || kvModeration?.uploadedBy || null,
+        reason: kvModeration?.reason || moderatedRow?.review_notes || null,
+        manualOverride: Boolean(kvModeration?.manualOverride),
+        overriddenAt: kvModeration?.overriddenAt || moderatedRow?.reviewed_at || null,
+        previousAction: kvModeration?.previousAction || null,
+        detailedCategories: parseMaybeJson(kvModeration?.detailedCategories, null),
+        categoryVerifications: parseMaybeJson(kvModeration?.categoryVerifications, {}) || {},
+        cdnUrl
+      }, env);
+    }
+
+    const untriagedRow = await env.BLOSSOM_DB.prepare(`
+      SELECT sha256, video_guid, hls_url, mp4_url, thumbnail_url, received_at, status_name
+      FROM bunny_webhook_events e1
+      WHERE e1.sha256 = ?
+        AND received_at = (
+          SELECT MAX(received_at) FROM bunny_webhook_events e2 WHERE e2.sha256 = e1.sha256
+        )
+      LIMIT 1
+    `).bind(hash).first();
+
+    if (untriagedRow && !['error', 'deleted'].includes(untriagedRow.status_name)) {
+      let nostrContext = null;
+      let eventId = null;
+      let divineUrl = null;
+      let uploaderPubkey = null;
+      try {
+        const event = await fetchNostrEventBySha256(hash, ['wss://relay.divine.video'], env);
+        if (event) {
+          const metadata = parseVideoEventMetadata(event);
+          const stableId = getEventTagValue(event.tags || [], 'd') || event.id || hash;
+          eventId = event.id;
+          divineUrl = `https://divine.video/video/${encodeURIComponent(stableId)}`;
+          uploaderPubkey = event.pubkey || null;
+          nostrContext = {
+            title: metadata?.title || null,
+            author: metadata?.author || null,
+            client: metadata?.client || null,
+            content: metadata?.content || event.content || null,
+            pubkey: event.pubkey ? `${event.pubkey.substring(0, 16)}...` : null,
+            eventId
+          };
+        }
+      } catch (error) {
+        console.error(`[ADMIN] Failed to fetch Nostr context for ${hash}:`, error.message);
+      }
+
+      return enrichAdminLookupVideo({
+        sha256: hash,
+        videoGuid: untriagedRow.video_guid,
+        hlsUrl: untriagedRow.hls_url,
+        mp4Url: untriagedRow.mp4_url,
+        thumbnailUrl: untriagedRow.thumbnail_url,
+        receivedAt: untriagedRow.received_at,
+        status: 'UNTRIAGED',
+        cdnUrl,
+        nostrContext,
+        eventId,
+        divineUrl,
+        uploaded_by: uploaderPubkey
+      }, env);
+    }
+  }
+
+  if (!allowFunnelcakeFallback) {
+    return null;
+  }
+
+  const funnelcakeVideo = await fetchFunnelcakeLookupVideo(identifier);
+  if (!funnelcakeVideo) {
+    return null;
+  }
+
+  if (funnelcakeVideo.mediaSha) {
+    const resolvedByMediaSha = await getAdminLookupVideo(funnelcakeVideo.mediaSha, env, {
+      allowFunnelcakeFallback: false
+    });
+    if (resolvedByMediaSha) {
+      return enrichAdminLookupVideo(mergeLookupMetadata(resolvedByMediaSha, funnelcakeVideo), env);
+    }
+  }
+
+  if (!funnelcakeVideo.mediaSha) {
+    return null;
+  }
+
+  return enrichAdminLookupVideo({
+    sha256: funnelcakeVideo.mediaSha,
+    receivedAt: funnelcakeVideo.createdAt,
+    status: 'UNTRIAGED',
+    cdnUrl: funnelcakeVideo.videoUrl || `https://${env.CDN_DOMAIN || 'media.divine.video'}/${funnelcakeVideo.mediaSha}`,
+    thumbnailUrl: funnelcakeVideo.thumbnailUrl,
+    nostrContext: funnelcakeVideo.nostrContext,
+    uploaded_by: funnelcakeVideo.uploadedBy,
+    divineUrl: funnelcakeVideo.divineUrl,
+    lookupId: funnelcakeVideo.lookupId,
+    eventId: funnelcakeVideo.eventId
+  }, env);
 }
 
 async function handleLegacyScan(request, env) {
@@ -393,6 +805,7 @@ export default {
 
     // Ensure offender tracking table exists (idempotent)
     await initOffenderTable(env.BLOSSOM_DB);
+    await initUploaderEnforcementTable(env.BLOSSOM_DB);
 
     // Ensure reports table exists
     await initReportsTable(env.BLOSSOM_DB);
@@ -650,6 +1063,7 @@ export default {
               const metadata = parseVideoEventMetadata(event);
               return {
                 sha256: row.sha256,
+                eventId: event.id,
                 title: metadata?.title || null,
                 author: metadata?.author || null,
                 client: metadata?.client || null,
@@ -678,6 +1092,8 @@ export default {
             receivedAt: row.received_at,
             status: 'UNTRIAGED',
             cdnUrl: `https://${env.CDN_DOMAIN}/${row.sha256}`,
+            eventId: nostr.eventId || null,
+            uploaded_by: nostr.pubkey || null,
             nostrContext: {
               title: nostr.title,
               author: nostr.author,
@@ -719,6 +1135,127 @@ export default {
       }
     }
 
+    if (url.pathname.startsWith('/admin/api/video/') && request.method === 'GET') {
+      const authError = await requireAuth(request, env);
+      if (authError) {
+        console.log(`[${requestId}] Unauthorized access to ${url.pathname}`);
+        return authError;
+      }
+
+      const identifier = decodeURIComponent(url.pathname.split('/')[4] || '');
+      if (!isValidLookupIdentifier(identifier)) {
+        return new Response(JSON.stringify({ error: 'Invalid video lookup identifier' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      try {
+        const video = await getAdminLookupVideo(identifier, env);
+        if (!video) {
+          return new Response(JSON.stringify({ error: 'Video not found', identifier }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        return new Response(JSON.stringify({ video }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        console.error(`[${requestId}] Failed admin lookup for ${identifier}:`, error);
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    if (url.pathname.startsWith('/admin/api/uploader/') && url.pathname.endsWith('/enforcement') && request.method === 'POST') {
+      const authError = await requireAuth(request, env);
+      if (authError) {
+        return authError;
+      }
+
+      const pubkey = url.pathname.split('/')[4];
+      if (!isValidPubkey(pubkey)) {
+        return new Response(JSON.stringify({ error: 'Invalid uploader pubkey' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      const body = await request.json();
+      const hasApprovalUpdate = typeof body.approvalRequired === 'boolean';
+      const hasRelayUpdate = typeof body.relayBanned === 'boolean';
+
+      if (!hasApprovalUpdate && !hasRelayUpdate && body.notes == null) {
+        return new Response(JSON.stringify({ error: 'No enforcement update provided' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      const moderatorEmail = getAuthenticatedUser(request) || 'admin';
+      const current = await getUploaderEnforcement(env.BLOSSOM_DB, pubkey);
+
+      if (hasRelayUpdate && body.relayBanned !== Boolean(current?.relay_banned)) {
+        await callRelayAdminAction(env, {
+          action: body.relayBanned ? 'ban_pubkey' : 'allow_pubkey',
+          pubkey,
+          reason: body.reason || `Moderator action by ${moderatorEmail}`
+        });
+      }
+
+      const enforcement = await setUploaderEnforcement(env.BLOSSOM_DB, pubkey, {
+        approval_required: hasApprovalUpdate ? body.approvalRequired : undefined,
+        approval_reason: hasApprovalUpdate ? (body.reason || null) : undefined,
+        relay_banned: hasRelayUpdate ? body.relayBanned : undefined,
+        relay_ban_reason: hasRelayUpdate ? (body.reason || null) : undefined,
+        notes: body.notes,
+        updated_by: moderatorEmail
+      });
+
+      return new Response(JSON.stringify({
+        success: true,
+        pubkey,
+        enforcement
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (url.pathname.startsWith('/admin/api/event/') && url.pathname.endsWith('/delete') && request.method === 'POST') {
+      const authError = await requireAuth(request, env);
+      if (authError) {
+        return authError;
+      }
+
+      const eventId = url.pathname.split('/')[4];
+      if (!isValidSha256(eventId)) {
+        return new Response(JSON.stringify({ error: 'Invalid event id' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      const body = await request.json().catch(() => ({}));
+      const moderatorEmail = getAuthenticatedUser(request) || 'admin';
+      const relayResult = await callRelayAdminAction(env, {
+        action: 'delete_event',
+        eventId,
+        reason: body.reason || `Deleted by moderator ${moderatorEmail}`
+      });
+
+      return new Response(JSON.stringify({
+        success: true,
+        eventId,
+        relayResult
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
     // Queue an untriaged video for moderation
     if (url.pathname === '/admin/api/queue-moderation' && request.method === 'POST') {
       const authError = await requireAuth(request, env);
@@ -726,8 +1263,8 @@ export default {
         return authError;
       }
 
-      const { sha256 } = await request.json();
-      if (!sha256) {
+      const { sha256, videoUrl, uploadedBy } = await request.json();
+      if (!isValidSha256(sha256)) {
         return new Response(JSON.stringify({ error: 'sha256 required' }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' }
@@ -738,8 +1275,12 @@ export default {
       await env.MODERATION_QUEUE.send({
         sha256,
         r2Key: `videos/${sha256}.mp4`,
+        uploadedBy: isValidPubkey(uploadedBy) ? uploadedBy : undefined,
         uploadedAt: Date.now(),
-        metadata: { source: 'admin-dashboard' }
+        metadata: {
+          source: 'admin-dashboard',
+          ...(videoUrl ? { videoUrl } : {})
+        }
       });
 
       return new Response(JSON.stringify({ success: true, sha256, message: 'Queued for moderation' }), {
@@ -755,7 +1296,7 @@ export default {
       }
 
       const sha256 = url.pathname.split('/')[4];
-      const { action, reason, scores } = await request.json();
+      const { action, reason, scores, videoUrl, uploadedBy } = await request.json();
 
       // Validate action
       if (!['SAFE', 'REVIEW', 'QUARANTINE', 'AGE_RESTRICTED', 'PERMANENT_BAN'].includes(action)) {
@@ -768,7 +1309,7 @@ export default {
       // Get existing moderation result — check D1 first, fall back to KV
       let existing = null;
       const d1Row = await env.BLOSSOM_DB.prepare(
-        'SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at FROM moderation_results WHERE sha256 = ?'
+        'SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, uploaded_by FROM moderation_results WHERE sha256 = ?'
       ).bind(sha256).first();
 
       if (d1Row) {
@@ -788,10 +1329,15 @@ export default {
       }
 
       if (!existing) {
-        return new Response(JSON.stringify({ error: 'Moderation result not found for this video' }), {
-          status: 404,
-          headers: { 'Content-Type': 'application/json' }
-        });
+        existing = {
+          action: null,
+          scores: {},
+          provider: 'manual',
+          categories: [],
+          moderated_at: new Date().toISOString(),
+          cdnUrl: videoUrl || `https://${env.CDN_DOMAIN}/${sha256}`,
+          uploadedBy: isValidPubkey(uploadedBy) ? uploadedBy : null
+        };
       }
 
       const previousAction = existing.action;
@@ -827,15 +1373,34 @@ export default {
 
       // Update D1 with new action
       await env.BLOSSOM_DB.prepare(`
-        UPDATE moderation_results
-        SET action = ?, review_notes = ?, reviewed_by = ?, reviewed_at = ?
-        WHERE sha256 = ?
+        INSERT INTO moderation_results (
+          sha256, action, provider, scores, categories, raw_response, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(sha256) DO UPDATE SET
+          action = excluded.action,
+          provider = excluded.provider,
+          scores = excluded.scores,
+          categories = excluded.categories,
+          reviewed_by = excluded.reviewed_by,
+          reviewed_at = excluded.reviewed_at,
+          review_notes = excluded.review_notes,
+          uploaded_by = COALESCE(moderation_results.uploaded_by, excluded.uploaded_by)
       `).bind(
+        sha256,
         action,
-        reason || 'Manual override by moderator',
+        updated.provider || 'manual',
+        JSON.stringify(updated.scores || {}),
+        JSON.stringify(updated.categories || []),
+        JSON.stringify({
+          source: 'admin-manual',
+          reason: updated.reason,
+          previousAction: previousAction || null
+        }),
+        existing.moderated_at || new Date().toISOString(),
         'admin',
         new Date().toISOString(),
-        sha256
+        reason || 'Manual override by moderator',
+        d1Row?.uploaded_by || updated.uploadedBy || null
       ).run();
 
       // Update action-specific KV keys
@@ -866,13 +1431,14 @@ export default {
       }
 
       // Notify Blossom of the moderation decision.
-      // Relay notification intentionally removed: notifyRelay() called /api/admin/purge
-      // which never existed in divine-relay-manager. There's no relay-manager endpoint
-      // that accepts a sha256 and propagates enforcement to Funnelcake (the missing link
-      // is sha256-to-event-ID lookup). Osprey's rules pipeline will handle relay-side
-      // enforcement when operational, since it sees events in Kafka and can correlate
-      // media hashes to event IDs natively.
       const blossomResult = await notifyBlossom(sha256, action, env);
+
+      // For PERMANENT_BAN: also delete the event from the relay (funnelcake).
+      // This is critical for externally-hosted content where Blossom can't enforce the ban.
+      let relayDeleteResult = null;
+      if (action === 'PERMANENT_BAN') {
+        relayDeleteResult = await deleteEventFromRelayBySha256(sha256, env, 'admin-moderate');
+      }
 
       if (!blossomResult.success && !blossomResult.skipped) {
         console.warn(`[ADMIN] Blossom notification failed: ${blossomResult.error}`);
@@ -907,7 +1473,7 @@ export default {
         }
       }
 
-      console.log(`[ADMIN] Updated ${sha256} from ${previousAction} to ${action} (blossom: ${blossomResult.success})`);
+      console.log(`[ADMIN] Updated ${sha256} from ${previousAction} to ${action} (blossom: ${blossomResult.success}, relayDelete: ${relayDeleteResult?.success ?? 'n/a'})`);
 
       // DM creator about moderation action (non-blocking)
       let dmSent = false;
@@ -935,6 +1501,8 @@ export default {
         previousAction,
         message: `Content updated to ${action}`,
         blossom_notified: blossomResult.success || false,
+        relay_event_deleted: relayDeleteResult?.success || false,
+        relay_event_id: relayDeleteResult?.eventId || null,
         report_published: reportPublished,
         dm_sent: dmSent
       }), {
@@ -2530,6 +3098,22 @@ async function runMigration() {
           metadata
         }, env);
 
+        if (result.uploadedBy) {
+          try {
+            const uploaderEnforcement = await getUploaderEnforcement(env.BLOSSOM_DB, result.uploadedBy);
+            const enforcedResult = applyUploaderEnforcementToResult(result, uploaderEnforcement);
+            if (enforcedResult.applied) {
+              console.log(
+                `[MODERATION] Enforcement applied for uploader ${result.uploadedBy.substring(0, 16)}... `
+                + `(${enforcedResult.mode}: ${enforcedResult.previousAction} -> ${enforcedResult.result.action})`
+              );
+              Object.assign(result, enforcedResult.result);
+            }
+          } catch (enforcementErr) {
+            console.error(`[MODERATION] Failed to apply uploader enforcement:`, enforcementErr.message);
+          }
+        }
+
         console.log(`[MODERATION] Step 5: Analysis complete for ${sha256}`);
         console.log(`[MODERATION] Result: action=${result.action}, severity=${result.severity}`);
         console.log(`[MODERATION] Scores: nudity=${result.scores.nudity}, violence=${result.scores.violence}, ai=${result.scores.ai_generated}`);
@@ -2780,11 +3364,19 @@ async function handleModerationResult(result, env) {
     console.log(`[MODERATION] ${sha256} approved (no notification needed)`);
   }
 
-  // Notify Blossom (relay notification removed — see comment in admin moderate handler)
   const blossomResult = await notifyBlossom(sha256, action, env);
 
   if (!blossomResult.success && !blossomResult.skipped) {
     console.warn(`[MODERATION] Blossom notification failed: ${blossomResult.error}`);
+  }
+
+  // For PERMANENT_BAN: delete the event from the relay so externally-hosted content
+  // is no longer discoverable via funnelcake.
+  if (action === 'PERMANENT_BAN') {
+    const relayDeleteResult = await deleteEventFromRelayBySha256(sha256, env, 'auto-moderation');
+    if (relayDeleteResult?.success) {
+      console.log(`[MODERATION] ${sha256} - Relay event ${relayDeleteResult.eventId} deleted`);
+    }
   }
 
   // Send DM to creator for non-SAFE actions (non-blocking)

@@ -80,6 +80,67 @@
       flex-wrap: wrap;
     }
 
+    .lookup-panel {
+      background: linear-gradient(135deg, #111827, #0a0a0a);
+      border: 1px solid #24324a;
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 20px;
+    }
+
+    .lookup-form {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: end;
+    }
+
+    .lookup-input-group {
+      flex: 1 1 420px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .lookup-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .lookup-action-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .lookup-status {
+      margin-top: 10px;
+      font-size: 13px;
+      color: #9ca3af;
+    }
+
+    .lookup-result-section {
+      margin-bottom: 24px;
+    }
+
+    .lookup-result-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      color: #cbd5e1;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .lookup-result-grid {
+      display: grid;
+      grid-template-columns: minmax(300px, 420px);
+      gap: 20px;
+    }
+
     .control-group {
       display: flex;
       flex-direction: column;
@@ -478,6 +539,10 @@
       border-top: 1px solid #333;
     }
 
+    .action-buttons.compact {
+      flex-wrap: wrap;
+    }
+
     .action-btn {
       flex: 1;
       padding: 6px 10px;
@@ -513,6 +578,15 @@
       background: #3a2205;
     }
 
+    .action-btn.review {
+      border-color: #7c3aed;
+      color: #c4b5fd;
+    }
+
+    .action-btn.review:hover {
+      background: #24123d;
+    }
+
     .action-btn.ban {
       border-color: #991b1b;
       color: #ef4444;
@@ -529,6 +603,104 @@
 
     .action-btn.edit:hover {
       background: #1a2a4a;
+    }
+
+    .action-btn.user {
+      border-color: #0f766e;
+      color: #5eead4;
+    }
+
+    .action-btn.user:hover {
+      background: #082f2c;
+    }
+
+    .action-btn.secondary {
+      border-color: #475569;
+      color: #cbd5e1;
+    }
+
+    .action-btn.secondary:hover {
+      background: #111827;
+    }
+
+    .uploader-enforcement {
+      margin-top: 10px;
+      padding: 12px;
+      background: #0a0f1a;
+      border: 1px solid #1f2937;
+      border-radius: 6px;
+    }
+
+    .uploader-enforcement-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 11px;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .uploader-enforcement-pubkey {
+      font-family: monospace;
+      color: #e2e8f0;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    .uploader-enforcement-badges {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+
+    .uploader-enforcement-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border: 1px solid #334155;
+      background: #111827;
+      color: #cbd5e1;
+    }
+
+    .uploader-enforcement-badge.approval {
+      border-color: #7c3aed;
+      color: #d8b4fe;
+      background: #1e1033;
+    }
+
+    .uploader-enforcement-badge.relay-ban {
+      border-color: #991b1b;
+      color: #fca5a5;
+      background: #2b0d0d;
+    }
+
+    .uploader-enforcement-badge.risk-high {
+      border-color: #b45309;
+      color: #fdba74;
+      background: #2c1403;
+    }
+
+    .uploader-enforcement-badge.risk-elevated {
+      border-color: #1d4ed8;
+      color: #93c5fd;
+      background: #0f1d38;
+    }
+
+    .uploader-enforcement-stats {
+      font-size: 12px;
+      color: #94a3b8;
+      margin-bottom: 8px;
+      line-height: 1.5;
     }
 
     /* Override badge */
@@ -1356,6 +1528,32 @@
     </div>
   </div>
 
+  <div class="lookup-panel">
+    <div class="lookup-form">
+      <div class="lookup-input-group">
+        <label for="lookup-input">Open Video</label>
+        <input id="lookup-input" type="text" placeholder="Paste divine.video/video/... or 64-char SHA-256" autocomplete="off">
+      </div>
+      <div class="lookup-actions">
+        <label>&nbsp;</label>
+        <div class="lookup-action-row">
+          <button onclick="lookupVideo()">Open</button>
+          <button onclick="pasteAndLookupVideo()" style="background: #334155;">Paste</button>
+          <button id="lookup-clear-btn" onclick="clearLookupResult({ clearInput: true })" style="display: none; background: #3f3f46;">Clear</button>
+        </div>
+      </div>
+    </div>
+    <div id="lookup-status" class="lookup-status">Paste a divine.video link or 64-character SHA to jump straight to moderation.</div>
+  </div>
+
+  <div id="lookup-result-section" class="lookup-result-section" style="display: none;">
+    <div class="lookup-result-header">
+      <span>Focused Result</span>
+      <span id="lookup-result-meta"></span>
+    </div>
+    <div id="lookup-result" class="lookup-result-grid"></div>
+  </div>
+
   <div class="controls">
     <div class="control-group">
       <label for="sort-by">Sort By</label>
@@ -1462,7 +1660,10 @@
 
   <script>
     let allVideos = [];
+    let currentLookupSha = null;
+    let currentLookupVideo = null;
     const nostrContextCache = new Map(); // Cache Nostr contexts to avoid redundant fetches
+    const LOOKUP_HELP_TEXT = 'Paste a divine.video link or 64-character SHA to jump straight to moderation.';
 
     // Pagination state
     let paginationState = {
@@ -1673,6 +1874,180 @@
     let triageHasMore = true;
     let realStats = null;
 
+    function getVideoBySha(sha256) {
+      return allVideos.find(v => v.sha256 === sha256)
+        || (currentLookupVideo && currentLookupVideo.sha256 === sha256 ? currentLookupVideo : null);
+    }
+
+    function upsertVideo(video) {
+      const index = allVideos.findIndex(v => v.sha256 === video.sha256);
+      if (index === -1) {
+        allVideos.unshift(video);
+      } else {
+        allVideos[index] = { ...allVideos[index], ...video };
+      }
+    }
+
+    function normalizeLookupInput(value) {
+      if (!value) return null;
+
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+
+      try {
+        const parsed = new URL(trimmed);
+        const pathParts = parsed.pathname.split('/').filter(Boolean);
+        if (pathParts.length >= 2 && pathParts[0] === 'video') {
+          return decodeURIComponent(pathParts[pathParts.length - 1]);
+        }
+      } catch {
+        // Non-URL input
+      }
+
+      const match = trimmed.match(/[a-f0-9]{64}/i);
+      if (match) {
+        return match[0].toLowerCase();
+      }
+
+      return trimmed;
+    }
+
+    function setLookupStatus(message, isError = false) {
+      const status = document.getElementById('lookup-status');
+      status.textContent = message;
+      status.style.color = isError ? '#fca5a5' : '#9ca3af';
+    }
+
+    function syncLookupUrl(sha256) {
+      const nextUrl = new URL(window.location.href);
+      if (sha256) {
+        nextUrl.searchParams.set('lookup', sha256);
+      } else {
+        nextUrl.searchParams.delete('lookup');
+      }
+      const search = nextUrl.searchParams.toString();
+      window.history.replaceState({}, '', `${nextUrl.pathname}${search ? `?${search}` : ''}`);
+    }
+
+    function clearLookupResult(options = {}) {
+      const { clearInput = false, clearStatus = true } = options;
+      currentLookupSha = null;
+      currentLookupVideo = null;
+      document.getElementById('lookup-result').innerHTML = '';
+      document.getElementById('lookup-result-section').style.display = 'none';
+      document.getElementById('lookup-result-meta').textContent = '';
+      document.getElementById('lookup-clear-btn').style.display = 'none';
+      syncLookupUrl(null);
+      if (clearInput) {
+        document.getElementById('lookup-input').value = '';
+      }
+      if (clearStatus) {
+        setLookupStatus(LOOKUP_HELP_TEXT);
+      }
+    }
+
+    function removeLookupResultIfMatches(sha256) {
+      if (currentLookupSha === sha256) {
+        clearLookupResult({ clearStatus: false });
+        setLookupStatus(`Cleared focused result for ${sha256.substring(0, 16)}...`);
+      }
+    }
+
+    function hydrateRenderedVideo(video) {
+      const nostrContainer = document.getElementById(`nostr-${video.sha256}`);
+      if (!nostrContainer) return;
+
+      if (video.nostrContext) {
+        nostrContainer.innerHTML = createNostrMetadataHTML(video.nostrContext);
+        updateDivineLink(video.sha256, video.nostrContext);
+      } else {
+        nostrContainer.innerHTML = '<div class="nostr-not-found" style="opacity:0.5">Loading...</div>';
+        loadNostrContext(video.sha256, nostrContainer);
+      }
+
+      loadClassifierData(video.sha256);
+
+      const aiScore = video.scores?.ai_generated || 0;
+      const deepfakeScore = video.scores?.deepfake || 0;
+      if (aiScore >= 0.3 || deepfakeScore >= 0.3) {
+        loadRealnessResult(video.sha256);
+      }
+    }
+
+    function renderLookupResult(video) {
+      currentLookupSha = video.sha256;
+      currentLookupVideo = video;
+      upsertVideo(video);
+
+      const section = document.getElementById('lookup-result-section');
+      const result = document.getElementById('lookup-result');
+      const meta = document.getElementById('lookup-result-meta');
+      const renderVideo = video.status === 'UNTRIAGED'
+        ? { ...video, showDirectActions: true }
+        : video;
+
+      result.innerHTML = video.status === 'UNTRIAGED'
+        ? createTriageCard(renderVideo)
+        : createVideoCard(renderVideo);
+
+      section.style.display = 'block';
+      meta.textContent = `${video.sha256.substring(0, 16)}...${video.status === 'UNTRIAGED' ? ' · needs triage' : ` · ${video.action}`}`;
+      document.getElementById('lookup-clear-btn').style.display = 'inline-block';
+      setLookupStatus(`Opened ${video.sha256.substring(0, 16)}...`);
+      syncLookupUrl(video.lookupId || video.sha256);
+
+      setTimeout(setupVideoPauseHandlers, 100);
+      if (video.status !== 'UNTRIAGED') {
+        hydrateRenderedVideo(video);
+      }
+    }
+
+    async function lookupVideo(inputValue = null) {
+      const input = document.getElementById('lookup-input');
+      const rawValue = inputValue ?? input.value;
+      const sha256 = normalizeLookupInput(rawValue);
+
+      if (!sha256) {
+        setLookupStatus('Paste a divine.video/video/... URL or a 64-character SHA-256 hash.', true);
+        return;
+      }
+
+      input.value = sha256;
+      setLookupStatus(`Opening ${sha256.substring(0, 16)}...`);
+
+      try {
+        const response = await fetch(`/admin/api/video/${encodeURIComponent(sha256)}`);
+        if (response.status === 401) {
+          window.location.href = '/admin/login';
+          return;
+        }
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || `HTTP ${response.status}`);
+        }
+
+        renderLookupResult(data.video);
+      } catch (error) {
+        clearLookupResult({ clearStatus: false });
+        setLookupStatus(`Lookup failed: ${error.message}`, true);
+      }
+    }
+
+    async function pasteAndLookupVideo() {
+      try {
+        const clipboardText = await navigator.clipboard.readText();
+        if (!clipboardText) {
+          setLookupStatus('Clipboard is empty.', true);
+          return;
+        }
+        document.getElementById('lookup-input').value = clipboardText.trim();
+        await lookupVideo(clipboardText);
+      } catch (error) {
+        setLookupStatus('Clipboard read failed. Paste into the field and press Open.', true);
+      }
+    }
+
     // Load REAL stats from the stats API - actual totals, not page counts
     async function loadRealStats() {
       try {
@@ -1779,8 +2154,79 @@
     }
     setupTriageInfiniteScroll();
 
+    function truncateHex(value, start = 12, end = 8) {
+      if (!value || value.length <= start + end + 3) {
+        return value || '';
+      }
+      return value.slice(0, start) + '...' + value.slice(-end);
+    }
+
+    function createUploaderEnforcementPanel(video) {
+      const pubkey = video.uploaded_by || null;
+      const eventId = video.eventId || video.nostrContext?.eventId || null;
+      const enforcement = video.uploaderEnforcement || null;
+      const stats = video.uploaderStats || null;
+
+      if (!video.lookupId && !enforcement && !stats && !eventId) {
+        return '';
+      }
+
+      if (!pubkey && !eventId) {
+        return '';
+      }
+
+      const badges = [];
+      if (enforcement?.approval_required) {
+        badges.push('<span class="uploader-enforcement-badge approval">Approval Required</span>');
+      }
+      if (enforcement?.relay_banned) {
+        badges.push('<span class="uploader-enforcement-badge relay-ban">Relay Banned</span>');
+      }
+      if (stats?.risk_level === 'high') {
+        badges.push('<span class="uploader-enforcement-badge risk-high">Risk High</span>');
+      } else if (stats?.risk_level === 'elevated') {
+        badges.push('<span class="uploader-enforcement-badge risk-elevated">Risk Elevated</span>');
+      }
+      if (badges.length === 0) {
+        badges.push('<span class="uploader-enforcement-badge">No User Enforcement</span>');
+      }
+
+      const statBits = [];
+      if (stats) {
+        statBits.push(`flagged ${stats.flagged_count || 0}`);
+        statBits.push(`restricted ${stats.restricted_count || 0}`);
+        statBits.push(`banned ${stats.banned_count || 0}`);
+      }
+
+      const approvalButton = pubkey
+        ? `<button class="action-btn review" onclick="toggleApprovalRequired('${pubkey}', ${enforcement?.approval_required ? 'false' : 'true'}, this)">${enforcement?.approval_required ? 'Approval Off' : 'Require Approval'}</button>`
+        : '';
+      const relayButton = pubkey
+        ? `<button class="action-btn ban" onclick="toggleRelayBan('${pubkey}', ${enforcement?.relay_banned ? 'false' : 'true'}, this)">${enforcement?.relay_banned ? 'Unban User' : 'Ban User'}</button>`
+        : '';
+      const deleteButton = eventId
+        ? `<button class="action-btn secondary" onclick="deleteNostrEvent('${eventId}', this)">Delete Event</button>`
+        : '';
+
+      return `
+        <div class="uploader-enforcement">
+          <div class="uploader-enforcement-header">
+            <span>User Controls</span>
+            ${pubkey ? `<span class="uploader-enforcement-pubkey" title="${pubkey}">${truncateHex(pubkey)}</span>` : ''}
+          </div>
+          <div class="uploader-enforcement-badges">${badges.join('')}</div>
+          ${statBits.length > 0 ? `<div class="uploader-enforcement-stats">${statBits.join(' · ')}</div>` : ''}
+          <div class="action-buttons compact">
+            ${approvalButton}
+            ${relayButton}
+            ${deleteButton}
+          </div>
+        </div>
+      `;
+    }
+
     function createTriageCard(video) {
-      const { sha256, cdnUrl, thumbnailUrl, receivedAt, nostrContext } = video;
+      const { sha256, cdnUrl, thumbnailUrl, receivedAt, nostrContext, showDirectActions } = video;
 
       // Format timestamp
       const timestamp = receivedAt ? new Date(receivedAt).toLocaleString() : 'Unknown';
@@ -1790,8 +2236,8 @@
       const videoUrl = cdnUrl || 'https://media.divine.video/' + sha256 + '.mp4';
       const thumbUrl = thumbnailUrl || '';
 
-      // Link to divine.video with sha256 (will resolve to event)
-      const divineUrl = 'https://divine.video/video/' + sha256;
+      // Prefer resolved public URL when available (older imports often use stable IDs, not blob hashes)
+      const divineUrl = video.divineUrl || 'https://divine.video/video/' + sha256;
 
       // Nostr context display
       const author = nostrContext?.author || null;
@@ -1819,7 +2265,16 @@
         description = escapeHtml(content.substring(0, 100));
       }
 
-      return '<div class="video-card triage" style="border-color: #8b5cf6;">' +
+      const directActions = showDirectActions ? (
+        '<div class="action-buttons">' +
+          '<button class="action-btn review" onclick="lookupModerationAction(\'' + sha256 + '\', \'QUARANTINE\', this)">Warn</button>' +
+          '<button class="action-btn age-restrict" onclick="lookupModerationAction(\'' + sha256 + '\', \'AGE_RESTRICTED\', this)">Restrict</button>' +
+          '<button class="action-btn ban" onclick="lookupModerationAction(\'' + sha256 + '\', \'PERMANENT_BAN\', this)">Block</button>' +
+        '</div>'
+      ) : '';
+      const uploaderEnforcementPanel = createUploaderEnforcementPanel(video);
+
+      return '<div class="video-card triage" data-sha256="' + sha256 + '" style="border-color: #8b5cf6;">' +
         '<div class="video-thumbnail">' +
           '<video src="' + videoUrl + '" muted loop preload="metadata" poster="' + thumbUrl + '" controls onmouseenter="this.play()" onmouseleave="this.pause(); this.currentTime=0;"></video>' +
           '<div class="video-overlay">' +
@@ -1845,6 +2300,8 @@
               '✅ Safe' +
             '</button>' +
           '</div>' +
+          uploaderEnforcementPanel +
+          directActions +
         '</div>' +
       '</div>';
     }
@@ -1889,10 +2346,19 @@
       button.disabled = true;
 
       try {
+        const video = getVideoBySha(sha256);
+        const payload = { sha256 };
+        if (video?.cdnUrl) {
+          payload.videoUrl = video.cdnUrl;
+        }
+        if (video?.uploaded_by) {
+          payload.uploadedBy = video.uploaded_by;
+        }
+
         const response = await fetch('/admin/api/queue-moderation', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sha256 })
+          body: JSON.stringify(payload)
         });
 
         if (response.ok) {
@@ -1906,6 +2372,7 @@
               card.style.transform = 'scale(0.9)';
               setTimeout(() => card.remove(), 300);
             }
+            removeLookupResultIfMatches(sha256);
             loadRealStats();
           }, 1000);
         } else {
@@ -1936,21 +2403,32 @@
       button.disabled = true;
 
       try {
+        const video = getVideoBySha(sha256);
         const response = await fetch('/admin/api/moderate/' + sha256, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'SAFE' })
+          body: JSON.stringify({
+            action: 'SAFE',
+            videoUrl: video?.cdnUrl,
+            uploadedBy: video?.uploaded_by || null
+          })
         });
 
         if (response.ok) {
           button.innerHTML = '✅ Done!';
-          // Remove this card after a moment
-          setTimeout(() => {
-            const card = button.closest('.video-card');
-            if (card) {
-              card.style.opacity = '0';
-              card.style.transform = 'scale(0.9)';
-              setTimeout(() => card.remove(), 300);
+          setTimeout(async () => {
+            if (currentLookupSha === sha256) {
+              const reloadId = currentLookupVideo?.lookupId || sha256;
+              await lookupVideo(reloadId);
+              setLookupStatus(`Approved ${sha256.substring(0, 16)}...`);
+            } else {
+              const card = button.closest('.video-card');
+              if (card) {
+                card.style.opacity = '0';
+                card.style.transform = 'scale(0.9)';
+                setTimeout(() => card.remove(), 300);
+              }
+              removeLookupResultIfMatches(sha256);
             }
             loadRealStats();
           }, 500);
@@ -1967,6 +2445,154 @@
           button.innerHTML = originalText;
           button.disabled = false;
         }, 2000);
+      }
+    }
+
+    async function lookupModerationAction(sha256, action, button) {
+      const originalText = button.innerHTML;
+      button.innerHTML = '⏳...';
+      button.disabled = true;
+
+      try {
+        const video = getVideoBySha(sha256);
+        const response = await fetch('/admin/api/moderate/' + sha256, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action,
+            reason: 'Direct lookup moderation action: ' + action,
+            videoUrl: video?.cdnUrl,
+            uploadedBy: video?.uploaded_by || null
+          })
+        });
+
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || `HTTP ${response.status}`);
+        }
+
+        loadRealStats();
+
+        if (currentLookupSha === sha256) {
+          const reloadId = currentLookupVideo?.lookupId || sha256;
+          await lookupVideo(reloadId);
+        } else {
+          const card = button.closest('.video-card');
+          if (card) {
+            card.style.opacity = '0';
+            card.style.transform = 'scale(0.9)';
+            setTimeout(() => card.remove(), 300);
+          }
+        }
+
+        const actionLabel = action === 'QUARANTINE'
+          ? 'warned'
+          : action === 'AGE_RESTRICTED'
+            ? 'restricted'
+            : action === 'PERMANENT_BAN'
+              ? 'blocked'
+              : action.toLowerCase();
+        setLookupStatus(`Applied ${actionLabel} to ${sha256.substring(0, 16)}...`);
+      } catch (error) {
+        button.innerHTML = originalText;
+        button.disabled = false;
+        setLookupStatus(`Action failed: ${error.message}`, true);
+      }
+    }
+
+    async function updateUploaderEnforcement(pubkey, payload, button, successMessage) {
+      const originalText = button.innerHTML;
+      button.innerHTML = '⏳...';
+      button.disabled = true;
+
+      try {
+        const response = await fetch('/admin/api/uploader/' + encodeURIComponent(pubkey) + '/enforcement', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || `HTTP ${response.status}`);
+        }
+
+        if (currentLookupVideo?.uploaded_by === pubkey) {
+          const reloadId = currentLookupVideo.lookupId || currentLookupVideo.sha256;
+          await lookupVideo(reloadId);
+        } else {
+          await loadVideos();
+        }
+
+        button.innerHTML = originalText;
+        button.disabled = false;
+        setLookupStatus(successMessage);
+      } catch (error) {
+        button.innerHTML = originalText;
+        button.disabled = false;
+        setLookupStatus(`User action failed: ${error.message}`, true);
+      }
+    }
+
+    async function toggleApprovalRequired(pubkey, enabled, button) {
+      await updateUploaderEnforcement(
+        pubkey,
+        {
+          approvalRequired: enabled,
+          reason: enabled ? 'Uploader set to manual approval mode' : 'Uploader removed from manual approval mode'
+        },
+        button,
+        enabled
+          ? `Approval required enabled for ${truncateHex(pubkey)}`
+          : `Approval required cleared for ${truncateHex(pubkey)}`
+      );
+    }
+
+    async function toggleRelayBan(pubkey, enabled, button) {
+      await updateUploaderEnforcement(
+        pubkey,
+        {
+          relayBanned: enabled,
+          reason: enabled ? 'Banned from relay by moderator' : 'Relay ban removed by moderator'
+        },
+        button,
+        enabled
+          ? `Relay ban applied to ${truncateHex(pubkey)}`
+          : `Relay ban removed for ${truncateHex(pubkey)}`
+      );
+    }
+
+    async function deleteNostrEvent(eventId, button) {
+      const originalText = button.innerHTML;
+      button.innerHTML = '⏳...';
+      button.disabled = true;
+
+      try {
+        const response = await fetch('/admin/api/event/' + encodeURIComponent(eventId) + '/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reason: 'Deleted from moderation dashboard'
+          })
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || `HTTP ${response.status}`);
+        }
+
+        if (currentLookupVideo) {
+          const reloadId = currentLookupVideo.lookupId || currentLookupVideo.sha256;
+          await lookupVideo(reloadId);
+        }
+
+        button.innerHTML = originalText;
+        button.disabled = false;
+        setLookupStatus(`Deleted relay event ${truncateHex(eventId, 10, 6)}`);
+      } catch (error) {
+        button.innerHTML = originalText;
+        button.disabled = false;
+        setLookupStatus(`Event action failed: ${error.message}`, true);
       }
     }
 
@@ -2095,30 +2721,7 @@
       // Set up video pause handlers after rendering
       setTimeout(setupVideoPauseHandlers, 100);
 
-      // Render Nostr context — use cached data or fetch from API
-      videos.forEach((video) => {
-        const nostrContainer = document.getElementById(`nostr-${video.sha256}`);
-        if (!nostrContainer) return;
-
-        if (video.nostrContext) {
-          nostrContainer.innerHTML = createNostrMetadataHTML(video.nostrContext);
-          updateDivineLink(video.sha256, video.nostrContext);
-        } else {
-          // Async fetch nostr context for moderated videos
-          nostrContainer.innerHTML = '<div class="nostr-not-found" style="opacity:0.5">Loading...</div>';
-          loadNostrContext(video.sha256, nostrContainer);
-        }
-
-        // Load classifier inline summary + detail panels (async, non-blocking)
-        loadClassifierData(video.sha256);
-
-        // Load realness secondary verification for AI-flagged videos
-        const aiScore = video.scores?.ai_generated || 0;
-        const deepfakeScore = video.scores?.deepfake || 0;
-        if (aiScore >= 0.3 || deepfakeScore >= 0.3) {
-          loadRealnessResult(video.sha256);
-        }
-      });
+      videos.forEach(hydrateRenderedVideo);
     }
 
     function updateDivineLink(sha256, metadata) {
@@ -2323,9 +2926,10 @@
 
       // Generate moderation history
       const historyHTML = createModerationHistory(video);
+      const uploaderEnforcementPanel = createUploaderEnforcementPanel(video);
 
       return `
-        <div class="video-card ${actionClass}">
+        <div class="video-card ${actionClass}" data-sha256="${sha256}">
           <div class="video-thumbnail">
             <video src="${adminVideoUrl}" muted loop preload="auto" controls onmouseenter="this.play()" onmouseleave="this.pause()"></video>
             <div class="video-overlay">
@@ -2376,6 +2980,8 @@
               </a>
             </div>
             ` : ''}
+
+            ${uploaderEnforcementPanel}
 
             <div class="action-buttons">
               <button class="action-btn approve" onclick="quickAction('${sha256}', 'SAFE')">Approve</button>
@@ -2888,7 +3494,7 @@
 
     async function verifyCategory(sha256, category, status) {
       // Find the video in allVideos
-      const video = allVideos.find(v => v.sha256 === sha256);
+      const video = getVideoBySha(sha256);
       if (!video) {
         console.error('Video not found:', sha256);
         return;
@@ -3151,18 +3757,18 @@
 
     // Quick action - change moderation action without modal
     async function quickAction(sha256, action) {
-      const video = allVideos.find(v => v.sha256 === sha256);
+      const video = getVideoBySha(sha256);
       if (!video) return;
 
       const previousAction = video.action;
       const previousData = { ...video };
 
       // Find and fade out the card immediately
-      const card = document.querySelector(`.video-card:has([onclick*="${sha256}"])`);
-      if (card) {
+      const cards = Array.from(document.querySelectorAll(`.video-card[data-sha256="${sha256}"]`));
+      cards.forEach(card => {
         card.style.opacity = '0.5';
         card.style.pointerEvents = 'none';
-      }
+      });
 
       try {
         const response = await fetch(`/admin/api/moderate/${sha256}`, {
@@ -3179,18 +3785,19 @@
         console.log('Action updated:', result);
 
         // Remove card from grid with animation
-        if (card) {
+        cards.forEach(card => {
           card.style.transition = 'all 0.3s ease-out';
           card.style.transform = 'scale(0.9)';
           card.style.opacity = '0';
           setTimeout(() => card.remove(), 300);
-        }
+        });
 
         // Remove from allVideos array
         const idx = allVideos.findIndex(v => v.sha256 === sha256);
         if (idx !== -1) {
           allVideos.splice(idx, 1);
         }
+        removeLookupResultIfMatches(sha256);
 
         // Store for undo
         lastAction = { sha256, previousAction, previousData, newAction: action };
@@ -3208,10 +3815,10 @@
       } catch (error) {
         console.error('Failed to update action:', error);
         // Revert card visibility
-        if (card) {
+        cards.forEach(card => {
           card.style.opacity = '1';
           card.style.pointerEvents = 'auto';
-        }
+        });
         alert('Failed to update: ' + error.message);
       }
     }
@@ -3304,7 +3911,7 @@
 
     // Open modal to edit scores
     function openEditModal(sha256) {
-      const video = allVideos.find(v => v.sha256 === sha256);
+      const video = getVideoBySha(sha256);
       if (!video) return;
 
       currentEditingSha256 = sha256;
@@ -3386,7 +3993,12 @@
         console.log('Scores updated:', result);
 
         closeEditModal();
-        await loadVideos(paginationState.currentCursor);
+        if (document.getElementById('filter-action').value !== 'TRIAGE') {
+          await loadVideos(paginationState.currentCursor);
+        }
+        if (currentLookupSha === currentEditingSha256) {
+          await lookupVideo(currentEditingSha256);
+        }
         alert('Successfully updated scores and action');
       } catch (error) {
         console.error('Failed to update:', error);
@@ -3430,10 +4042,23 @@
     });
 
     // Load TRIAGE videos by default (new videos needing moderation)
+    document.getElementById('lookup-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        lookupVideo();
+      }
+    });
+
     loadTriageVideos();
     loadRealStats();
     // Set filter dropdown to TRIAGE
     document.getElementById('filter-action').value = 'TRIAGE';
+
+    const initialLookup = new URLSearchParams(window.location.search).get('lookup');
+    if (initialLookup) {
+      document.getElementById('lookup-input').value = initialLookup;
+      lookupVideo(initialLookup);
+    }
 
     // Fetch unread message count for badge
     (async function() {
