@@ -215,6 +215,75 @@
       color: #22c55e;
     }
 
+    .event-meta {
+      background: #111;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .event-meta-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: #2a2a2a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      flex-shrink: 0;
+      color: #888;
+    }
+
+    .event-meta-details {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .event-meta-author {
+      font-size: 14px;
+      font-weight: 600;
+      color: #e0e0e0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .event-meta-pubkey {
+      font-family: monospace;
+      font-size: 11px;
+      color: #666;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .event-meta-time {
+      font-size: 11px;
+      color: #888;
+      margin-top: 2px;
+    }
+
+    .event-meta-links {
+      display: flex;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .event-meta-links a {
+      font-size: 11px;
+      color: #60a5fa;
+      text-decoration: none;
+    }
+
+    .event-meta-links a:hover {
+      text-decoration: underline;
+    }
+
     .nostr-meta {
       background: #0a0a0a;
       padding: 12px;
@@ -590,6 +659,27 @@
         });
       }
 
+      // Async-load nostr context if not already present (for flagged videos from DB)
+      if (!video.nostrContext && !video._nostrContextFetched) {
+        video._nostrContextFetched = true;
+        fetchVideoContext(video.sha256).then(ctx => {
+          if (ctx && currentIndex < reviewQueue.length && reviewQueue[currentIndex].sha256 === video.sha256) {
+            video.nostrContext = ctx.nostrContext || null;
+            video.eventId = video.eventId || ctx.eventId || null;
+            video.uploaded_by = video.uploaded_by || ctx.uploaded_by || null;
+            // Re-render the event meta section
+            const metaEl = card.querySelector('.event-meta');
+            const infoEl = card.querySelector('.video-info');
+            if (infoEl && !metaEl) {
+              const newMetaHTML = createEventMetaHTML(video);
+              if (newMetaHTML) {
+                infoEl.insertAdjacentHTML('afterbegin', newMetaHTML);
+              }
+            }
+          }
+        });
+      }
+
       // Preload next video
       preloadNext();
     }
@@ -607,6 +697,18 @@
         });
       }
 
+      // Preload nostr context
+      if (!next.nostrContext && !next._nostrContextFetched) {
+        next._nostrContextFetched = true;
+        fetchVideoContext(next.sha256).then(ctx => {
+          if (ctx) {
+            next.nostrContext = ctx.nostrContext || null;
+            next.eventId = next.eventId || ctx.eventId || null;
+            next.uploaded_by = next.uploaded_by || ctx.uploaded_by || null;
+          }
+        });
+      }
+
       // Preload video element
       if (!next._preloadedVideo) {
         const videoUrl = next.isUntriaged
@@ -617,6 +719,50 @@
         vid.src = videoUrl;
         next._preloadedVideo = vid;
       }
+    }
+
+    async function fetchVideoContext(sha256) {
+      try {
+        const resp = await fetch(`/admin/api/video/${sha256}`);
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        const video = data.video || {};
+        return {
+          nostrContext: video.nostrContext || null,
+          eventId: video.eventId || null,
+          uploaded_by: video.uploaded_by || video.uploadedBy || null,
+          divineUrl: video.divineUrl || null
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    function createEventMetaHTML(video) {
+      const nostrContext = video.nostrContext;
+      const authorName = nostrContext?.author || null;
+      const pubkey = nostrContext?.pubkey || video.uploaded_by || null;
+      const truncatedPubkey = pubkey ? (pubkey.length > 20 ? pubkey.substring(0, 16) + '...' : pubkey) : null;
+      const timestamp = video.moderated_at || video.receivedAt || null;
+      const timeAgo = timestamp ? formatTimeAgo(timestamp) : null;
+      const divineUrl = video.eventId ? `https://divine.video/video/${video.eventId}` : null;
+
+      if (!authorName && !pubkey && !timestamp) return '';
+
+      return `
+        <div class="event-meta">
+          <div class="event-meta-avatar">${authorName ? authorName.charAt(0).toUpperCase() : '?'}</div>
+          <div class="event-meta-details">
+            ${authorName ? `<div class="event-meta-author">${escapeHtml(authorName)}</div>` : ''}
+            ${truncatedPubkey ? `<div class="event-meta-pubkey">${escapeHtml(truncatedPubkey)}</div>` : ''}
+            ${timeAgo ? `<div class="event-meta-time">${escapeHtml(timeAgo)}</div>` : ''}
+            <div class="event-meta-links">
+              ${divineUrl ? `<a href="${escapeHtml(divineUrl)}" target="_blank">View on Divine</a>` : ''}
+              ${nostrContext?.url ? `<a href="${escapeHtml(nostrContext.url)}" target="_blank">CDN</a>` : ''}
+            </div>
+          </div>
+        </div>
+      `;
     }
 
     async function fetchClassifierSummary(sha256) {
@@ -666,7 +812,7 @@
     }
 
     function createVideoCard(video) {
-      const { sha256, scores, nostrContext, provider, detailedCategories, isUntriaged, cdnUrl, classifierSummary } = video;
+      const { sha256, scores, nostrContext, provider, detailedCategories, isUntriaged, cdnUrl, classifierSummary, uploaded_by, moderated_at, receivedAt, eventId } = video;
       // For untriaged videos, use CDN URL; for moderated, use admin endpoint
       const videoUrl = isUntriaged
         ? (cdnUrl || 'https://media.divine.video/' + sha256 + '.mp4')
@@ -718,14 +864,35 @@
         }
       }
 
-      const nostrHTML = nostrContext ? `
+      // Event metadata: who posted it, when, links
+      const authorName = nostrContext?.author || null;
+      const pubkey = nostrContext?.pubkey || uploaded_by || null;
+      const truncatedPubkey = pubkey ? (pubkey.length > 20 ? pubkey.substring(0, 16) + '...' : pubkey) : null;
+      const timestamp = moderated_at || receivedAt || null;
+      const timeAgo = timestamp ? formatTimeAgo(timestamp) : null;
+      const title = nostrContext?.title || null;
+      const divineUrl = eventId ? `https://divine.video/video/${eventId}` : null;
+
+      const eventMetaHTML = (authorName || pubkey || timestamp) ? `
+        <div class="event-meta">
+          <div class="event-meta-avatar">${authorName ? authorName.charAt(0).toUpperCase() : '?'}</div>
+          <div class="event-meta-details">
+            ${authorName ? `<div class="event-meta-author">${escapeHtml(authorName)}</div>` : ''}
+            ${truncatedPubkey ? `<div class="event-meta-pubkey">${escapeHtml(truncatedPubkey)}</div>` : ''}
+            ${timeAgo ? `<div class="event-meta-time">${escapeHtml(timeAgo)}</div>` : ''}
+            <div class="event-meta-links">
+              ${divineUrl ? `<a href="${escapeHtml(divineUrl)}" target="_blank">View on Divine</a>` : ''}
+              ${nostrContext?.url ? `<a href="${escapeHtml(nostrContext.url)}" target="_blank">CDN</a>` : ''}
+            </div>
+          </div>
+        </div>
+      ` : '';
+
+      const nostrStatsHTML = (nostrContext && (nostrContext.loops || nostrContext.likes)) ? `
         <div class="nostr-meta">
-          ${nostrContext.title ? `<div class="nostr-title">${escapeHtml(nostrContext.title)}</div>` : ''}
           <div class="nostr-stats">
-            ${nostrContext.author ? `<span>👤 ${escapeHtml(nostrContext.author)}</span>` : ''}
             ${nostrContext.loops ? `<span>🔁 ${formatNumber(nostrContext.loops)}</span>` : ''}
             ${nostrContext.likes ? `<span>❤️ ${formatNumber(nostrContext.likes)}</span>` : ''}
-            ${nostrContext.url ? `<span><a href="${escapeHtml(nostrContext.url)}" target="_blank" style="color: #888;">🔗 CDN</a></span>` : ''}
           </div>
         </div>
       ` : '';
@@ -751,6 +918,10 @@
           </div>
 
           <div class="video-info">
+            ${eventMetaHTML}
+
+            ${title ? `<div class="nostr-title" style="margin-bottom: 10px;">${escapeHtml(title)}</div>` : ''}
+
             <div class="video-hash">${sha256}</div>
 
             ${classifierHTML}
@@ -763,7 +934,7 @@
 
             ${providerHTML}
             ${aiSourceHTML}
-            ${nostrHTML}
+            ${nostrStatsHTML}
 
             <div class="action-buttons">
               <button class="action-btn ban" onclick="handleAction('${sha256}', 'PERMANENT_BAN')">
@@ -1039,6 +1210,30 @@
           currentToast = null;
         }
       }, 300);
+    }
+
+    function formatTimeAgo(timestamp) {
+      const date = new Date(timestamp);
+      const now = new Date();
+      const diffMs = now - date;
+      const diffSec = Math.floor(diffMs / 1000);
+      const diffMin = Math.floor(diffSec / 60);
+      const diffHour = Math.floor(diffMin / 60);
+      const diffDay = Math.floor(diffHour / 24);
+
+      let relative;
+      if (diffMin < 1) relative = 'just now';
+      else if (diffMin < 60) relative = `${diffMin}m ago`;
+      else if (diffHour < 24) relative = `${diffHour}h ago`;
+      else if (diffDay < 30) relative = `${diffDay}d ago`;
+      else relative = date.toLocaleDateString();
+
+      // Also show absolute date/time
+      const absolute = date.toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+      });
+
+      return `${relative} · ${absolute}`;
     }
 
     function formatCategoryName(key) {
