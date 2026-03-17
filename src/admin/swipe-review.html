@@ -403,6 +403,57 @@
       color: #c4b5fd;
     }
 
+    .transcript-panel {
+      margin-bottom: 12px;
+      padding: 10px 12px;
+      background: #111;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+    }
+
+    .transcript-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .transcript-panel-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #f4f4f5;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+
+    .transcript-panel-link {
+      font-size: 11px;
+      color: #93c5fd;
+      text-decoration: none;
+    }
+
+    .transcript-panel-link:hover {
+      text-decoration: underline;
+    }
+
+    .transcript-panel-text {
+      margin: 0;
+      max-height: 160px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      color: #d4d4d8;
+    }
+
+    .transcript-panel-empty {
+      font-size: 12px;
+      color: #71717a;
+      line-height: 1.5;
+    }
+
     .keyboard-hints kbd {
       display: inline-block;
       padding: 3px 6px;
@@ -544,6 +595,7 @@
     let currentIndex = 0;
     let reviewedCount = 0;
     let currentToast = null;
+    const transcriptCache = new Map();
 
     // Touch/mouse state
     let isDragging = false;
@@ -659,6 +711,19 @@
         });
       }
 
+      if (video.transcriptData !== null && !video.transcriptData) {
+        fetchTranscriptData(video.sha256).then(transcriptData => {
+          video.transcriptData = transcriptData;
+          if (currentIndex < reviewQueue.length && reviewQueue[currentIndex].sha256 === video.sha256) {
+            renderTranscriptIntoCard(card, transcriptData);
+          }
+        }).catch(() => {
+          video.transcriptData = { sha256: video.sha256, found: false };
+        });
+      } else if (video.transcriptData) {
+        renderTranscriptIntoCard(card, video.transcriptData);
+      }
+
       // Async-load nostr context if not already present (for flagged videos from DB)
       if (!video.nostrContext && !video._nostrContextFetched) {
         video._nostrContextFetched = true;
@@ -694,6 +759,14 @@
       if (!next.classifierSummary) {
         fetchClassifierSummary(next.sha256).then(summary => {
           if (summary) next.classifierSummary = summary;
+        });
+      }
+
+      if (next.transcriptData !== null && !next.transcriptData) {
+        fetchTranscriptData(next.sha256).then(transcriptData => {
+          next.transcriptData = transcriptData;
+        }).catch(() => {
+          next.transcriptData = { sha256: next.sha256, found: false };
         });
       }
 
@@ -782,6 +855,88 @@
       }
     }
 
+    async function fetchTranscriptData(sha256) {
+      if (transcriptCache.has(sha256)) {
+        return transcriptCache.get(sha256);
+      }
+
+      const promise = (async () => {
+        const resp = await fetch(`/admin/api/transcript/${sha256}`);
+        if (resp.status === 404) {
+          return { sha256, found: false };
+        }
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        return resp.json();
+      })();
+
+      transcriptCache.set(sha256, promise);
+      return promise;
+    }
+
+    function createTranscriptHTML(transcriptData) {
+      if (!transcriptData?.found) {
+        return '<div class="transcript-panel-empty">No transcript available for this video.</div>';
+      }
+
+      const transcriptText = transcriptData.transcriptText?.trim();
+      const body = transcriptText
+        ? `<pre class="transcript-panel-text">${escapeHtml(transcriptText)}</pre>`
+        : '<div class="transcript-panel-empty">Transcript file exists but contains no extractable text.</div>';
+
+      return `
+        <div class="transcript-panel-header">
+          <span class="transcript-panel-title">Transcript</span>
+          <a class="transcript-panel-link" href="${escapeHtml(transcriptData.subtitleUrl)}" target="_blank" rel="noopener noreferrer">Open VTT</a>
+        </div>
+        ${body}
+      `;
+    }
+
+    function attachTranscriptTrack(card, transcriptData) {
+      if (!card || !transcriptData?.found) {
+        return;
+      }
+
+      const video = card.querySelector('video');
+      if (!video || video.querySelector('track[data-transcript-track="true"]')) {
+        return;
+      }
+
+      const track = document.createElement('track');
+      track.kind = 'subtitles';
+      track.label = 'Transcript';
+      track.srclang = 'en';
+      track.src = transcriptData.subtitleUrl;
+      track.default = true;
+      track.dataset.transcriptTrack = 'true';
+      track.addEventListener('load', () => {
+        try {
+          track.track.mode = 'showing';
+        } catch (error) {
+          console.warn('Unable to enable transcript track:', error);
+        }
+      });
+      video.appendChild(track);
+
+      if (track.track) {
+        try {
+          track.track.mode = 'showing';
+        } catch (error) {
+          console.warn('Unable to show transcript track:', error);
+        }
+      }
+    }
+
+    function renderTranscriptIntoCard(card, transcriptData) {
+      const container = card?.querySelector('.transcript-panel');
+      if (!container) return;
+
+      container.innerHTML = createTranscriptHTML(transcriptData);
+      attachTranscriptTrack(card, transcriptData);
+    }
+
     function createClassifierHTML(classifierSummary) {
       if (!classifierSummary) return '';
       const { description, topics, primaryTopic, mood, hasSpeech } = classifierSummary;
@@ -839,6 +994,9 @@
 
       // Classifier summary (VLM description + topics)
       const classifierHTML = createClassifierHTML(classifierSummary);
+      const transcriptHTML = video.transcriptData
+        ? createTranscriptHTML(video.transcriptData)
+        : '<div class="transcript-panel-empty">Loading transcript…</div>';
 
       // Provider info with AI source detection
       let providerHTML = '';
@@ -925,6 +1083,8 @@
             <div class="video-hash">${sha256}</div>
 
             ${classifierHTML}
+
+            <div class="transcript-panel">${transcriptHTML}</div>
 
             ${scoreEntries.length > 0 ? `
               <div class="scores-grid">

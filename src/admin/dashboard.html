@@ -1207,6 +1207,69 @@
       color: #93c5fd;
     }
 
+    .transcript-panel {
+      margin-top: 12px;
+      padding: 12px;
+      background: #111;
+      border: 1px solid #27272a;
+      border-radius: 6px;
+    }
+
+    .transcript-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .transcript-panel-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #e4e4e7;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .transcript-panel-links {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 11px;
+    }
+
+    .transcript-panel-links a {
+      color: #93c5fd;
+      text-decoration: none;
+    }
+
+    .transcript-panel-links a:hover {
+      text-decoration: underline;
+    }
+
+    .transcript-panel-meta {
+      margin-bottom: 8px;
+      font-size: 11px;
+      color: #71717a;
+    }
+
+    .transcript-panel-text {
+      margin: 0;
+      max-height: 180px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      color: #d4d4d8;
+    }
+
+    .transcript-panel-empty {
+      font-size: 12px;
+      color: #71717a;
+      line-height: 1.5;
+    }
+
     /* Modal */
     .modal {
       display: none;
@@ -1663,6 +1726,7 @@
     let currentLookupSha = null;
     let currentLookupVideo = null;
     const nostrContextCache = new Map(); // Cache Nostr contexts to avoid redundant fetches
+    const transcriptCache = new Map();
     const LOOKUP_HELP_TEXT = 'Paste a divine.video link or 64-character SHA to jump straight to moderation.';
 
     // Pagination state
@@ -1953,6 +2017,106 @@
       }
     }
 
+    async function fetchTranscriptData(sha256) {
+      if (transcriptCache.has(sha256)) {
+        return transcriptCache.get(sha256);
+      }
+
+      const promise = (async () => {
+        const response = await fetch(`/admin/api/transcript/${sha256}`);
+        if (response.status === 404) {
+          return { sha256, found: false };
+        }
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        return response.json();
+      })();
+
+      transcriptCache.set(sha256, promise);
+      return promise;
+    }
+
+    function attachTranscriptTrack(sha256, transcriptData) {
+      if (!transcriptData?.found) {
+        return;
+      }
+
+      const video = document.querySelector(`#lookup-result .video-card[data-sha256="${sha256}"] video`);
+      if (!video || video.querySelector('track[data-transcript-track="true"]')) {
+        return;
+      }
+
+      const track = document.createElement('track');
+      track.kind = 'subtitles';
+      track.label = 'Transcript';
+      track.srclang = 'en';
+      track.src = transcriptData.subtitleUrl;
+      track.default = true;
+      track.dataset.transcriptTrack = 'true';
+      track.addEventListener('load', () => {
+        try {
+          track.track.mode = 'showing';
+        } catch (error) {
+          console.warn('Unable to enable transcript track:', error);
+        }
+      });
+      video.appendChild(track);
+
+      if (track.track) {
+        try {
+          track.track.mode = 'showing';
+        } catch (error) {
+          console.warn('Unable to show transcript track:', error);
+        }
+      }
+    }
+
+    function createTranscriptPanelHTML(sha256, transcriptData) {
+      if (!transcriptData?.found) {
+        return '';
+      }
+
+      const transcriptText = transcriptData.transcriptText?.trim();
+      const transcriptBody = transcriptText
+        ? `<pre class="transcript-panel-text">${escapeHtml(transcriptText)}</pre>`
+        : '<div class="transcript-panel-empty">Transcript file exists but contains no extractable text.</div>';
+
+      return `
+        <div class="transcript-panel">
+          <div class="transcript-panel-header">
+            <span class="transcript-panel-title">Transcript</span>
+            <div class="transcript-panel-links">
+              <a href="${transcriptData.subtitleUrl}" target="_blank" rel="noopener noreferrer">Open VTT</a>
+            </div>
+          </div>
+          <div class="transcript-panel-meta">Subtitles are attached to the player for this lookup.</div>
+          ${transcriptBody}
+        </div>
+      `;
+    }
+
+    async function loadTranscriptData(sha256) {
+      const container = document.getElementById(`transcript-detail-${sha256}`);
+      if (!container || container.dataset.loaded === 'true') {
+        return;
+      }
+
+      container.dataset.loaded = 'true';
+
+      try {
+        const transcriptData = await fetchTranscriptData(sha256);
+        if (!transcriptData?.found) {
+          return;
+        }
+
+        container.innerHTML = createTranscriptPanelHTML(sha256, transcriptData);
+        attachTranscriptTrack(sha256, transcriptData);
+      } catch (error) {
+        console.error('Failed to load transcript:', error);
+      }
+    }
+
     function isFocusedLookupResult(sha256) {
       return currentLookupSha === sha256;
     }
@@ -1994,17 +2158,21 @@
 
     function hydrateRenderedVideo(video) {
       const nostrContainer = document.getElementById(`nostr-${video.sha256}`);
-      if (!nostrContainer) return;
-
-      if (video.nostrContext) {
-        nostrContainer.innerHTML = createNostrMetadataHTML(video.nostrContext);
-        updateDivineLink(video.sha256, video.nostrContext);
-      } else {
-        nostrContainer.innerHTML = '<div class="nostr-not-found" style="opacity:0.5">Loading...</div>';
-        loadNostrContext(video.sha256, nostrContainer);
+      if (nostrContainer) {
+        if (video.nostrContext) {
+          nostrContainer.innerHTML = createNostrMetadataHTML(video.nostrContext);
+          updateDivineLink(video.sha256, video.nostrContext);
+        } else {
+          nostrContainer.innerHTML = '<div class="nostr-not-found" style="opacity:0.5">Loading...</div>';
+          loadNostrContext(video.sha256, nostrContainer);
+        }
       }
 
-      loadClassifierData(video.sha256);
+      loadTranscriptData(video.sha256);
+
+      if (video.status !== 'UNTRIAGED') {
+        loadClassifierData(video.sha256);
+      }
 
       const aiScore = video.scores?.ai_generated || 0;
       const deepfakeScore = video.scores?.deepfake || 0;
@@ -2022,8 +2190,8 @@
       const result = document.getElementById('lookup-result');
       const meta = document.getElementById('lookup-result-meta');
       const renderVideo = video.status === 'UNTRIAGED'
-        ? { ...video, showDirectActions: true }
-        : video;
+        ? { ...video, showDirectActions: true, showTranscriptTools: true }
+        : { ...video, showTranscriptTools: true };
 
       result.innerHTML = video.status === 'UNTRIAGED'
         ? createTriageCard(renderVideo)
@@ -2036,9 +2204,7 @@
       syncLookupUrl(video.lookupId || video.sha256);
 
       setTimeout(setupVideoPauseHandlers, 100);
-      if (video.status !== 'UNTRIAGED') {
-        hydrateRenderedVideo(video);
-      }
+      hydrateRenderedVideo(renderVideo);
     }
 
     async function lookupVideo(inputValue = null) {
@@ -2265,7 +2431,7 @@
     }
 
     function createTriageCard(video) {
-      const { sha256, cdnUrl, thumbnailUrl, receivedAt, nostrContext, showDirectActions } = video;
+      const { sha256, cdnUrl, thumbnailUrl, receivedAt, nostrContext, showDirectActions, showTranscriptTools } = video;
 
       // Format timestamp
       const timestamp = receivedAt ? new Date(receivedAt).toLocaleString() : 'Unknown';
@@ -2311,6 +2477,9 @@
           '<button class="action-btn ban" onclick="lookupModerationAction(\'' + sha256 + '\', \'PERMANENT_BAN\', this)">Block</button>' +
         '</div>'
       ) : '';
+      const transcriptTools = showTranscriptTools
+        ? '<div id="transcript-detail-' + sha256 + '"></div>'
+        : '';
       const uploaderEnforcementPanel = createUploaderEnforcementPanel(video);
 
       return '<div class="video-card triage" data-sha256="' + sha256 + '" style="border-color: #8b5cf6;">' +
@@ -2341,6 +2510,7 @@
           '</div>' +
           uploaderEnforcementPanel +
           directActions +
+          transcriptTools +
         '</div>' +
       '</div>';
     }
@@ -2862,7 +3032,7 @@
     }
 
     function createVideoCard(video) {
-      const { sha256, cdnUrl, action, scores, reason, processedAt, detailedCategories, provider, manualOverride, overriddenAt, previousAction } = video;
+      const { sha256, cdnUrl, action, scores, reason, processedAt, detailedCategories, provider, manualOverride, overriddenAt, previousAction, showTranscriptTools } = video;
 
       const timestamp = processedAt
         ? new Date(processedAt).toLocaleString()
@@ -2993,6 +3163,8 @@
             <div id="classifier-inline-${sha256}"></div>
 
             <div id="classifier-detail-${sha256}"></div>
+
+            ${showTranscriptTools ? `<div id="transcript-detail-${sha256}"></div>` : ''}
 
             ${nip85TagsHTML}
 

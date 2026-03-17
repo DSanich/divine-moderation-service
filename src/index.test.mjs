@@ -512,6 +512,82 @@ describe('Admin video lookup', () => {
   });
 });
 
+describe('Admin transcript access', () => {
+  it('returns parsed transcript text for admin transcript lookup', async () => {
+    const vttText = `WEBVTT
+
+00:00:00.000 --> 00:00:02.000
+Hello world
+
+00:00:02.000 --> 00:00:04.000
+This is a test`;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url) === `https://media.divine.video/${SHA256}.vtt`) {
+        return new Response(vttText, {
+          status: 200,
+          headers: { 'Content-Type': 'text/vtt' }
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/api/transcript/${SHA256}`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        createEnv({ CDN_DOMAIN: 'media.divine.video' })
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        sha256: SHA256,
+        found: true,
+        subtitleUrl: `/admin/transcript/${SHA256}.vtt`,
+        sourceUrl: `https://media.divine.video/${SHA256}.vtt`,
+        transcriptText: 'Hello world This is a test'
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('proxies raw VTT content through the admin transcript route', async () => {
+    const vttText = `WEBVTT
+
+00:00:00.000 --> 00:00:02.000
+Hello world`;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url) === `https://media.divine.video/${SHA256}.vtt`) {
+        return new Response(vttText, {
+          status: 200,
+          headers: { 'Content-Type': 'text/vtt' }
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/transcript/${SHA256}.vtt`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        createEnv({ CDN_DOMAIN: 'media.divine.video' })
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('Content-Type')).toBe('text/vtt; charset=utf-8');
+      await expect(response.text()).resolves.toBe(vttText);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe('notifyBlossom integration via admin moderate endpoint', () => {
   // Exercises the real notifyBlossom() code path through the admin API.
   // A mock fetch interceptor captures the webhook payload Blossom would receive.
