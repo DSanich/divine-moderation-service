@@ -13,5 +13,11 @@ export default defineWorkersConfig({
         wrangler: { configPath: './wrangler.toml' },
       },
     },
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json-summary'],
+      include: ['src/**/*.mjs'],
+      exclude: ['src/**/*.test.mjs', 'src/admin/*.html'],
+    },
   },
 });

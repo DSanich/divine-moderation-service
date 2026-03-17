@@ -204,7 +204,7 @@ async function fetchVideoEventsFromRelay(relayUrl, options, env) {
  * @param {Object} event - Nostr event
  * @returns {string|null} SHA256 hash or null
  */
-function extractSha256FromImeta(event) {
+export function extractSha256FromImeta(event) {
   if (!event || !event.tags) return null;
 
   for (const tag of event.tags) {
@@ -241,7 +241,7 @@ function extractSha256FromImeta(event) {
  * @param {Object} env - Environment with CDN domain
  * @returns {string} Video URL
  */
-function extractVideoUrlFromEvent(event, env) {
+export function extractVideoUrlFromEvent(event, env) {
   if (!event || !event.tags) {
     return null;
   }

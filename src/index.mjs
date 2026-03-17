@@ -9,6 +9,7 @@ import { moderateVideo, classifyVideoOnly } from './moderation/pipeline.mjs';
 import { publishToFaro, publishToContentRelay, publishLabelEvent } from './nostr/publisher.mjs';
 import { requireAuth, getAuthenticatedUser } from './admin/auth.mjs';
 import { verifyZeroTrustJWT } from './admin/zerotrust.mjs';
+import { getConfiguredBearerTokens, authenticateApiRequest, apiUnauthorizedResponse, authSourceFromVerification, verifyLegacyBearerAuth } from './auth-api.mjs';
 import { fetchNostrEventBySha256, parseVideoEventMetadata } from './nostr/relay-client.mjs';
 import { pollRelayForVideos, getLastPollTimestamp, setLastPollTimestamp, getPollingStatus } from './nostr/relay-poller.mjs';
 import { getPublicKey } from 'nostr-tools/pure';
@@ -22,6 +23,7 @@ import { initUploaderEnforcementTable, getUploaderEnforcement, setUploaderEnforc
 import { formatForStorage, formatForGorse, formatForFunnelcake } from './classification/pipeline.mjs';
 import { topicsToLabels, topicsToWeightedFeatures } from './classification/topic-extractor.mjs';
 import { getKVThresholds, setKVThresholds, DEFAULT_THRESHOLDS } from './moderation/classifier.mjs';
+import { isValidSha256, isValidLookupIdentifier, isValidPubkey, parseMaybeJson, getEventTagValue, parseImetaParams, extractShaFromUrl, extractMediaShaFromEvent } from './validation.mjs';
 /**
  * NIP-32 label mapping for content categories
  * Maps internal category names to NIP-32/NIP-56 compatible labels
@@ -139,151 +141,9 @@ function corsResponse(response) {
   });
 }
 
-function getConfiguredBearerTokens(env) {
-  return [env.SERVICE_API_TOKEN, env.API_BEARER_TOKEN, env.MODERATION_API_KEY]
-    .filter((value, index, all) => typeof value === 'string' && value.length > 0 && all.indexOf(value) === index);
-}
-
 function hostMismatchResponse(requestId, hostname, pathname, expectedHost) {
   console.log(`[${requestId}] Rejected ${pathname} on ${hostname}; expected ${expectedHost}`);
   return jsonError(`Not found on ${hostname}. Use https://${expectedHost}${pathname}`, 404);
-}
-
-async function authenticateApiRequest(request, env) {
-  if (env.ALLOW_DEV_ACCESS === 'true') {
-    return { valid: true, email: 'dev@localhost', isServiceToken: false };
-  }
-
-  const authHeader = request.headers.get('Authorization');
-  const bearerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  const configuredTokens = getConfiguredBearerTokens(env);
-  if (bearerToken && configuredTokens.includes(bearerToken)) {
-    return { valid: true, email: 'service@internal', isServiceToken: true };
-  }
-
-  const jwtToken = request.headers.get('cf-access-jwt-assertion');
-  if (jwtToken) {
-    try {
-      return await verifyZeroTrustJWT(jwtToken, env);
-    } catch (error) {
-      return { valid: false, error: error.message };
-    }
-  }
-
-  if (configuredTokens.length === 0) {
-    return { valid: false, error: 'No bearer token configured (SERVICE_API_TOKEN/API_BEARER_TOKEN/MODERATION_API_KEY)' };
-  }
-
-  return { valid: false, error: 'Missing bearer token or Cloudflare Access JWT' };
-}
-
-function apiUnauthorizedResponse(verification) {
-  return jsonError(`Unauthorized - ${verification.error}`, 401);
-}
-
-function authSourceFromVerification(verification) {
-  return verification.email
-    ? `user:${verification.email}`
-    : `service-token:${verification.payload?.sub || 'unknown'}`;
-}
-
-function verifyLegacyBearerAuth(request, env) {
-  const configuredTokens = getConfiguredBearerTokens(env);
-  if (configuredTokens.length === 0) {
-    console.error('[AUTH] No legacy bearer token configured');
-    return jsonResponse(500, { error: 'Server misconfigured — no auth token set' });
-  }
-
-  const authHeader = request.headers.get('Authorization');
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return jsonResponse(401, { error: 'Missing Authorization: Bearer <token>' });
-  }
-
-  const token = authHeader.slice(7);
-  if (!configuredTokens.includes(token)) {
-    return jsonResponse(403, { error: 'Invalid token' });
-  }
-
-  return null;
-}
-
-function isValidSha256(value) {
-  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
-}
-
-function isValidLookupIdentifier(value) {
-  return typeof value === 'string' && value.length > 0 && value.length <= 255;
-}
-
-function isValidPubkey(value) {
-  return isValidSha256(value);
-}
-
-function parseMaybeJson(value, fallback) {
-  if (value == null) {
-    return fallback;
-  }
-
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value);
-    } catch {
-      return fallback;
-    }
-  }
-
-  return value;
-}
-
-function getEventTagValue(tags, key) {
-  return tags?.find((tag) => tag[0] === key)?.[1] || null;
-}
-
-function parseImetaParams(tags) {
-  const imetaTag = tags?.find((tag) => tag[0] === 'imeta');
-  if (!imetaTag) {
-    return {};
-  }
-
-  const params = {};
-  for (let i = 1; i < imetaTag.length; i++) {
-    const entry = imetaTag[i];
-    if (!entry || typeof entry !== 'string') {
-      continue;
-    }
-
-    const separatorIndex = entry.indexOf(' ');
-    if (separatorIndex === -1) {
-      continue;
-    }
-
-    const key = entry.slice(0, separatorIndex);
-    const value = entry.slice(separatorIndex + 1).trim();
-    if (key && value) {
-      params[key] = value;
-    }
-  }
-
-  return params;
-}
-
-function extractShaFromUrl(url) {
-  if (typeof url !== 'string') {
-    return null;
-  }
-
-  const match = url.match(/[0-9a-f]{64}/i);
-  return match ? match[0].toLowerCase() : null;
-}
-
-function extractMediaShaFromEvent(event) {
-  const tags = event?.tags || [];
-  const imeta = parseImetaParams(tags);
-  return extractShaFromUrl(imeta.x)
-    || extractShaFromUrl(getEventTagValue(tags, 'x'))
-    || extractShaFromUrl(imeta.url)
-    || extractShaFromUrl(getEventTagValue(tags, 'url'))
-    || null;
 }
 
 function buildFunnelcakeVideoLookup(eventResponse, identifier) {

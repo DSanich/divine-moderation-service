@@ -1,355 +1,190 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// ABOUTME: Tests for relay polling functionality
-// ABOUTME: Tests event parsing, SHA256 extraction, and polling status management
+// ABOUTME: Tests for relay poller pure extraction functions
+// ABOUTME: Tests extractSha256FromImeta and extractVideoUrlFromEvent
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
+import { extractSha256FromImeta, extractVideoUrlFromEvent } from './relay-poller.mjs';
 
-// Import functions that we can test without WebSocket connections
-// The main pollRelayForVideos function requires WebSocket which is hard to mock in workers
+const VALID_SHA256 = 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
+const VALID_SHA256_UPPER = 'ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890';
 
-describe('Relay Poller - SHA256 Extraction', () => {
-  // We'll test the SHA256 extraction logic inline since it's not exported
-
-  it('should extract SHA256 from imeta tag with x parameter', () => {
+describe('extractSha256FromImeta', () => {
+  it('extracts sha256 from imeta tag x parameter', () => {
     const event = {
-      id: 'event123',
-      kind: 34236,
-      pubkey: 'pubkey123',
       tags: [
-        ['imeta', 'url https://cdn.divine.video/test.mp4', 'm video/mp4', 'x abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890']
+        ['imeta', 'url https://cdn.example.com/video.mp4', 'm video/mp4', `x ${VALID_SHA256}`]
       ]
     };
 
-    // Extract using the same logic as the relay-poller
-    let sha256 = null;
-    for (const tag of event.tags) {
-      if (tag[0] === 'imeta') {
-        for (let i = 1; i < tag.length; i++) {
-          const param = tag[i];
-          if (param && param.startsWith('x ')) {
-            sha256 = param.substring(2).trim();
-          }
-        }
-      }
-    }
-
-    expect(sha256).toBe('abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890');
+    expect(extractSha256FromImeta(event)).toBe(VALID_SHA256);
   });
 
-  it('should extract SHA256 from standalone x tag', () => {
+  it('extracts sha256 from standalone x tag', () => {
     const event = {
-      id: 'event456',
-      kind: 34236,
-      pubkey: 'pubkey456',
       tags: [
         ['title', 'Test Video'],
-        ['x', '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef']
+        ['x', VALID_SHA256]
       ]
     };
 
-    // Extract from x tag
-    let sha256 = null;
-    for (const tag of event.tags) {
-      if (tag[0] === 'x' && tag[1]) {
-        const candidate = tag[1].trim();
-        if (/^[0-9a-f]{64}$/i.test(candidate)) {
-          sha256 = candidate.toLowerCase();
-        }
-      }
-    }
-
-    expect(sha256).toBe('1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef');
+    expect(extractSha256FromImeta(event)).toBe(VALID_SHA256);
   });
 
-  it('should return null for events without SHA256', () => {
+  it('lowercases uppercase sha256 from imeta tag', () => {
     const event = {
-      id: 'event789',
-      kind: 34236,
-      pubkey: 'pubkey789',
+      tags: [
+        ['imeta', `x ${VALID_SHA256_UPPER}`]
+      ]
+    };
+
+    expect(extractSha256FromImeta(event)).toBe(VALID_SHA256_UPPER.toLowerCase());
+  });
+
+  it('lowercases uppercase sha256 from x tag', () => {
+    const event = {
+      tags: [
+        ['x', VALID_SHA256_UPPER]
+      ]
+    };
+
+    expect(extractSha256FromImeta(event)).toBe(VALID_SHA256_UPPER.toLowerCase());
+  });
+
+  it('returns null when no sha256 found', () => {
+    const event = {
       tags: [
         ['title', 'Test Video'],
         ['r', 'https://example.com/video.mp4']
       ]
     };
 
-    let sha256 = null;
-    for (const tag of event.tags) {
-      if (tag[0] === 'imeta') {
-        for (let i = 1; i < tag.length; i++) {
-          const param = tag[i];
-          if (param && param.startsWith('x ')) {
-            sha256 = param.substring(2).trim();
-          }
-        }
-      }
-      if (tag[0] === 'x' && tag[1]) {
-        const candidate = tag[1].trim();
-        if (/^[0-9a-f]{64}$/i.test(candidate)) {
-          sha256 = candidate.toLowerCase();
-        }
-      }
-    }
-
-    expect(sha256).toBeNull();
+    expect(extractSha256FromImeta(event)).toBeNull();
   });
 
-  it('should validate SHA256 format - reject invalid hashes', () => {
-    // Not 64 characters
-    const shortHash = 'abcdef1234';
-    expect(/^[0-9a-f]{64}$/i.test(shortHash)).toBe(false);
+  it('returns null for event with empty tags', () => {
+    const event = { tags: [] };
+    expect(extractSha256FromImeta(event)).toBeNull();
+  });
 
-    // Invalid characters
-    const invalidHash = 'ghijklmnopqrstuvwxyzghijklmnopqrstuvwxyzghijklmnopqrstuvwxyzghij';
-    expect(/^[0-9a-f]{64}$/i.test(invalidHash)).toBe(false);
+  it('returns null for null event', () => {
+    expect(extractSha256FromImeta(null)).toBeNull();
+  });
 
-    // Valid hash
-    const validHash = 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
-    expect(/^[0-9a-f]{64}$/i.test(validHash)).toBe(true);
+  it('returns null for event without tags property', () => {
+    expect(extractSha256FromImeta({})).toBeNull();
+  });
+
+  it('rejects invalid sha256 (too short)', () => {
+    const event = {
+      tags: [['x', 'abcdef1234']]
+    };
+
+    expect(extractSha256FromImeta(event)).toBeNull();
+  });
+
+  it('rejects invalid sha256 (non-hex characters)', () => {
+    const event = {
+      tags: [['x', 'zzzzzz1234567890zzzzzz1234567890zzzzzz1234567890zzzzzz1234567890']]
+    };
+
+    expect(extractSha256FromImeta(event)).toBeNull();
+  });
+
+  it('prefers imeta x param over standalone x tag', () => {
+    const imetaSha = '1111111111111111111111111111111111111111111111111111111111111111';
+    const xTagSha = '2222222222222222222222222222222222222222222222222222222222222222';
+    const event = {
+      tags: [
+        ['imeta', `x ${imetaSha}`],
+        ['x', xTagSha]
+      ]
+    };
+
+    expect(extractSha256FromImeta(event)).toBe(imetaSha);
   });
 });
 
-describe('Relay Poller - Video URL Extraction', () => {
-  // Helper that mirrors the extractVideoUrlFromEvent logic
-  function extractVideoUrlFromEvent(event, env = {}) {
-    if (!event || !event.tags) return null;
-
-    // Check imeta tag for URL first (most reliable)
-    for (const tag of event.tags) {
-      if (tag[0] === 'imeta') {
-        let imetaUrl = null;
-        for (let i = 1; i < tag.length; i++) {
-          const param = tag[i];
-          if (param && param.startsWith('url ')) {
-            imetaUrl = param.substring(4).trim();
-          }
-        }
-        if (imetaUrl) return imetaUrl;
-      }
-    }
-
-    // Check r tags (any http URL)
-    for (const tag of event.tags) {
-      if (tag[0] === 'r' && tag[1] && tag[1].startsWith('http')) {
-        return tag[1];
-      }
-    }
-
-    return null;
-  }
-
-  it('should extract video URL from r tag', () => {
+describe('extractVideoUrlFromEvent', () => {
+  it('extracts URL from imeta url parameter', () => {
     const event = {
       tags: [
-        ['r', 'https://cdn.divine.video/test.mp4'],
+        ['imeta', 'url https://cdn.example.com/video.mp4', 'm video/mp4', `x ${VALID_SHA256}`]
+      ]
+    };
+
+    expect(extractVideoUrlFromEvent(event, {})).toBe('https://cdn.example.com/video.mp4');
+  });
+
+  it('falls back to r tag for URL', () => {
+    const event = {
+      tags: [
+        ['r', 'https://cdn.example.com/video.mp4'],
         ['title', 'Test']
       ]
     };
 
-    const url = extractVideoUrlFromEvent(event);
-    expect(url).toBe('https://cdn.divine.video/test.mp4');
+    expect(extractVideoUrlFromEvent(event, {})).toBe('https://cdn.example.com/video.mp4');
   });
 
-  it('should extract video URL from imeta tag', () => {
+  it('constructs URL from sha256 and CDN_DOMAIN as last resort', () => {
     const event = {
       tags: [
-        ['imeta', 'url https://cdn.divine.video/video123.mp4', 'm video/mp4', 'x abc123']
+        ['x', VALID_SHA256]
       ]
     };
+    const env = { CDN_DOMAIN: 'cdn.divine.video' };
 
-    const url = extractVideoUrlFromEvent(event);
-    expect(url).toBe('https://cdn.divine.video/video123.mp4');
+    expect(extractVideoUrlFromEvent(event, env)).toBe(`https://cdn.divine.video/${VALID_SHA256}`);
   });
 
-  it('should extract blossom URL without file extension from imeta', () => {
-    const event = {
-      tags: [
-        ['imeta', 'url https://blossom.example.com/abcdef1234567890', 'm video/mp4', 'x abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890']
-      ]
-    };
-
-    const url = extractVideoUrlFromEvent(event);
-    expect(url).toBe('https://blossom.example.com/abcdef1234567890');
-  });
-
-  it('should extract blossom URL without file extension from r tag', () => {
-    const event = {
-      tags: [
-        ['r', 'https://blossom.other.server/abcdef1234567890'],
-        ['title', 'External Video']
-      ]
-    };
-
-    const url = extractVideoUrlFromEvent(event);
-    expect(url).toBe('https://blossom.other.server/abcdef1234567890');
-  });
-
-  it('should prefer imeta URL over r tag URL', () => {
+  it('prefers imeta URL over r tag', () => {
     const event = {
       tags: [
         ['r', 'https://old.server.com/video'],
-        ['imeta', 'url https://blossom.server.com/abc123', 'm video/mp4', 'x abc123']
+        ['imeta', 'url https://blossom.server.com/abc123', 'm video/mp4']
       ]
     };
 
-    const url = extractVideoUrlFromEvent(event);
-    expect(url).toBe('https://blossom.server.com/abc123');
-  });
-});
-
-describe('Relay Poller - Polling Status', () => {
-  let mockKV;
-
-  beforeEach(() => {
-    mockKV = {
-      get: vi.fn(),
-      put: vi.fn()
-    };
+    expect(extractVideoUrlFromEvent(event, {})).toBe('https://blossom.server.com/abc123');
   });
 
-  it('should return null for first poll (no previous timestamp)', async () => {
-    mockKV.get.mockResolvedValue(null);
-
-    const env = { MODERATION_KV: mockKV };
-
-    // Simulate getLastPollTimestamp
-    const data = await mockKV.get('relay-poller:last-poll');
-    const timestamp = data ? JSON.parse(data).timestamp : null;
-
-    expect(timestamp).toBeNull();
+  it('returns null for null event', () => {
+    expect(extractVideoUrlFromEvent(null, {})).toBeNull();
   });
 
-  it('should return previous timestamp if available', async () => {
-    const previousTimestamp = 1700000000;
-    mockKV.get.mockResolvedValue(JSON.stringify({ timestamp: previousTimestamp }));
-
-    const data = await mockKV.get('relay-poller:last-poll');
-    const timestamp = data ? JSON.parse(data).timestamp : null;
-
-    expect(timestamp).toBe(previousTimestamp);
+  it('returns null for event without tags', () => {
+    expect(extractVideoUrlFromEvent({}, {})).toBeNull();
   });
 
-  it('should store polling statistics correctly', async () => {
-    const timestamp = Math.floor(Date.now() / 1000);
-    const stats = {
-      totalEvents: 10,
-      queuedForModeration: 5,
-      alreadyModerated: 5
-    };
-
-    // Simulate setLastPollTimestamp
-    await mockKV.put('relay-poller:last-poll', JSON.stringify({
-      timestamp,
-      lastPollAt: new Date().toISOString(),
-      ...stats
-    }));
-
-    expect(mockKV.put).toHaveBeenCalledWith(
-      'relay-poller:last-poll',
-      expect.stringContaining('"totalEvents":10')
-    );
-  });
-
-  it('should return disabled status when RELAY_POLLING_ENABLED is false', () => {
-    const env = {
-      RELAY_POLLING_ENABLED: 'false',
-      MODERATION_KV: mockKV
-    };
-
-    const enabled = env.RELAY_POLLING_ENABLED !== 'false';
-    expect(enabled).toBe(false);
-  });
-
-  it('should return enabled status by default', () => {
-    const env = {
-      MODERATION_KV: mockKV
-    };
-
-    const enabled = env.RELAY_POLLING_ENABLED !== 'false';
-    expect(enabled).toBe(true);
-  });
-});
-
-describe('Relay Poller - Queue Message Format', () => {
-  it('should create valid queue message from event', () => {
+  it('returns null when no URL source available and no CDN_DOMAIN', () => {
     const event = {
-      id: 'event123456789',
-      kind: 34236,
-      pubkey: 'abc123def456abc123def456abc123def456abc123def456abc123def456abc1',
-      created_at: 1700000000,
       tags: [
-        ['imeta', 'url https://cdn.divine.video/test.mp4', 'm video/mp4', 'x 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef']
+        ['x', VALID_SHA256]
       ]
     };
 
-    // Simulate queue message creation
-    const sha256 = '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
-    const queueMessage = {
-      sha256,
-      uploadedBy: event.pubkey,
-      uploadedAt: event.created_at * 1000,
-      metadata: {
-        source: 'relay-poller',
-        relay: 'wss://relay.divine.video',
-        eventId: event.id,
-        videoUrl: 'https://cdn.divine.video/test.mp4'
-      }
+    expect(extractVideoUrlFromEvent(event, {})).toBeNull();
+  });
+
+  it('ignores r tags that do not start with http', () => {
+    const event = {
+      tags: [
+        ['r', 'not-a-url']
+      ]
     };
 
-    expect(queueMessage.sha256).toBe('1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef');
-    expect(queueMessage.uploadedBy).toBe('abc123def456abc123def456abc123def456abc123def456abc123def456abc1');
-    expect(queueMessage.uploadedAt).toBe(1700000000000);
-    expect(queueMessage.metadata.source).toBe('relay-poller');
-  });
-});
-
-describe('Relay Poller - Configuration', () => {
-  it('should use default relay when not configured', () => {
-    const env = {};
-    const relays = env.RELAY_POLLING_RELAY_URL
-      ? [env.RELAY_POLLING_RELAY_URL]
-      : ['wss://relay.divine.video'];
-
-    expect(relays).toEqual(['wss://relay.divine.video']);
+    expect(extractVideoUrlFromEvent(event, {})).toBeNull();
   });
 
-  it('should use configured relay URL', () => {
-    const env = {
-      RELAY_POLLING_RELAY_URL: 'wss://custom.relay.com'
+  it('extracts blossom URL without file extension from imeta', () => {
+    const event = {
+      tags: [
+        ['imeta', `url https://blossom.example.com/${VALID_SHA256}`, 'm video/mp4']
+      ]
     };
-    const relays = env.RELAY_POLLING_RELAY_URL
-      ? [env.RELAY_POLLING_RELAY_URL]
-      : ['wss://relay.divine.video'];
 
-    expect(relays).toEqual(['wss://custom.relay.com']);
-  });
-
-  it('should use default limit when not configured', () => {
-    const env = {};
-    const limit = parseInt(env.RELAY_POLLING_LIMIT || '100', 10);
-
-    expect(limit).toBe(100);
-  });
-
-  it('should use configured limit', () => {
-    const env = {
-      RELAY_POLLING_LIMIT: '50'
-    };
-    const limit = parseInt(env.RELAY_POLLING_LIMIT || '100', 10);
-
-    expect(limit).toBe(50);
-  });
-
-  it('should calculate since timestamp from lookback hours', () => {
-    const env = {
-      RELAY_POLLING_LOOKBACK_HOURS: '2'
-    };
-    const lookbackHours = parseInt(env.RELAY_POLLING_LOOKBACK_HOURS || '1', 10);
-    const now = Math.floor(Date.now() / 1000);
-    const since = now - (lookbackHours * 3600);
-
-    // Should be approximately 2 hours ago
-    expect(now - since).toBe(7200); // 2 hours in seconds
+    expect(extractVideoUrlFromEvent(event, {})).toBe(`https://blossom.example.com/${VALID_SHA256}`);
   });
 });
