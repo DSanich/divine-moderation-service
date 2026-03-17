@@ -22,6 +22,7 @@ import { initUploaderEnforcementTable, getUploaderEnforcement, setUploaderEnforc
 import { formatForStorage, formatForGorse, formatForFunnelcake } from './classification/pipeline.mjs';
 import { topicsToLabels, topicsToWeightedFeatures } from './classification/topic-extractor.mjs';
 import { getKVThresholds, setKVThresholds, DEFAULT_THRESHOLDS } from './moderation/classifier.mjs';
+import { isValidSha256, isValidLookupIdentifier, isValidPubkey, parseMaybeJson, getEventTagValue, parseImetaParams, extractShaFromUrl, extractMediaShaFromEvent } from './validation.mjs';
 /**
  * NIP-32 label mapping for content categories
  * Maps internal category names to NIP-32/NIP-56 compatible labels
@@ -207,84 +208,6 @@ function verifyLegacyBearerAuth(request, env) {
   return null;
 }
 
-function isValidSha256(value) {
-  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
-}
-
-function isValidLookupIdentifier(value) {
-  return typeof value === 'string' && value.length > 0 && value.length <= 255;
-}
-
-function isValidPubkey(value) {
-  return isValidSha256(value);
-}
-
-function parseMaybeJson(value, fallback) {
-  if (value == null) {
-    return fallback;
-  }
-
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value);
-    } catch {
-      return fallback;
-    }
-  }
-
-  return value;
-}
-
-function getEventTagValue(tags, key) {
-  return tags?.find((tag) => tag[0] === key)?.[1] || null;
-}
-
-function parseImetaParams(tags) {
-  const imetaTag = tags?.find((tag) => tag[0] === 'imeta');
-  if (!imetaTag) {
-    return {};
-  }
-
-  const params = {};
-  for (let i = 1; i < imetaTag.length; i++) {
-    const entry = imetaTag[i];
-    if (!entry || typeof entry !== 'string') {
-      continue;
-    }
-
-    const separatorIndex = entry.indexOf(' ');
-    if (separatorIndex === -1) {
-      continue;
-    }
-
-    const key = entry.slice(0, separatorIndex);
-    const value = entry.slice(separatorIndex + 1).trim();
-    if (key && value) {
-      params[key] = value;
-    }
-  }
-
-  return params;
-}
-
-function extractShaFromUrl(url) {
-  if (typeof url !== 'string') {
-    return null;
-  }
-
-  const match = url.match(/[0-9a-f]{64}/i);
-  return match ? match[0].toLowerCase() : null;
-}
-
-function extractMediaShaFromEvent(event) {
-  const tags = event?.tags || [];
-  const imeta = parseImetaParams(tags);
-  return extractShaFromUrl(imeta.x)
-    || extractShaFromUrl(getEventTagValue(tags, 'x'))
-    || extractShaFromUrl(imeta.url)
-    || extractShaFromUrl(getEventTagValue(tags, 'url'))
-    || null;
-}
 
 function buildFunnelcakeVideoLookup(eventResponse, identifier) {
   if (!eventResponse?.event) {
