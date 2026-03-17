@@ -1497,6 +1497,7 @@
         <button onclick="window.location.href='/admin/messages'" style="background: #333; color: #e0e0e0; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; position: relative;">Messages <span id="unread-badge" style="display:none; position:absolute; top:-4px; right:-4px; background:#ef4444; color:white; font-size:10px; font-weight:700; padding:2px 6px; border-radius:10px; min-width:16px; text-align:center;"></span></button>
         <button class="btn-primary" onclick="window.location.href='/admin/review'" style="background: #2563eb; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">Quick Review</button>
         <button onclick="openThresholdsModal()" style="background: #333; color: #e0e0e0; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">Settings</button>
+        <button id="global-mute-toggle" onclick="toggleGlobalMute()" style="border: 1px solid #555; color: white; padding: 8px 16px; border-radius: 6px; cursor: pointer;"></button>
         <button class="logout" onclick="logout()">Logout</button>
       </div>
     </div>
@@ -3667,16 +3668,32 @@
       });
     }
 
-    // Toggle mute on video click
-    function toggleMute(video) {
-      video.muted = !video.muted;
-      // Update the mute indicator
-      const card = video.closest('.video-card');
-      if (card) {
-        const indicator = card.querySelector('.mute-indicator');
-        if (indicator) {
-          indicator.textContent = video.muted ? '🔇 Click for sound' : '🔊 Sound on';
-        }
+    // Global sound toggle. Persists to localStorage. The button click is a
+    // user gesture, which lets the browser allow unmuted hover-autoplay.
+    function toggleGlobalMute() {
+      const soundOn = localStorage.getItem('divine-mod-muted') === 'false';
+      const newMuted = soundOn;
+      localStorage.setItem('divine-mod-muted', newMuted ? 'true' : 'false');
+
+      document.querySelectorAll('video').forEach(v => {
+        v.muted = newMuted;
+      });
+
+      updateMuteToggleButton();
+    }
+
+    function updateMuteToggleButton() {
+      const btn = document.getElementById('global-mute-toggle');
+      if (!btn) return;
+      const soundOn = localStorage.getItem('divine-mod-muted') === 'false';
+      btn.textContent = soundOn ? '🔊 Sound On' : '🔇 Sound Off';
+      btn.style.background = soundOn ? '#166534' : '#333';
+    }
+
+    // Apply saved mute preference to a video element (for dynamically added videos)
+    function applyMutePreference(video) {
+      if (localStorage.getItem('divine-mod-muted') === 'false') {
+        video.muted = false;
       }
     }
 
@@ -3698,6 +3715,9 @@
             }
           });
         });
+
+        // Apply mute preference to newly rendered videos
+        applyMutePreference(video);
       });
     }
 
@@ -4108,6 +4128,7 @@
 
     loadTriageVideos();
     loadRealStats();
+    updateMuteToggleButton();
     // Set filter dropdown to TRIAGE
     document.getElementById('filter-action').value = 'TRIAGE';
 
