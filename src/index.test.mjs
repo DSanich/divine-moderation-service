@@ -1342,3 +1342,93 @@ describe('POST /admin/api/verify-category/:sha256', () => {
     expect(body.newAction).toBe('SAFE');
   });
 });
+
+describe('POST /api/v1/scan (legacy)', () => {
+  it('rejects request without bearer token', async () => {
+    const response = await worker.fetch(
+      new Request('https://moderation-api.divine.video/api/v1/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sha256: SHA256 })
+      }),
+      createEnv()
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it('rejects invalid sha256', async () => {
+    const env = createEnv({
+      MODERATION_API_KEY: 'legacy-token'
+    });
+
+    const response = await worker.fetch(
+      new Request('https://moderation-api.divine.video/api/v1/scan', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer legacy-token'
+        },
+        body: JSON.stringify({ sha256: 'not-a-hash' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: 'sha256 required (64 hex characters)'
+    });
+  });
+});
+
+describe('POST /api/v1/batch-scan (legacy)', () => {
+  it('rejects empty videos array', async () => {
+    const env = createEnv({
+      MODERATION_API_KEY: 'legacy-token'
+    });
+
+    const response = await worker.fetch(
+      new Request('https://moderation-api.divine.video/api/v1/batch-scan', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer legacy-token'
+        },
+        body: JSON.stringify({ videos: [] })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: 'videos array required'
+    });
+  });
+
+  it('rejects batch over 100 videos', async () => {
+    const env = createEnv({
+      MODERATION_API_KEY: 'legacy-token'
+    });
+
+    const videos = Array.from({ length: 101 }, () => ({
+      sha256: SHA256
+    }));
+
+    const response = await worker.fetch(
+      new Request('https://moderation-api.divine.video/api/v1/batch-scan', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer legacy-token'
+        },
+        body: JSON.stringify({ videos })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: 'Maximum 100 videos per batch'
+    });
+  });
+});
