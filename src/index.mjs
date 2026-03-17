@@ -348,7 +348,7 @@ function mergeLookupMetadata(baseVideo, funnelcakeVideo) {
 
   return {
     ...baseVideo,
-    cdnUrl: baseVideo.cdnUrl || funnelcakeVideo.videoUrl || baseVideo.cdnUrl,
+    cdnUrl: funnelcakeVideo.videoUrl || baseVideo.cdnUrl || null,
     thumbnailUrl: baseVideo.thumbnailUrl || funnelcakeVideo.thumbnailUrl || null,
     uploaded_by: baseVideo.uploaded_by || funnelcakeVideo.uploadedBy || null,
     divineUrl: funnelcakeVideo.divineUrl || baseVideo.divineUrl,
@@ -524,7 +524,7 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
         previousAction: kvModeration?.previousAction || null,
         detailedCategories: parseMaybeJson(kvModeration?.detailedCategories, null),
         categoryVerifications: parseMaybeJson(kvModeration?.categoryVerifications, {}) || {},
-        cdnUrl
+        cdnUrl: kvModeration?.cdnUrl || cdnUrl
       }, env);
     }
 

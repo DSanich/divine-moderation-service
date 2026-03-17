@@ -272,6 +272,7 @@ describe('Admin video lookup', () => {
           if (key === `moderation:${SHA256}`) {
             return JSON.stringify({
               action: 'AGE_RESTRICTED',
+              cdnUrl: `https://blossom.primal.net/${SHA256}.mp4`,
               scores: { nudity: 0.91, ai_generated: 0.2 },
               manualOverride: true,
               previousAction: 'REVIEW',
@@ -299,6 +300,7 @@ describe('Admin video lookup', () => {
       video: {
         sha256: SHA256,
         action: 'AGE_RESTRICTED',
+        cdnUrl: `https://blossom.primal.net/${SHA256}.mp4`,
         manualOverride: true,
         previousAction: 'REVIEW',
         reason: 'Manual override',
@@ -393,6 +395,78 @@ describe('Admin video lookup', () => {
           uploaded_by: 'c'.repeat(64),
           divineUrl: 'https://divine.video/video/video-imported-stable-id',
           lookupId: SHA256
+        }
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('preserves imported source URLs when a stable-id lookup resolves to an already moderated media hash', async () => {
+    const mediaSha = 'b'.repeat(64);
+    const stableId = 'video-imported-stable-id';
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url) === `https://relay.divine.video/api/videos/${stableId}`) {
+        return new Response(JSON.stringify({
+          event: {
+            id: SHA256,
+            pubkey: 'c'.repeat(64),
+            created_at: 1773503656,
+            kind: 34235,
+            tags: [
+              ['d', stableId],
+              ['title', 'Imported archive video'],
+              ['client', 'Plebs'],
+              ['imeta', `url https://blossom.primal.net/${mediaSha}.mp4`, `x ${mediaSha}`, 'image https://blossom.primal.net/thumb.png']
+            ],
+            content: 'archive description',
+            sig: 'd'.repeat(128)
+          },
+          stats: {
+            author_name: 'Archive User'
+          }
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/api/video/${stableId}`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        createEnv({
+          BLOSSOM_DB: createDbMock({
+            moderationResults: new Map([[mediaSha, {
+              sha256: mediaSha,
+              action: 'PERMANENT_BAN',
+              provider: 'manual',
+              scores: JSON.stringify({ ai_generated: 0.92 }),
+              categories: JSON.stringify(['ai_generated']),
+              moderated_at: '2026-03-17T00:00:00.000Z',
+              reviewed_by: 'admin',
+              reviewed_at: '2026-03-17T00:10:00.000Z',
+              review_notes: 'Imported moderation',
+              uploaded_by: 'c'.repeat(64)
+            }]])
+          })
+        })
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        video: {
+          sha256: mediaSha,
+          action: 'PERMANENT_BAN',
+          cdnUrl: `https://blossom.primal.net/${mediaSha}.mp4`,
+          thumbnailUrl: 'https://blossom.primal.net/thumb.png',
+          divineUrl: `https://divine.video/video/${stableId}`,
+          lookupId: stableId
         }
       });
     } finally {

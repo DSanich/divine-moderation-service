@@ -1953,6 +1953,45 @@
       }
     }
 
+    function isFocusedLookupResult(sha256) {
+      return currentLookupSha === sha256;
+    }
+
+    function getLookupReloadId(sha256, fallbackVideo = null) {
+      return currentLookupVideo?.lookupId || fallbackVideo?.lookupId || sha256;
+    }
+
+    async function refreshLookupResultIfMatches(sha256, fallbackVideo = null) {
+      if (!isFocusedLookupResult(sha256)) {
+        return false;
+      }
+
+      await lookupVideo(getLookupReloadId(sha256, fallbackVideo));
+      return true;
+    }
+
+    function isCanonicalBlobVideoUrl(videoUrl, sha256) {
+      if (!videoUrl || !sha256) {
+        return false;
+      }
+
+      try {
+        const parsed = new URL(videoUrl, window.location.origin);
+        const pathname = parsed.pathname.replace(/\/+$/, '');
+        return pathname === `/${sha256}` || pathname === `/${sha256}.mp4`;
+      } catch (error) {
+        return false;
+      }
+    }
+
+    function getPreferredPlaybackUrl(video) {
+      if (video?.cdnUrl && !isCanonicalBlobVideoUrl(video.cdnUrl, video.sha256)) {
+        return video.cdnUrl;
+      }
+
+      return `/admin/video/${video.sha256}.mp4`;
+    }
+
     function hydrateRenderedVideo(video) {
       const nostrContainer = document.getElementById(`nostr-${video.sha256}`);
       if (!nostrContainer) return;
@@ -2417,9 +2456,7 @@
         if (response.ok) {
           button.innerHTML = '✅ Done!';
           setTimeout(async () => {
-            if (currentLookupSha === sha256) {
-              const reloadId = currentLookupVideo?.lookupId || sha256;
-              await lookupVideo(reloadId);
+            if (await refreshLookupResultIfMatches(sha256, video)) {
               setLookupStatus(`Approved ${sha256.substring(0, 16)}...`);
             } else {
               const card = button.closest('.video-card');
@@ -2473,9 +2510,7 @@
 
         loadRealStats();
 
-        if (currentLookupSha === sha256) {
-          const reloadId = currentLookupVideo?.lookupId || sha256;
-          await lookupVideo(reloadId);
+        if (await refreshLookupResultIfMatches(sha256, video)) {
         } else {
           const card = button.closest('.video-card');
           if (card) {
@@ -2835,8 +2870,7 @@
 
       const actionClass = action.toLowerCase();
 
-      // Use admin bypass route for video URL - allows moderators to see quarantined content
-      const adminVideoUrl = `/admin/video/${sha256}.mp4`;
+      const playableVideoUrl = getPreferredPlaybackUrl(video);
 
       // Get all scores, sort by value (highest first), and filter out zero scores
       const scoreEntries = Object.entries(scores || {})
@@ -2931,7 +2965,7 @@
       return `
         <div class="video-card ${actionClass}" data-sha256="${sha256}">
           <div class="video-thumbnail">
-            <video src="${adminVideoUrl}" muted loop preload="auto" controls onmouseenter="this.play()" onmouseleave="this.pause()"></video>
+            <video src="${playableVideoUrl}" muted loop preload="auto" controls onmouseenter="this.play()" onmouseleave="this.pause()"></video>
             <div class="video-overlay">
               <span class="badge ${actionClass}">${action}</span>
               ${manualOverride ? '<span class="badge override-badge">MANUAL</span>' : ''}
@@ -3762,9 +3796,12 @@
 
       const previousAction = video.action;
       const previousData = { ...video };
+      const isFocusedLookup = isFocusedLookupResult(sha256);
 
       // Find and fade out the card immediately
       const cards = Array.from(document.querySelectorAll(`.video-card[data-sha256="${sha256}"]`));
+      const lookupCards = cards.filter(card => card.closest('#lookup-result'));
+      const gridCards = cards.filter(card => !card.closest('#lookup-result'));
       cards.forEach(card => {
         card.style.opacity = '0.5';
         card.style.pointerEvents = 'none';
@@ -3774,7 +3811,12 @@
         const response = await fetch(`/admin/api/moderate/${sha256}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, reason: `Quick action: ${action}` })
+          body: JSON.stringify({
+            action,
+            reason: `Quick action: ${action}`,
+            videoUrl: video?.cdnUrl,
+            uploadedBy: video?.uploaded_by || null
+          })
         });
 
         if (!response.ok) {
@@ -3784,8 +3826,8 @@
         const result = await response.json();
         console.log('Action updated:', result);
 
-        // Remove card from grid with animation
-        cards.forEach(card => {
+        // Remove matching grid cards with animation.
+        gridCards.forEach(card => {
           card.style.transition = 'all 0.3s ease-out';
           card.style.transform = 'scale(0.9)';
           card.style.opacity = '0';
@@ -3797,7 +3839,17 @@
         if (idx !== -1) {
           allVideos.splice(idx, 1);
         }
-        removeLookupResultIfMatches(sha256);
+        if (isFocusedLookup) {
+          await refreshLookupResultIfMatches(sha256, previousData);
+        } else {
+          lookupCards.forEach(card => {
+            card.style.transition = 'all 0.3s ease-out';
+            card.style.transform = 'scale(0.9)';
+            card.style.opacity = '0';
+            setTimeout(() => card.remove(), 300);
+          });
+          removeLookupResultIfMatches(sha256);
+        }
 
         // Store for undo
         lastAction = { sha256, previousAction, previousData, newAction: action };
@@ -3851,14 +3903,19 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             action: previousAction,
-            reason: `Undo: reverted to ${previousAction}`
+            reason: `Undo: reverted to ${previousAction}`,
+            videoUrl: previousData?.cdnUrl,
+            uploadedBy: previousData?.uploaded_by || null
           })
         });
 
         if (response.ok) {
-          // Re-add to allVideos and re-render
-          allVideos.unshift(previousData);
-          applyFilters();
+          if (await refreshLookupResultIfMatches(sha256, previousData)) {
+            setLookupStatus(`Reverted ${sha256.substring(0, 16)}...`);
+          } else {
+            allVideos.unshift(previousData);
+            applyFilters();
+          }
           loadRealStats();
         }
       } catch (err) {
