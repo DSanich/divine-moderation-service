@@ -1043,3 +1043,127 @@ describe('RD auto-escalation cron integration', () => {
     }
   });
 });
+
+describe('POST /admin/api/moderate/:sha256', () => {
+  it('rejects unauthenticated requests', async () => {
+    const sha = 'f'.repeat(64);
+    const response = await worker.fetch(
+      new Request(`https://moderation.admin.divine.video/admin/api/moderate/${sha}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'SAFE', reason: 'test' })
+      }),
+      createEnv({ ALLOW_DEV_ACCESS: 'false' })
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it('rejects invalid action', async () => {
+    const sha = 'e'.repeat(64);
+    const kvStore = new Map();
+    const env = createEnv({
+      ALLOW_DEV_ACCESS: 'true',
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      }
+    });
+
+    const response = await worker.fetch(
+      new Request(`https://moderation.admin.divine.video/admin/api/moderate/${sha}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'INVALID_ACTION', reason: 'test' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain('Invalid action');
+  });
+
+  it('creates manual override for new sha256', async () => {
+    const sha = 'd'.repeat(64);
+    const kvStore = new Map();
+    const env = createEnv({
+      ALLOW_DEV_ACCESS: 'true',
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      }
+    });
+
+    const response = await worker.fetch(
+      new Request(`https://moderation.admin.divine.video/admin/api/moderate/${sha}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'SAFE', reason: 'Looks fine' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.success).toBe(true);
+    expect(body.action).toBe('SAFE');
+  });
+
+  it('records previousAction on override', async () => {
+    const sha = 'c'.repeat(64);
+    const kvStore = new Map();
+    const env = createEnv({
+      ALLOW_DEV_ACCESS: 'true',
+      BLOSSOM_DB: createDbMock({
+        moderationResults: new Map([[sha, {
+          sha256: sha,
+          action: 'AGE_RESTRICTED',
+          provider: 'hiveai',
+          scores: JSON.stringify({ nudity: 0.85 }),
+          categories: JSON.stringify(['nudity']),
+          moderated_at: '2026-03-07T00:00:00.000Z',
+          reviewed_by: null,
+          reviewed_at: null
+        }]])
+      }),
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      }
+    });
+
+    // First moderate as AGE_RESTRICTED
+    await worker.fetch(
+      new Request(`https://moderation.admin.divine.video/admin/api/moderate/${sha}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'AGE_RESTRICTED', reason: 'Contains nudity' })
+      }),
+      env
+    );
+
+    // Then override as SAFE
+    const response = await worker.fetch(
+      new Request(`https://moderation.admin.divine.video/admin/api/moderate/${sha}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'SAFE', reason: 'Actually fine' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.previousAction).toBe('AGE_RESTRICTED');
+  });
+});
