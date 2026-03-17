@@ -1167,3 +1167,178 @@ describe('POST /admin/api/moderate/:sha256', () => {
     expect(body.previousAction).toBe('AGE_RESTRICTED');
   });
 });
+
+describe('POST /admin/api/verify-category/:sha256', () => {
+  function createVerifyEnv(sha256, moderationResult, overrides = {}) {
+    const kvStore = new Map();
+    return {
+      ALLOW_DEV_ACCESS: 'true',
+      SERVICE_API_TOKEN: 'test-service-token',
+      BLOSSOM_DB: createDbMock({
+        moderationResults: moderationResult
+          ? new Map([[sha256, moderationResult]])
+          : new Map()
+      }),
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      },
+      MODERATION_QUEUE: { async send() {} },
+      ...overrides
+    };
+  }
+
+  async function seedModeration(sha256, env, action, scores = {}) {
+    const response = await worker.fetch(
+      new Request(`https://moderation.admin.divine.video/admin/api/moderate/${sha256}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, reason: 'seed for test', scores })
+      }),
+      env
+    );
+    expect(response.status).toBe(200);
+  }
+
+  it('rejects invalid category', async () => {
+    const sha = '1'.repeat(64);
+    const env = createVerifyEnv(sha, {
+      sha256: sha,
+      action: 'REVIEW',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.5 }),
+      categories: JSON.stringify(['nudity']),
+      moderated_at: '2026-03-07T00:00:00.000Z',
+      reviewed_by: null,
+      reviewed_at: null
+    });
+
+    // First create a moderation result in KV
+    await seedModeration(sha, env, 'REVIEW');
+
+    const response = await worker.fetch(
+      new Request(`https://moderation.admin.divine.video/admin/api/verify-category/${sha}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: 'INVALID_CAT', status: 'confirmed' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain('Invalid category');
+  });
+
+  it('rejects invalid status', async () => {
+    const sha = '2'.repeat(64);
+    const env = createVerifyEnv(sha, {
+      sha256: sha,
+      action: 'REVIEW',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.5 }),
+      categories: JSON.stringify(['nudity']),
+      moderated_at: '2026-03-07T00:00:00.000Z',
+      reviewed_by: null,
+      reviewed_at: null
+    });
+
+    await seedModeration(sha, env, 'REVIEW');
+
+    const response = await worker.fetch(
+      new Request(`https://moderation.admin.divine.video/admin/api/verify-category/${sha}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: 'nudity', status: 'maybe' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain('Status must be');
+  });
+
+  it('returns 404 for non-existent sha256', async () => {
+    const sha = '3'.repeat(64);
+    const env = createVerifyEnv(sha, null);
+
+    const response = await worker.fetch(
+      new Request(`https://moderation.admin.divine.video/admin/api/verify-category/${sha}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: 'nudity', status: 'confirmed' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(404);
+    const body = await response.json();
+    expect(body.error).toContain('not found');
+  });
+
+  it('stores category verification', async () => {
+    const sha = '4'.repeat(64);
+    const env = createVerifyEnv(sha, {
+      sha256: sha,
+      action: 'AGE_RESTRICTED',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.9 }),
+      categories: JSON.stringify(['nudity']),
+      moderated_at: '2026-03-07T00:00:00.000Z',
+      reviewed_by: null,
+      reviewed_at: null
+    });
+
+    // Seed moderation result with scores in KV
+    await seedModeration(sha, env, 'AGE_RESTRICTED', { nudity: 0.9 });
+
+    const response = await worker.fetch(
+      new Request(`https://moderation.admin.divine.video/admin/api/verify-category/${sha}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: 'nudity', status: 'confirmed' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.success).toBe(true);
+    expect(body.categoryVerifications.nudity).toBe('confirmed');
+  });
+
+  it('auto-approves when all major flags rejected', async () => {
+    const sha = '5'.repeat(64);
+    const env = createVerifyEnv(sha, {
+      sha256: sha,
+      action: 'AGE_RESTRICTED',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.9 }),
+      categories: JSON.stringify(['nudity']),
+      moderated_at: '2026-03-07T00:00:00.000Z',
+      reviewed_by: null,
+      reviewed_at: null
+    });
+
+    // Seed moderation result with nudity score in KV
+    await seedModeration(sha, env, 'AGE_RESTRICTED', { nudity: 0.9 });
+
+    const response = await worker.fetch(
+      new Request(`https://moderation.admin.divine.video/admin/api/verify-category/${sha}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: 'nudity', status: 'rejected' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.autoApproved).toBe(true);
+    expect(body.newAction).toBe('SAFE');
+  });
+});
