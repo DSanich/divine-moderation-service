@@ -8,6 +8,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
+    "lint": "node scripts/lint.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
