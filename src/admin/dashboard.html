@@ -2813,6 +2813,8 @@
       const filterSelect = document.getElementById('filter-action');
       filterSelect.value = action;
 
+      syncFilterUrl();
+
       // Handle TRIAGE separately - different data source
       if (action === 'TRIAGE') {
         loadTriageVideos();
@@ -2852,6 +2854,8 @@
       const filterAction = document.getElementById('filter-action').value;
       const filterCategory = document.getElementById('filter-category').value;
       const minScore = parseFloat(document.getElementById('min-score').value) || 0;
+
+      syncFilterUrl();
 
       // If action filter changed, reload from server
       if (filterAction !== lastActionFilter) {
@@ -3844,6 +3848,52 @@
       });
     }
 
+    function syncFilterUrl() {
+      const url = new URL(window.location);
+      const action = document.getElementById('filter-action').value;
+      const category = document.getElementById('filter-category').value;
+      const sort = document.getElementById('sort-by').value;
+      const minScore = document.getElementById('min-score').value;
+
+      // Only set non-default values
+      if (action && action !== 'TRIAGE') {
+        url.searchParams.set('action', action);
+      } else {
+        url.searchParams.delete('action');
+      }
+      if (category && category !== 'all') {
+        url.searchParams.set('category', category);
+      } else {
+        url.searchParams.delete('category');
+      }
+      if (sort && sort !== 'timestamp') {
+        url.searchParams.set('sort', sort);
+      } else {
+        url.searchParams.delete('sort');
+      }
+      if (minScore && parseFloat(minScore) > 0) {
+        url.searchParams.set('min', minScore);
+      } else {
+        url.searchParams.delete('min');
+      }
+      history.replaceState(null, '', url);
+    }
+
+    function restoreFiltersFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      const action = params.get('action');
+      const category = params.get('category');
+      const sort = params.get('sort');
+      const minScore = params.get('min');
+
+      if (action) document.getElementById('filter-action').value = action;
+      if (category) document.getElementById('filter-category').value = category;
+      if (sort) document.getElementById('sort-by').value = sort;
+      if (minScore) document.getElementById('min-score').value = minScore;
+
+      return !!action; // true if we should load with a filter
+    }
+
     function copyDashboardPermalink(sha256, btn) {
       const url = new URL(window.location);
       url.searchParams.set('lookup', sha256);
@@ -4312,11 +4362,20 @@
       }
     });
 
-    loadTriageVideos();
     loadRealStats();
     updateMuteToggleButton();
-    // Set filter dropdown to TRIAGE
-    document.getElementById('filter-action').value = 'TRIAGE';
+
+    // Restore filters from URL, or default to TRIAGE
+    const hasUrlFilter = restoreFiltersFromUrl();
+    if (hasUrlFilter) {
+      const action = document.getElementById('filter-action').value;
+      lastActionFilter = action;
+      loadVideos(undefined, action);
+      updateActiveStatCard();
+    } else {
+      document.getElementById('filter-action').value = 'TRIAGE';
+      loadTriageVideos();
+    }
 
     const initialLookup = new URLSearchParams(window.location.search).get('lookup');
     if (initialLookup) {
