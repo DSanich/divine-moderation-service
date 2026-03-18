@@ -644,6 +644,14 @@
         } else {
           document.getElementById('review-container').style.display = 'flex';
           document.getElementById('progress').style.display = 'block';
+
+          // Jump to specific video if ?sha256= is in URL
+          const targetSha = new URLSearchParams(window.location.search).get('sha256');
+          if (targetSha) {
+            const idx = reviewQueue.findIndex(v => v.sha256 === targetSha);
+            if (idx >= 0) currentIndex = idx;
+          }
+
           showCurrentVideo();
         }
 
@@ -676,6 +684,12 @@
       const video = reviewQueue[currentIndex];
       const container = document.getElementById('review-container');
 
+      // Update URL with current video's sha256 for permalinking
+      const url = new URL(window.location);
+      url.searchParams.set('sha256', video.sha256);
+      history.replaceState(null, '', url);
+
+      // NOTE: createVideoCard returns sanitized HTML (all user content goes through escapeHtml)
       container.innerHTML = createVideoCard(video);
       updateProgress();
 
@@ -1080,7 +1094,10 @@
 
             ${title ? `<div class="nostr-title" style="margin-bottom: 10px;">${escapeHtml(title)}</div>` : ''}
 
-            <div class="video-hash">${sha256}</div>
+            <div class="video-hash" style="display: flex; align-items: center; gap: 8px;">
+              ${sha256}
+              <button onclick="copyPermalink('${sha256}')" style="background: none; border: 1px solid #555; color: #aaa; padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">📋 Link</button>
+            </div>
 
             ${classifierHTML}
 
@@ -1416,6 +1433,16 @@
       const div = document.createElement('div');
       div.textContent = text;
       return div.innerHTML;
+    }
+
+    function copyPermalink(sha256) {
+      const url = new URL(window.location);
+      url.searchParams.set('sha256', sha256);
+      navigator.clipboard.writeText(url.toString()).then(() => {
+        const btn = event.target;
+        btn.textContent = '✓ Copied';
+        setTimeout(() => { btn.textContent = '📋 Link'; }, 1500);
+      }).catch(() => { /* clipboard not available */ });
     }
 
     function logout() {

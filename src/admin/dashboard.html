@@ -2493,7 +2493,8 @@
         '<div class="video-info">' +
           '<div style="font-size: 11px; color: #666; margin-bottom: 6px; font-family: monospace;">' +
             '<span title="' + sha256 + '">' + sha256.substring(0, 16) + '...</span> ' +
-            '<button onclick="copyToClipboard(\'' + videoUrl + '\'); event.stopPropagation();" style="background: #333; color: #888; border: none; padding: 2px 6px; border-radius: 3px; cursor: pointer; font-size: 10px;" title="Copy video URL">📋 URL</button>' +
+            '<button onclick="copyToClipboard(\'' + videoUrl + '\'); event.stopPropagation();" style="background: #333; color: #888; border: none; padding: 2px 6px; border-radius: 3px; cursor: pointer; font-size: 10px;" title="Copy video URL">📋 URL</button> ' +
+            '<button onclick="copyDashboardPermalink(\'' + sha256 + '\', this); event.stopPropagation();" style="background: #333; color: #888; border: none; padding: 2px 6px; border-radius: 3px; cursor: pointer; font-size: 10px;" title="Copy permalink to this item">🔗 Link</button>' +
           '</div>' +
           (metaLine ? '<div style="font-size: 12px; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + metaLine + '</div>' : '') +
           (description ? '<div style="font-size: 13px; color: #ccc; margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + description + '</div>' : '') +
@@ -3144,7 +3145,10 @@
           </div>
           <div class="video-info">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-              <div class="video-hash" title="Click to copy full hash" onclick="copyToClipboard('${sha256}')" style="margin-bottom: 0;">${sha256.substring(0, 16)}...</div>
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <div class="video-hash" title="Click to copy full hash" onclick="copyToClipboard('${sha256}')" style="margin-bottom: 0;">${sha256.substring(0, 16)}...</div>
+                <button onclick="copyDashboardPermalink('${sha256}', this); event.stopPropagation();" style="background: none; border: 1px solid #444; color: #888; padding: 1px 6px; border-radius: 3px; cursor: pointer; font-size: 10px;" title="Copy permalink">🔗</button>
+              </div>
               ${providerBadgeHTML}
             </div>
 
@@ -3838,6 +3842,16 @@
       }).catch(err => {
         console.error('Failed to copy:', err);
       });
+    }
+
+    function copyDashboardPermalink(sha256, btn) {
+      const url = new URL(window.location);
+      url.searchParams.set('lookup', sha256);
+      navigator.clipboard.writeText(url.toString()).then(() => {
+        const orig = btn.textContent;
+        btn.textContent = '✓';
+        setTimeout(() => { btn.textContent = orig; }, 1500);
+      }).catch(() => { /* clipboard not available */ });
     }
 
     // Global sound toggle. Persists to localStorage. The button click is a
