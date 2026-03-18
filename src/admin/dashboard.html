@@ -3891,7 +3891,7 @@
       if (sort) document.getElementById('sort-by').value = sort;
       if (minScore) document.getElementById('min-score').value = minScore;
 
-      return !!action; // true if we should load with a filter
+      return !!(action || category || sort || minScore);
     }
 
     function copyDashboardPermalink(sha256, btn) {
@@ -4368,7 +4368,8 @@
     // Restore filters from URL, or default to TRIAGE
     const hasUrlFilter = restoreFiltersFromUrl();
     if (hasUrlFilter) {
-      const action = document.getElementById('filter-action').value;
+      const action = document.getElementById('filter-action').value || 'all';
+      document.getElementById('filter-action').value = action;
       lastActionFilter = action;
       loadVideos(undefined, action);
       updateActiveStatCard();

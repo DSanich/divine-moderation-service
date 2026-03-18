@@ -1096,7 +1096,7 @@
 
             <div class="video-hash" style="display: flex; align-items: center; gap: 8px;">
               ${sha256}
-              <button onclick="copyPermalink('${sha256}')" style="background: none; border: 1px solid #555; color: #aaa; padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">📋 Link</button>
+              <button onclick="copyPermalink('${sha256}', this)" style="background: none; border: 1px solid #555; color: #aaa; padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">📋 Link</button>
             </div>
 
             ${classifierHTML}
@@ -1435,11 +1435,10 @@
       return div.innerHTML;
     }
 
-    function copyPermalink(sha256) {
+    function copyPermalink(sha256, btn) {
       const url = new URL(window.location);
       url.searchParams.set('sha256', sha256);
       navigator.clipboard.writeText(url.toString()).then(() => {
-        const btn = event.target;
         btn.textContent = '✓ Copied';
         setTimeout(() => { btn.textContent = '📋 Link'; }, 1500);
       }).catch(() => { /* clipboard not available */ });
