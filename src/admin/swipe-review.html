@@ -832,7 +832,10 @@
       const truncatedPubkey = pubkey ? (pubkey.length > 20 ? pubkey.substring(0, 16) + '...' : pubkey) : null;
       const timestamp = video.moderated_at || video.receivedAt || null;
       const timeAgo = timestamp ? formatTimeAgo(timestamp) : null;
-      const divineUrl = video.eventId ? `https://divine.video/video/${video.eventId}` : null;
+      const divineVideoUrl = video.eventId
+        ? `https://divine.video/video/${video.eventId}`
+        : `https://divine.video/video/${video.sha256}`;
+      const divineProfileUrl = pubkey ? `https://divine.video/profile/${pubkey}` : null;
 
       if (!authorName && !pubkey && !timestamp) return '';
 
@@ -840,11 +843,11 @@
         <div class="event-meta">
           <div class="event-meta-avatar">${authorName ? authorName.charAt(0).toUpperCase() : '?'}</div>
           <div class="event-meta-details">
-            ${authorName ? `<div class="event-meta-author">${escapeHtml(authorName)}</div>` : ''}
-            ${truncatedPubkey ? `<div class="event-meta-pubkey">${escapeHtml(truncatedPubkey)}</div>` : ''}
+            ${authorName ? `<div class="event-meta-author">${divineProfileUrl ? `<a href="${escapeHtml(divineProfileUrl)}" target="_blank" style="color: inherit; text-decoration: none;">${escapeHtml(authorName)}</a>` : escapeHtml(authorName)}</div>` : ''}
+            ${truncatedPubkey ? `<div class="event-meta-pubkey">${divineProfileUrl ? `<a href="${escapeHtml(divineProfileUrl)}" target="_blank" style="color: inherit; text-decoration: underline dotted;">${escapeHtml(truncatedPubkey)}</a>` : escapeHtml(truncatedPubkey)}</div>` : ''}
             ${timeAgo ? `<div class="event-meta-time">${escapeHtml(timeAgo)}</div>` : ''}
             <div class="event-meta-links">
-              ${divineUrl ? `<a href="${escapeHtml(divineUrl)}" target="_blank">View on Divine</a>` : ''}
+              <a href="${escapeHtml(divineVideoUrl)}" target="_blank">View on Divine</a>
               ${nostrContext?.url ? `<a href="${escapeHtml(nostrContext.url)}" target="_blank">CDN</a>` : ''}
             </div>
           </div>
@@ -1043,17 +1046,20 @@
       const timestamp = moderated_at || receivedAt || null;
       const timeAgo = timestamp ? formatTimeAgo(timestamp) : null;
       const title = nostrContext?.title || null;
-      const divineUrl = eventId ? `https://divine.video/video/${eventId}` : null;
+      const divineVideoUrl = eventId
+        ? `https://divine.video/video/${eventId}`
+        : `https://divine.video/video/${sha256}`;
+      const divineProfileUrl = pubkey ? `https://divine.video/profile/${pubkey}` : null;
 
       const eventMetaHTML = (authorName || pubkey || timestamp) ? `
         <div class="event-meta">
           <div class="event-meta-avatar">${authorName ? authorName.charAt(0).toUpperCase() : '?'}</div>
           <div class="event-meta-details">
-            ${authorName ? `<div class="event-meta-author">${escapeHtml(authorName)}</div>` : ''}
-            ${truncatedPubkey ? `<div class="event-meta-pubkey">${escapeHtml(truncatedPubkey)}</div>` : ''}
+            ${authorName ? `<div class="event-meta-author">${divineProfileUrl ? `<a href="${escapeHtml(divineProfileUrl)}" target="_blank" style="color: inherit; text-decoration: none;">${escapeHtml(authorName)}</a>` : escapeHtml(authorName)}</div>` : ''}
+            ${truncatedPubkey ? `<div class="event-meta-pubkey">${divineProfileUrl ? `<a href="${escapeHtml(divineProfileUrl)}" target="_blank" style="color: inherit; text-decoration: underline dotted;">${escapeHtml(truncatedPubkey)}</a>` : escapeHtml(truncatedPubkey)}</div>` : ''}
             ${timeAgo ? `<div class="event-meta-time">${escapeHtml(timeAgo)}</div>` : ''}
             <div class="event-meta-links">
-              ${divineUrl ? `<a href="${escapeHtml(divineUrl)}" target="_blank">View on Divine</a>` : ''}
+              <a href="${escapeHtml(divineVideoUrl)}" target="_blank">View on Divine</a>
               ${nostrContext?.url ? `<a href="${escapeHtml(nostrContext.url)}" target="_blank">CDN</a>` : ''}
             </div>
           </div>
