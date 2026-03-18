@@ -836,6 +836,8 @@
         ? `https://divine.video/video/${video.eventId}`
         : `https://divine.video/video/${video.sha256}`;
       const divineProfileUrl = pubkey ? `https://divine.video/profile/${pubkey}` : null;
+      const divineLinkLabel = video.eventId ? 'View on Divine' : pubkey ? 'View on Divine (may not be published)' : 'Not published to relay';
+      const hasDivineLink = video.eventId || pubkey;
 
       if (!authorName && !pubkey && !timestamp) return '';
 
@@ -847,7 +849,9 @@
             ${truncatedPubkey ? `<div class="event-meta-pubkey">${divineProfileUrl ? `<a href="${escapeHtml(divineProfileUrl)}" target="_blank" style="color: inherit; text-decoration: underline dotted;">${escapeHtml(truncatedPubkey)}</a>` : escapeHtml(truncatedPubkey)}</div>` : ''}
             ${timeAgo ? `<div class="event-meta-time">${escapeHtml(timeAgo)}</div>` : ''}
             <div class="event-meta-links">
-              <a href="${escapeHtml(divineVideoUrl)}" target="_blank">View on Divine</a>
+              ${hasDivineLink
+                ? `<a href="${escapeHtml(divineVideoUrl)}" target="_blank">${divineLinkLabel}</a>`
+                : `<span style="color: #666; font-style: italic;">${divineLinkLabel}</span>`}
               ${nostrContext?.url ? `<a href="${escapeHtml(nostrContext.url)}" target="_blank">CDN</a>` : ''}
             </div>
           </div>
@@ -1050,6 +1054,8 @@
         ? `https://divine.video/video/${eventId}`
         : `https://divine.video/video/${sha256}`;
       const divineProfileUrl = pubkey ? `https://divine.video/profile/${pubkey}` : null;
+      const divineLinkLabel = eventId ? 'View on Divine' : pubkey ? 'View on Divine (may not be published)' : 'Not published to relay';
+      const hasDivineLink = eventId || pubkey;
 
       const eventMetaHTML = (authorName || pubkey || timestamp) ? `
         <div class="event-meta">
@@ -1059,7 +1065,9 @@
             ${truncatedPubkey ? `<div class="event-meta-pubkey">${divineProfileUrl ? `<a href="${escapeHtml(divineProfileUrl)}" target="_blank" style="color: inherit; text-decoration: underline dotted;">${escapeHtml(truncatedPubkey)}</a>` : escapeHtml(truncatedPubkey)}</div>` : ''}
             ${timeAgo ? `<div class="event-meta-time">${escapeHtml(timeAgo)}</div>` : ''}
             <div class="event-meta-links">
-              <a href="${escapeHtml(divineVideoUrl)}" target="_blank">View on Divine</a>
+              ${hasDivineLink
+                ? `<a href="${escapeHtml(divineVideoUrl)}" target="_blank">${divineLinkLabel}</a>`
+                : `<span style="color: #666; font-style: italic;">${divineLinkLabel}</span>`}
               ${nostrContext?.url ? `<a href="${escapeHtml(nostrContext.url)}" target="_blank">CDN</a>` : ''}
             </div>
           </div>

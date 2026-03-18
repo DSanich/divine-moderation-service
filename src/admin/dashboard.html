@@ -3199,7 +3199,9 @@
             ${uploaderEnforcementPanel}
 
             <div style="font-size: 12px; margin-bottom: 8px;">
-              <a href="https://divine.video/video/${sha256}" target="_blank" style="color: #8b5cf6; text-decoration: none;">View on Divine →</a>
+              ${video.eventId || video.uploaded_by
+                ? `<a href="https://divine.video/video/${video.eventId || sha256}" target="_blank" style="color: #8b5cf6; text-decoration: none;">${video.eventId ? 'View on Divine →' : 'View on Divine (may not be published) →'}</a>`
+                : `<span style="color: #666; font-style: italic; font-size: 11px;">Not published to relay</span>`}
             </div>
 
             <div class="action-buttons">
