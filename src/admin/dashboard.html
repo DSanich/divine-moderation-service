@@ -2412,7 +2412,7 @@
         ? `<button class="action-btn ban" onclick="toggleRelayBan('${pubkey}', ${enforcement?.relay_banned ? 'false' : 'true'}, this)">${enforcement?.relay_banned ? 'Unban User' : 'Ban User'}</button>`
         : '';
       const deleteButton = eventId
-        ? `<button class="action-btn secondary" onclick="deleteNostrEvent('${eventId}', this)">Delete Event</button>`
+        ? `<button class="action-btn secondary" onclick="deleteNostrEvent('${video.sha256 || ''}', '${eventId}', this)">Delete Event</button>`
         : '';
 
       return `
@@ -2770,7 +2770,7 @@
       );
     }
 
-    async function deleteNostrEvent(eventId, button) {
+    async function deleteNostrEvent(sha256, eventId, button) {
       const originalText = button.innerHTML;
       button.innerHTML = '⏳...';
       button.disabled = true;
@@ -2780,7 +2780,8 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            reason: 'Deleted from moderation dashboard'
+            reason: 'Deleted from moderation dashboard',
+            sha256: sha256 || null
           })
         });
 
@@ -2796,7 +2797,11 @@
 
         button.innerHTML = originalText;
         button.disabled = false;
-        setLookupStatus(`Deleted relay event ${truncateHex(eventId, 10, 6)}`);
+        const deletedCount = data?.relayResult?.deletedCount || 1;
+        const statusLabel = deletedCount > 1
+          ? `Deleted ${deletedCount} relay event versions for ${truncateHex(eventId, 10, 6)}`
+          : `Deleted relay event ${truncateHex(eventId, 10, 6)}`;
+        setLookupStatus(statusLabel);
       } catch (error) {
         button.innerHTML = originalText;
         button.disabled = false;

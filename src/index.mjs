@@ -10,7 +10,7 @@ import { publishToFaro, publishToContentRelay, publishLabelEvent } from './nostr
 import { requireAuth, getAuthenticatedUser } from './admin/auth.mjs';
 import { verifyZeroTrustJWT } from './admin/zerotrust.mjs';
 import { getConfiguredBearerTokens, authenticateApiRequest, apiUnauthorizedResponse, authSourceFromVerification, verifyLegacyBearerAuth } from './auth-api.mjs';
-import { fetchNostrEventBySha256, parseVideoEventMetadata } from './nostr/relay-client.mjs';
+import { fetchNostrEventBySha256, fetchNostrVideoEventsByDTag, parseVideoEventMetadata } from './nostr/relay-client.mjs';
 import { pollRelayForVideos, getLastPollTimestamp, setLastPollTimestamp, getPollingStatus } from './nostr/relay-poller.mjs';
 import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
@@ -292,25 +292,84 @@ async function callRelayAdminAction(env, payload) {
   return data;
 }
 
+async function deleteRelayEventIds(eventIds, env, reason) {
+  const uniqueEventIds = [...new Set(
+    (eventIds || []).filter((eventId) => typeof eventId === 'string' && isValidSha256(eventId))
+  )];
+
+  if (uniqueEventIds.length === 0) {
+    return {
+      success: false,
+      reason: 'no_event_found',
+      eventId: null,
+      eventIds: [],
+      deletedCount: 0,
+      attemptedCount: 0,
+      failures: []
+    };
+  }
+
+  const deletedEventIds = [];
+  const failures = [];
+
+  for (const eventId of uniqueEventIds) {
+    try {
+      await callRelayAdminAction(env, {
+        action: 'delete_event',
+        eventId,
+        reason
+      });
+      deletedEventIds.push(eventId);
+    } catch (error) {
+      failures.push({
+        eventId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  return {
+    success: failures.length === 0,
+    eventId: deletedEventIds[0] || uniqueEventIds[0],
+    eventIds: deletedEventIds,
+    deletedCount: deletedEventIds.length,
+    attemptedCount: uniqueEventIds.length,
+    failures
+  };
+}
+
 /**
- * Look up the Nostr event for a SHA256 and delete it from the relay.
+ * Look up all Nostr event versions for a SHA256 d-tag and delete them from the relay.
  * Used to enforce PERMANENT_BAN on content that may be hosted externally.
  */
-async function deleteEventFromRelayBySha256(sha256, env, source = 'unknown') {
+async function deleteEventFromRelayBySha256(sha256, env, source = 'unknown', reasonOverride = null) {
   try {
-    const event = await fetchNostrEventBySha256(sha256, ['wss://relay.divine.video'], env);
-    if (!event?.id) {
-      console.log(`[RELAY-ENFORCE] ${sha256} - No relay event found, skipping delete`);
+    const events = await fetchNostrVideoEventsByDTag(sha256, ['wss://relay.divine.video'], env, { limit: 50 });
+    const fallbackEvent = events.length === 0
+      ? await fetchNostrEventBySha256(sha256, ['wss://relay.divine.video'], env)
+      : null;
+    const eventIds = events.length > 0
+      ? events.map((event) => event?.id)
+      : [fallbackEvent?.id];
+
+    if (eventIds.filter(Boolean).length === 0) {
+      console.log(`[RELAY-ENFORCE] ${sha256} - No relay events found for d-tag, skipping delete`);
       return { success: false, reason: 'no_event_found' };
     }
 
-    const result = await callRelayAdminAction(env, {
-      action: 'delete_event',
-      eventId: event.id,
-      reason: `PERMANENT_BAN enforcement (${source})`
-    });
-    console.log(`[RELAY-ENFORCE] ${sha256} - Deleted event ${event.id} from relay`);
-    return { success: true, eventId: event.id, result };
+    const result = await deleteRelayEventIds(
+      eventIds,
+      env,
+      reasonOverride || `PERMANENT_BAN enforcement (${source})`
+    );
+
+    if (result.success) {
+      console.log(`[RELAY-ENFORCE] ${sha256} - Deleted ${result.deletedCount}/${result.attemptedCount} relay event version(s)`);
+    } else {
+      console.warn(`[RELAY-ENFORCE] ${sha256} - Partial relay delete ${result.deletedCount}/${result.attemptedCount}`, result.failures);
+    }
+
+    return result;
   } catch (error) {
     console.error(`[RELAY-ENFORCE] ${sha256} - Failed to delete from relay:`, error.message);
     return { success: false, error: error.message };
@@ -1141,11 +1200,22 @@ export default {
 
       const body = await request.json().catch(() => ({}));
       const moderatorEmail = getAuthenticatedUser(request) || 'admin';
-      const relayResult = await callRelayAdminAction(env, {
-        action: 'delete_event',
-        eventId,
-        reason: body.reason || `Deleted by moderator ${moderatorEmail}`
-      });
+      const reason = body.reason || `Deleted by moderator ${moderatorEmail}`;
+      const relayResult = isValidSha256(body.sha256)
+        ? await deleteEventFromRelayBySha256(body.sha256, env, 'admin-delete-event', reason)
+        : await deleteRelayEventIds([eventId], env, reason);
+
+      if (!relayResult.success) {
+        return new Response(JSON.stringify({
+          success: false,
+          eventId,
+          relayResult,
+          error: relayResult.error || relayResult.reason || 'Failed to delete relay event'
+        }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
 
       return new Response(JSON.stringify({
         success: true,

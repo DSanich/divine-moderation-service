@@ -4,8 +4,106 @@
 // ABOUTME: Nostr relay WebSocket client for fetching event context
 // ABOUTME: Connects to relay.divine.video to get kind 34236 video events by SHA256
 
+async function queryRelay(relayUrl, filter, env = {}, options = {}) {
+  return new Promise((resolve, reject) => {
+    let ws;
+    let settled = false;
+    let subscriptionId = null;
+    const collectAll = Boolean(options.collectAll);
+    const events = [];
+    let firstEvent = null;
+    const timeout = setTimeout(() => {
+      try {
+        if (ws) ws.close();
+      } catch {}
+      finish(new Error('WebSocket timeout'));
+    }, 5000); // 5 second timeout - should be fast with direct query
+
+    function finish(resultOrError) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+
+      if (resultOrError instanceof Error) {
+        reject(resultOrError);
+        return;
+      }
+
+      resolve(resultOrError);
+    }
+
+    try {
+      // Build WebSocket URL with Cloudflare Access headers
+      const headers = {};
+      if (env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
+        headers['CF-Access-Client-Id'] = env.CF_ACCESS_CLIENT_ID;
+        headers['CF-Access-Client-Secret'] = env.CF_ACCESS_CLIENT_SECRET;
+      }
+
+      ws = new WebSocket(relayUrl, { headers });
+
+      ws.addEventListener('open', () => {
+        subscriptionId = Math.random().toString(36).substring(7);
+        const reqMessage = JSON.stringify([
+          'REQ',
+          subscriptionId,
+          filter
+        ]);
+
+        console.log(`[NOSTR] Querying ${relayUrl}: ${JSON.stringify(filter)}`);
+        ws.send(reqMessage);
+      });
+
+      ws.addEventListener('message', (msg) => {
+        try {
+          const data = JSON.parse(msg.data);
+
+          if (data[0] === 'EVENT' && data[1] === subscriptionId) {
+            const event = data[2];
+            if (collectAll) {
+              if (event?.id && !events.some((existing) => existing.id === event.id)) {
+                events.push(event);
+              }
+            } else if (!firstEvent) {
+              firstEvent = event;
+              try {
+                ws.close();
+              } catch {}
+              finish(event);
+            }
+          }
+
+          if (data[0] === 'EOSE' && data[1] === subscriptionId) {
+            try {
+              ws.close();
+            } catch {}
+            finish(collectAll ? events : firstEvent);
+          }
+        } catch (err) {
+          console.error('[NOSTR] Failed to parse message:', err);
+        }
+      });
+
+      ws.addEventListener('error', (err) => {
+        finish(err instanceof Error ? err : new Error('WebSocket error'));
+      });
+
+      ws.addEventListener('close', () => {
+        finish(collectAll ? events : firstEvent);
+      });
+
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error('WebSocket setup failed'));
+    }
+  });
+}
+
 /**
- * Fetch Nostr event for a video SHA256 from relay
+ * Fetch Nostr event for a video SHA256 from relay.
+ * The d-tag in kind 34236 video events contains the SHA256 hash directly.
+ *
  * @param {string} sha256 - Video hash
  * @param {string[]} relays - Relay URLs to query
  * @param {Object} env - Environment variables (for Cloudflare Access tokens)
@@ -14,7 +112,11 @@
 export async function fetchNostrEventBySha256(sha256, relays = ['wss://relay.divine.video'], env = {}) {
   for (const relay of relays) {
     try {
-      const event = await fetchFromRelay(relay, sha256, env);
+      const event = await queryRelay(relay, {
+        kinds: [34236],
+        '#d': [sha256],
+        limit: 1
+      }, env);
       if (event) {
         return event;
       }
@@ -27,90 +129,33 @@ export async function fetchNostrEventBySha256(sha256, relays = ['wss://relay.div
 }
 
 /**
- * Connect to a single relay and query for event using efficient #d tag filter
- * The 'd' tag in kind 34236 events contains the SHA256 hash directly
+ * Fetch all addressable video event versions for a d-tag / SHA256.
+ *
+ * @param {string} dTag - Addressable event d-tag, which for Divine videos is the media SHA256
+ * @param {string[]} relays - Relay URLs to query
+ * @param {Object} env - Environment variables (for Cloudflare Access tokens)
+ * @param {Object} options - Query options
+ * @returns {Promise<Object[]>} Matching video events
  */
-async function fetchFromRelay(relayUrl, sha256, env = {}) {
-  return new Promise((resolve, reject) => {
-    let ws;
-    const timeout = setTimeout(() => {
-      if (ws) ws.close();
-      reject(new Error('WebSocket timeout'));
-    }, 5000); // 5 second timeout - should be fast with direct query
+export async function fetchNostrVideoEventsByDTag(dTag, relays = ['wss://relay.divine.video'], env = {}, options = {}) {
+  const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 50;
 
+  for (const relay of relays) {
     try {
-      // Build WebSocket URL with Cloudflare Access headers
-      const headers = {};
-      if (env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
-        headers['CF-Access-Client-Id'] = env.CF_ACCESS_CLIENT_ID;
-        headers['CF-Access-Client-Secret'] = env.CF_ACCESS_CLIENT_SECRET;
+      const events = await queryRelay(relay, {
+        kinds: [34235, 34236],
+        '#d': [dTag],
+        limit
+      }, env, { collectAll: true });
+      if (events.length > 0) {
+        return events;
       }
-
-      ws = new WebSocket(relayUrl, { headers });
-      let foundEvent = null;
-
-      ws.addEventListener('open', () => {
-        // Query directly by #d tag (the SHA256 hash) - much faster than fetching all events
-        const subscriptionId = Math.random().toString(36).substring(7);
-        const reqMessage = JSON.stringify([
-          'REQ',
-          subscriptionId,
-          {
-            kinds: [34236],
-            '#d': [sha256],
-            limit: 1
-          }
-        ]);
-
-        console.log(`[NOSTR] Querying ${relayUrl} by #d tag for SHA256: ${sha256.substring(0, 16)}...`);
-        ws.send(reqMessage);
-      });
-
-      ws.addEventListener('message', (msg) => {
-        try {
-          const data = JSON.parse(msg.data);
-
-          // Check if this is an EVENT message
-          if (data[0] === 'EVENT' && !foundEvent) {
-            const event = data[2];
-            console.log(`[NOSTR] Found event for SHA256: ${sha256.substring(0, 16)}...`);
-            foundEvent = event;
-            clearTimeout(timeout);
-            ws.close();
-            resolve(event);
-          }
-
-          // Check if this is an EOSE (end of stored events)
-          if (data[0] === 'EOSE') {
-            clearTimeout(timeout);
-            ws.close();
-            if (!foundEvent) {
-              console.log(`[NOSTR] No event found for SHA256: ${sha256.substring(0, 16)}...`);
-              resolve(null);
-            }
-          }
-        } catch (err) {
-          console.error('[NOSTR] Failed to parse message:', err);
-        }
-      });
-
-      ws.addEventListener('error', (err) => {
-        clearTimeout(timeout);
-        reject(err);
-      });
-
-      ws.addEventListener('close', () => {
-        clearTimeout(timeout);
-        if (!foundEvent) {
-          resolve(null);
-        }
-      });
-
     } catch (error) {
-      clearTimeout(timeout);
-      reject(error);
+      console.error(`[NOSTR] Failed to fetch versions from ${relay}:`, error);
     }
-  });
+  }
+
+  return [];
 }
 
 /**

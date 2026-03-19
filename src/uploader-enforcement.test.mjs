@@ -312,4 +312,95 @@ describe('admin uploader enforcement routes', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('deletes all relay event versions when sha256 is provided', async () => {
+    const originalFetch = globalThis.fetch;
+    const originalWebSocket = globalThis.WebSocket;
+    const secondEventId = 'd'.repeat(64);
+    const fetchCalls = [];
+
+    class FakeWebSocket {
+      constructor() {
+        this.listeners = {};
+        this.readyState = 0;
+        queueMicrotask(() => {
+          this.readyState = 1;
+          this.emit('open');
+        });
+      }
+
+      addEventListener(type, handler) {
+        if (!this.listeners[type]) {
+          this.listeners[type] = [];
+        }
+        this.listeners[type].push(handler);
+      }
+
+      send(message) {
+        const [, subscriptionId] = JSON.parse(message);
+        queueMicrotask(() => {
+          this.emit('message', {
+            data: JSON.stringify(['EVENT', subscriptionId, { id: EVENT_ID, kind: 34236, tags: [['d', SHA256]] }])
+          });
+          this.emit('message', {
+            data: JSON.stringify(['EVENT', subscriptionId, { id: secondEventId, kind: 34236, tags: [['d', SHA256]] }])
+          });
+          this.emit('message', { data: JSON.stringify(['EOSE', subscriptionId]) });
+        });
+      }
+
+      close() {
+        this.readyState = 3;
+        queueMicrotask(() => this.emit('close'));
+      }
+
+      emit(type, event = {}) {
+        for (const handler of this.listeners[type] || []) {
+          handler(event);
+        }
+      }
+    }
+
+    globalThis.WebSocket = FakeWebSocket;
+    globalThis.fetch = async (input, init) => {
+      fetchCalls.push({ input: String(input), init });
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/api/event/${EVENT_ID}/delete`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({
+            reason: 'Delete all versions',
+            sha256: SHA256
+          })
+        }),
+        createEnv({
+          RELAY_ADMIN_URL: 'https://relay.admin.divine.video'
+        })
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        success: true,
+        relayResult: {
+          deletedCount: 2,
+          attemptedCount: 2
+        }
+      });
+      expect(fetchCalls).toHaveLength(2);
+      expect(fetchCalls.map((call) => JSON.parse(call.init.body).eventId)).toEqual([EVENT_ID, secondEventId]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      globalThis.WebSocket = originalWebSocket;
+    }
+  });
 });
