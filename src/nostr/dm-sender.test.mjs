@@ -30,6 +30,7 @@ describe('DM Sender - Message Templates', () => {
     expect(message).toContain('contain explicit content');
     expect(message).toContain('reply to this message to appeal');
     expect(message).toContain('divine.video/video/abc123');
+    expect(message).toContain('divine.video/terms');
     expect(message).toContain('about.divine.video/faqs/');
     expect(message).toContain('divine.video/support');
   });
@@ -58,7 +59,7 @@ describe('DM Sender - Message Templates', () => {
 
   it('should use default reason when none provided', () => {
     const message = getMessageForAction('PERMANENT_BAN');
-    expect(message).toContain('community guidelines');
+    expect(message).toContain('content policies');
   });
 
   it('should produce correct report outcome message', () => {
@@ -294,7 +295,7 @@ describe('DM Sender - selectTemplate (Category-Specific)', () => {
   it('should use per-action default reason when no category and no reason (PERMANENT_BAN)', () => {
     const msg = selectTemplate('PERMANENT_BAN', null, null, 'abc123');
 
-    expect(msg).toContain('community guidelines');
+    expect(msg).toContain('content policies');
     expect(msg).toContain('divine.video/video/abc123');
   });
 
@@ -311,7 +312,7 @@ describe('DM Sender - selectTemplate (Category-Specific)', () => {
     const msg = selectTemplate('PERMANENT_BAN', 'Manual moderator action', null, 'abc123');
 
     expect(msg).not.toContain('Manual moderator action');
-    expect(msg).toContain('community guidelines');
+    expect(msg).toContain('content policies');
   });
 
   it('should return null for unknown action', () => {
@@ -366,6 +367,6 @@ describe('DM Sender - selectTemplate (Category-Specific)', () => {
     const msg = selectTemplate('PERMANENT_BAN', null, null, null);
 
     expect(msg).toContain('divine.video/video/unknown');
-    expect(msg).toContain('community guidelines');
+    expect(msg).toContain('content policies');
   });
 });

@@ -27,7 +27,7 @@ const RELAY_TIMEOUT_MS = 5000;
 
 // --- Message Templates ---
 
-const FOOTER_LINKS = 'about.divine.video/faqs/ | divine.video/support';
+const FOOTER_LINKS = 'divine.video/terms | about.divine.video/faqs/ | divine.video/support';
 
 const TEMPLATES = {
   PERMANENT_BAN: (reason, sha256) =>
@@ -79,7 +79,7 @@ const CATEGORY_TEMPLATES = {
  * Falls back to generic reason if no category match.
  * @param {string} action - PERMANENT_BAN, AGE_RESTRICTED, or QUARANTINE
  * @param {string|null} reason - Ignored when category matches. When used as fallback,
- *   must be a sentence completion after "was found to" (e.g., "violate community guidelines").
+ *   must be a sentence completion after "was found to" (e.g., "violate content policies").
  *   Caller-provided freeform reasons are overridden by per-action defaults when no category matches.
  * @param {string|null} categories - JSON string of categories or plain category string
  * @param {string|null} sha256 - Content hash for divine.video link
@@ -104,7 +104,7 @@ export function selectTemplate(action, reason, categories, sha256) {
 
   // Per-action default reasons so AGE_RESTRICTED gets its own fallback text
   const DEFAULT_REASONS = {
-    PERMANENT_BAN: 'violate Divine\'s community guidelines',
+    PERMANENT_BAN: 'violate Divine\'s content policies',
     AGE_RESTRICTED: 'contain material that may not be suitable for all audiences',
     QUARANTINE: '', // QUARANTINE template ignores reason
   };
@@ -112,7 +112,7 @@ export function selectTemplate(action, reason, categories, sha256) {
   // Category reason takes priority. Caller-provided reason is ignored because it may not
   // fit the "was found to {reason}" grammar (e.g., "Manual moderator action").
   // Per-action defaults provide grammatically correct fallbacks.
-  const specificReason = categoryInfo?.reason || DEFAULT_REASONS[action] || 'violate Divine\'s community guidelines';
+  const specificReason = categoryInfo?.reason || DEFAULT_REASONS[action] || 'violate Divine\'s content policies';
   const extra = categoryInfo?.extra || '';
   const contentHash = sha256 || 'unknown';
 
@@ -128,7 +128,7 @@ export function selectTemplate(action, reason, categories, sha256) {
  * @param {string} reason
  * @returns {string|null} Message text or null if action has no template
  */
-export function getMessageForAction(action, reason = 'violate Divine\'s community guidelines', sha256 = 'unknown') {
+export function getMessageForAction(action, reason = 'violate Divine\'s content policies', sha256 = 'unknown') {
   const template = TEMPLATES[action];
   return template ? template(reason, sha256) : null;
 }
