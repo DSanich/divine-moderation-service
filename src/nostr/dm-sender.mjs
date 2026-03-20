@@ -672,6 +672,56 @@ export async function sendReportOutcomeDM(reporterPubkey, sha256, action, env, c
 }
 
 /**
+ * Notify all reporters for a piece of content about the moderation outcome.
+ * Queries user_reports for reporter pubkeys, sends each a report outcome DM.
+ * Never throws. Logs failures per-reporter.
+ *
+ * @param {string} sha256 - Content hash
+ * @param {string} action - Moderation action (PERMANENT_BAN, AGE_RESTRICTED, SAFE, etc.)
+ * @param {Object} env - Environment with BLOSSOM_DB and NOSTR_PRIVATE_KEY
+ * @param {string} logPrefix - Log prefix for context (e.g., "[ADMIN]", "[MODERATION]")
+ * @returns {Promise<{ notified: number, failed: number }>}
+ */
+export async function notifyReporters(sha256, action, env, logPrefix = '[DM]') {
+  if (!env.NOSTR_PRIVATE_KEY) {
+    return { notified: 0, failed: 0 };
+  }
+
+  let reporters;
+  try {
+    const { getReporterPubkeys } = await import('../reports.mjs');
+    reporters = await getReporterPubkeys(env.BLOSSOM_DB, sha256);
+  } catch (err) {
+    console.error(`${logPrefix} Reporter notification lookup failed:`, err.message);
+    return { notified: 0, failed: 0 };
+  }
+
+  if (reporters.length === 0) {
+    return { notified: 0, failed: 0 };
+  }
+
+  let notified = 0;
+  let failed = 0;
+  for (const reporterPubkey of reporters) {
+    try {
+      const result = await sendReportOutcomeDM(reporterPubkey, sha256, action, env, null);
+      if (result.sent) {
+        notified++;
+        console.log(`${logPrefix} Reporter DM sent to ${reporterPubkey.substring(0, 16)}...`);
+      } else {
+        failed++;
+        console.error(`${logPrefix} Reporter DM not sent to ${reporterPubkey.substring(0, 16)}...: ${result.reason}`);
+      }
+    } catch (rptErr) {
+      failed++;
+      console.error(`${logPrefix} Reporter DM failed for ${reporterPubkey.substring(0, 16)}...:`, rptErr.message);
+    }
+  }
+
+  return { notified, failed };
+}
+
+/**
  * Send a free-form moderator reply DM to a user.
  * Used from the admin dashboard for manual responses to appeals.
  * Never throws.

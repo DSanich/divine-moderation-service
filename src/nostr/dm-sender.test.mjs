@@ -14,7 +14,8 @@ import {
   checkRateLimit,
   discoverUserRelays,
   sendModerationDM,
-  selectTemplate
+  selectTemplate,
+  notifyReporters,
 } from './dm-sender.mjs';
 
 // Generate a stable test key in hex format (matching production usage)
@@ -400,5 +401,16 @@ describe('DM Sender - selectTemplate (Category-Specific)', () => {
     expect(msg).not.toContain('divine.video/video/');
     expect(msg).toContain('content policies');
     expect(msg).toContain('divine.video/terms');
+  });
+});
+
+describe('DM Sender - notifyReporters', () => {
+  it('should be a function', () => {
+    expect(typeof notifyReporters).toBe('function');
+  });
+
+  it('should return zeros when NOSTR_PRIVATE_KEY is missing', async () => {
+    const result = await notifyReporters('abc123', 'PERMANENT_BAN', {}, '[TEST]');
+    expect(result).toEqual({ notified: 0, failed: 0 });
   });
 });
