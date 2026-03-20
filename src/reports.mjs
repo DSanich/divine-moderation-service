@@ -62,3 +62,19 @@ export async function getReportCount(db, sha256) {
 
   return row?.cnt ?? 0;
 }
+
+/**
+ * Return all unique reporter pubkeys for a sha256
+ * @param {D1Database} db
+ * @param {string} sha256
+ * @returns {Promise<string[]>}
+ */
+export async function getReporterPubkeys(db, sha256) {
+  const { results } = await db.prepare(`
+    SELECT DISTINCT reporter_pubkey
+    FROM user_reports
+    WHERE sha256 = ?
+  `).bind(sha256).all();
+
+  return results.map(r => r.reporter_pubkey);
+}
