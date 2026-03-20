@@ -25,6 +25,7 @@ import { topicsToLabels, topicsToWeightedFeatures } from './classification/topic
 import { getKVThresholds, setKVThresholds, DEFAULT_THRESHOLDS } from './moderation/classifier.mjs';
 import { isValidSha256, isValidLookupIdentifier, isValidPubkey, parseMaybeJson, getEventTagValue, parseImetaParams, extractShaFromUrl, extractMediaShaFromEvent } from './validation.mjs';
 import { parseVttText } from './moderation/text-classifier.mjs';
+import { notifyAtprotoLabeler } from './atproto/label-webhook.mjs';
 /**
  * NIP-32 label mapping for content categories
  * Maps internal category names to NIP-32/NIP-56 compatible labels
@@ -1394,6 +1395,11 @@ export default {
           console.error(`[ADMIN] DM to creator failed:`, dmErr.message);
         }
       }
+
+      // Notify ATProto labeler of manual override
+      notifyAtprotoLabeler({ sha256, action, scores: updated.scores || {}, reviewed_by: 'admin' }, env).catch(err => {
+        console.error('[ADMIN] ATProto labeler notification failed:', err.message);
+      });
 
       return new Response(JSON.stringify({
         success: true,
@@ -3498,6 +3504,11 @@ async function handleModerationResult(result, env) {
   } catch (err) {
     console.error('[MODERATION] Failed to write moderation labels:', err.message);
   }
+
+  // Notify ATProto labeler service (fire-and-forget)
+  notifyAtprotoLabeler({ sha256, action, scores, reviewed_by: result.reviewed_by }, env).catch(err => {
+    console.error('[MODERATION] ATProto labeler notification failed:', err.message);
+  });
 
   console.log(`[MODERATION] handleModerationResult finished for ${sha256}`);
 }
