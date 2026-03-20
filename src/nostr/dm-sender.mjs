@@ -31,20 +31,29 @@ const FOOTER_LINKS = 'divine.video/terms | about.divine.video/faqs/ | divine.vid
 
 const TEMPLATES = {
   PERMANENT_BAN: (reason, sha256) =>
-    `Your content was removed because it was found to ${reason}.\n\nIf you believe this was a mistake, you can reply to this message to appeal.\n\ndivine.video/video/${sha256}\n${FOOTER_LINKS}`,
+    `Your content was removed because it was found to ${reason}.\n\nIf you believe this was a mistake, you can reply to this message to appeal.\n\n${sha256 ? `divine.video/video/${sha256}\n` : ''}${FOOTER_LINKS}`,
 
   AGE_RESTRICTED: (reason, sha256) =>
-    `Your content has been age-restricted because it was found to ${reason}. It's still available, but only visible to viewers who have confirmed their age.\n\ndivine.video/video/${sha256}\n${FOOTER_LINKS}`,
+    `Your content has been age-restricted because it was found to ${reason}. It's still available, but only visible to viewers who have confirmed their age.\n\n${sha256 ? `divine.video/video/${sha256}\n` : ''}${FOOTER_LINKS}`,
 
   // QUARANTINE intentionally ignores reason — the message is generic per spec
   QUARANTINE: (_reason, sha256) =>
-    `Your content has been temporarily hidden while we review it. A moderator will take a look shortly. If you'd like to provide context, you can reply to this message.\n\ndivine.video/video/${sha256}\n${FOOTER_LINKS}`,
+    `Your content has been temporarily hidden while we review it. A moderator will take a look shortly. If you'd like to provide context, you can reply to this message.\n\n${sha256 ? `divine.video/video/${sha256}\n` : ''}${FOOTER_LINKS}`,
 
   REPORT_OUTCOME: (action) =>
     `Thank you for your report. After review, the reported content has been ${action}. We appreciate your help keeping the community safe.`,
 };
 
+// Per-action default reasons so AGE_RESTRICTED gets its own fallback text
+const DEFAULT_REASONS = {
+  PERMANENT_BAN: 'violate Divine\'s content policies',
+  AGE_RESTRICTED: 'contain material that may not be suitable for all audiences',
+  QUARANTINE: '', // QUARANTINE template ignores reason
+};
+
 // --- Category-Specific Templates ---
+// NOTE: `policy` URLs are retained for future use but intentionally not included
+// in DM text until those pages exist. See 2026-03-19-dm-alignment-design.md.
 
 const CATEGORY_TEMPLATES = {
   nudity: {
@@ -102,24 +111,19 @@ export function selectTemplate(action, reason, categories, sha256) {
     }
   }
 
-  // Per-action default reasons so AGE_RESTRICTED gets its own fallback text
-  const DEFAULT_REASONS = {
-    PERMANENT_BAN: 'violate Divine\'s content policies',
-    AGE_RESTRICTED: 'contain material that may not be suitable for all audiences',
-    QUARANTINE: '', // QUARANTINE template ignores reason
-  };
-
   // Category reason takes priority. Caller-provided reason is ignored because it may not
   // fit the "was found to {reason}" grammar (e.g., "Manual moderator action").
   // Per-action defaults provide grammatically correct fallbacks.
   const specificReason = categoryInfo?.reason || DEFAULT_REASONS[action] || 'violate Divine\'s content policies';
   const extra = categoryInfo?.extra || '';
-  const contentHash = sha256 || 'unknown';
 
   const template = TEMPLATES[action];
   if (!template) return null;
 
-  return template(specificReason, contentHash) + extra;
+  // When sha256 is missing, omit the content link rather than showing a broken URL
+  const body = sha256 ? template(specificReason, sha256) : template(specificReason, null);
+
+  return extra ? body.replace(`\n${FOOTER_LINKS}`, `${extra}\n\n${FOOTER_LINKS}`) : body;
 }
 
 /**
@@ -128,7 +132,7 @@ export function selectTemplate(action, reason, categories, sha256) {
  * @param {string} reason
  * @returns {string|null} Message text or null if action has no template
  */
-export function getMessageForAction(action, reason = 'violate Divine\'s content policies', sha256 = 'unknown') {
+export function getMessageForAction(action, reason = 'violate Divine\'s content policies', sha256 = null) {
   const template = TEMPLATES[action];
   return template ? template(reason, sha256) : null;
 }

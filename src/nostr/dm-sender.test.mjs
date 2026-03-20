@@ -60,6 +60,7 @@ describe('DM Sender - Message Templates', () => {
   it('should use default reason when none provided', () => {
     const message = getMessageForAction('PERMANENT_BAN');
     expect(message).toContain('content policies');
+    expect(message).not.toContain('divine.video/video/');
   });
 
   it('should produce correct report outcome message', () => {
@@ -276,7 +277,7 @@ describe('DM Sender - selectTemplate (Category-Specific)', () => {
     expect(msg).not.toContain('https://divine.video/policies#sexual-content');
   });
 
-  it('should include crisis resources for self_harm category', () => {
+  it('should include crisis resources for self_harm category before footer', () => {
     const msg = selectTemplate('PERMANENT_BAN', null, '{"self_harm": 0.8}', 'abc123');
 
     expect(msg).toContain('self-harm');
@@ -284,6 +285,10 @@ describe('DM Sender - selectTemplate (Category-Specific)', () => {
     expect(msg).toContain('suicide.org/international-suicide-hotlines.html');
     expect(msg).toContain('988');
     expect(msg).not.toContain('https://divine.video/policies#self-harm');
+    // Crisis resources should appear before footer links
+    const crisisIdx = msg.indexOf('helpguide.org');
+    const footerIdx = msg.indexOf('divine.video/terms');
+    expect(crisisIdx).toBeLessThan(footerIdx);
   });
 
   it('should ignore caller-provided reason for QUARANTINE (intentional)', () => {
@@ -369,7 +374,8 @@ describe('DM Sender - selectTemplate (Category-Specific)', () => {
   it('should handle missing sha256 gracefully', () => {
     const msg = selectTemplate('PERMANENT_BAN', null, null, null);
 
-    expect(msg).toContain('divine.video/video/unknown');
+    expect(msg).not.toContain('divine.video/video/');
     expect(msg).toContain('content policies');
+    expect(msg).toContain('divine.video/terms');
   });
 });
