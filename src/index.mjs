@@ -1500,11 +1500,11 @@ export default {
         try {
           // Look up uploaded_by from D1
           const uploaderRow = await env.BLOSSOM_DB.prepare(
-            'SELECT uploaded_by, categories, title FROM moderation_results WHERE sha256 = ?'
+            'SELECT uploaded_by, categories, title, published_at FROM moderation_results WHERE sha256 = ?'
           ).bind(sha256).first();
           if (uploaderRow?.uploaded_by) {
             const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
-            await sendModerationDM(uploaderRow.uploaded_by, sha256, action, reason || 'Manual moderator action', env, null, uploaderRow?.categories, uploaderRow?.title);
+            await sendModerationDM(uploaderRow.uploaded_by, sha256, action, reason || 'Manual moderator action', env, null, uploaderRow?.categories, uploaderRow?.title, uploaderRow?.published_at);
             dmSent = true;
             console.log(`[ADMIN] DM sent to creator ${uploaderRow.uploaded_by.substring(0, 16)}...`);
           }
@@ -3531,9 +3531,9 @@ async function runMigration() {
                     try {
                       const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
                       const metaRow = await env.BLOSSOM_DB.prepare(
-                        'SELECT title FROM moderation_results WHERE sha256 = ?'
+                        'SELECT title, published_at FROM moderation_results WHERE sha256 = ?'
                       ).bind(sha256).first();
-                      await sendModerationDM(uploadedBy, sha256, 'PERMANENT_BAN', moderation.reason, env, null, null, metaRow?.title);
+                      await sendModerationDM(uploadedBy, sha256, 'PERMANENT_BAN', moderation.reason, env, null, null, metaRow?.title, metaRow?.published_at);
                       console.log(`[CRON] DM sent to creator for auto-escalated ${sha256}`);
                     } catch (dmErr) {
                       console.error(`[CRON] DM failed for ${sha256}:`, dmErr.message);
@@ -3642,7 +3642,7 @@ async function handleModerationResult(result, env) {
   if (['PERMANENT_BAN', 'AGE_RESTRICTED'].includes(action) && uploadedBy && env.NOSTR_PRIVATE_KEY) {
     try {
       const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
-      await sendModerationDM(uploadedBy, sha256, action, reason, env, null, result.categories, result.nostrContext?.title);
+      await sendModerationDM(uploadedBy, sha256, action, reason, env, null, result.categories, result.nostrContext?.title, result.nostrContext?.publishedAt);
       console.log(`[MODERATION] ${sha256} - DM notification sent to creator ${uploadedBy.substring(0, 16)}...`);
     } catch (dmErr) {
       console.error(`[MODERATION] ${sha256} - DM notification failed:`, dmErr.message);
