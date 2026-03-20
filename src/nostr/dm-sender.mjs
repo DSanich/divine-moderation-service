@@ -30,21 +30,21 @@ const RELAY_TIMEOUT_MS = 5000;
 const FOOTER_LINKS = 'divine.video/terms | about.divine.video/faqs/ | divine.video/support';
 
 const TEMPLATES = {
-  PERMANENT_BAN: (reason, sha256) =>
-    `Your content was removed because it was found to ${reason}.\n\nIf you believe this was a mistake, you can reply to this message to appeal.\n\n${sha256 ? `divine.video/video/${sha256}\n` : ''}${FOOTER_LINKS}`,
+  PERMANENT_BAN: (reason, sha256, title) =>
+    `${title ? `Your video "${title}" was` : 'Your content was'} removed because it was found to ${reason}.\n\nIf you believe this was a mistake, you can reply to this message to appeal.\n\n${sha256 ? `divine.video/video/${sha256}\n` : ''}${FOOTER_LINKS}`,
 
-  AGE_RESTRICTED: (reason, sha256) =>
-    `Your content has been age-restricted because it was found to ${reason}. It's still available, but only visible to viewers who have confirmed their age.\n\n${sha256 ? `divine.video/video/${sha256}\n` : ''}${FOOTER_LINKS}`,
+  AGE_RESTRICTED: (reason, sha256, title) =>
+    `${title ? `Your video "${title}" has` : 'Your content has'} been age-restricted because it was found to ${reason}. It's still available, but only visible to viewers who have confirmed their age.\n\n${sha256 ? `divine.video/video/${sha256}\n` : ''}${FOOTER_LINKS}`,
 
   // QUARANTINE intentionally ignores reason — the message is generic per spec
-  QUARANTINE: (_reason, sha256) =>
-    `Your content has been temporarily hidden while we review it. A moderator will take a look shortly. If you'd like to provide context, you can reply to this message.\n\n${sha256 ? `divine.video/video/${sha256}\n` : ''}${FOOTER_LINKS}`,
+  QUARANTINE: (_reason, sha256, title) =>
+    `${title ? `Your video "${title}" has` : 'Your content has'} been temporarily hidden while we review it. A moderator will take a look shortly. If you'd like to provide context, you can reply to this message.\n\n${sha256 ? `divine.video/video/${sha256}\n` : ''}${FOOTER_LINKS}`,
 
   REPORT_OUTCOME_ACTION: (outcome, sha256) =>
-    `Thanks for your report. We've reviewed the content and it has been ${outcome}. We appreciate you helping keep the community safe.\n\nIf you have questions, you can reply to this message.\n\ndivine.video/video/${sha256}\n${FOOTER_LINKS}`,
+    `Thanks for your report. We've reviewed the content and it has been ${outcome}. We appreciate you helping keep the community safe.\n\nIf you have questions, you can reply to this message.\n\n${sha256 ? `divine.video/video/${sha256}\n` : ''}${FOOTER_LINKS}`,
 
   REPORT_OUTCOME_NO_ACTION: (sha256) =>
-    `Thanks for your report. We've reviewed the content and no action was taken at this time. We appreciate you helping keep the community safe.\n\nIf you disagree with this outcome, you can reply to this message.\n\ndivine.video/video/${sha256}\n${FOOTER_LINKS}`,
+    `Thanks for your report. We've reviewed the content and no action was taken at this time. We appreciate you helping keep the community safe.\n\nIf you disagree with this outcome, you can reply to this message.\n\n${sha256 ? `divine.video/video/${sha256}\n` : ''}${FOOTER_LINKS}`,
 };
 
 // Per-action default reasons so AGE_RESTRICTED gets its own fallback text
@@ -95,9 +95,10 @@ const CATEGORY_TEMPLATES = {
  *   Caller-provided freeform reasons are overridden by per-action defaults when no category matches.
  * @param {string|null} categories - JSON string of categories or plain category string
  * @param {string|null} sha256 - Content hash for divine.video link
+ * @param {string|null} title - Content title for identification (e.g., "My cool video")
  * @returns {string|null} Message text or null if action has no template
  */
-export function selectTemplate(action, reason, categories, sha256) {
+export function selectTemplate(action, reason, categories, sha256, title = null) {
   let categoryInfo = null;
   if (categories && typeof categories === 'string') {
     try {
@@ -124,7 +125,7 @@ export function selectTemplate(action, reason, categories, sha256) {
   if (!template) return null;
 
   // When sha256 is missing, omit the content link rather than showing a broken URL
-  const body = sha256 ? template(specificReason, sha256) : template(specificReason, null);
+  const body = sha256 ? template(specificReason, sha256, title) : template(specificReason, null, title);
 
   return extra ? body.replace(`\n${FOOTER_LINKS}`, `${extra}\n\n${FOOTER_LINKS}`) : body;
 }
@@ -135,9 +136,9 @@ export function selectTemplate(action, reason, categories, sha256) {
  * @param {string} reason
  * @returns {string|null} Message text or null if action has no template
  */
-export function getMessageForAction(action, reason = 'violate Divine\'s content policies', sha256 = null) {
+export function getMessageForAction(action, reason = 'violate Divine\'s content policies', sha256 = null, title = null) {
   const template = TEMPLATES[action];
-  return template ? template(reason, sha256) : null;
+  return template ? template(reason, sha256, title) : null;
 }
 
 /**
@@ -509,7 +510,7 @@ function publishToSingleRelay(event, relayUrl, env) {
  * @param {string} [categories] - JSON string of categories from moderation result
  * @returns {Promise<{ sent: boolean, reason?: string }>}
  */
-export async function sendModerationDM(recipientPubkey, sha256, action, reason, env, ctx, categories) {
+export async function sendModerationDM(recipientPubkey, sha256, action, reason, env, ctx, categories, title = null) {
   try {
     // Validate inputs
     if (!recipientPubkey || typeof recipientPubkey !== 'string') {
@@ -529,7 +530,7 @@ export async function sendModerationDM(recipientPubkey, sha256, action, reason, 
     }
 
     // Build message: prefer category-specific template, fall back to generic
-    const message = selectTemplate(action, reason, categories, sha256);
+    const message = selectTemplate(action, reason, categories, sha256, title);
     if (!message) {
       return { sent: false, reason: `Unknown action: ${action}` };
     }

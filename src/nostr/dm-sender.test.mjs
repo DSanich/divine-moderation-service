@@ -45,6 +45,26 @@ describe('DM Sender - Message Templates', () => {
     expect(message).toContain('divine.video/video/def456');
   });
 
+  it('should include title in PERMANENT_BAN when provided', () => {
+    const message = getMessageForAction('PERMANENT_BAN', 'violate content policies', 'abc123', 'My Cool Video');
+
+    expect(message).toContain('Your video "My Cool Video" was removed');
+    expect(message).not.toContain('Your content was');
+  });
+
+  it('should include title in AGE_RESTRICTED when provided', () => {
+    const message = getMessageForAction('AGE_RESTRICTED', 'contain mature themes', 'def456', 'Beach Day');
+
+    expect(message).toContain('Your video "Beach Day" has been age-restricted');
+    expect(message).not.toContain('Your content has');
+  });
+
+  it('should fall back to "your content" when title is null', () => {
+    const message = getMessageForAction('PERMANENT_BAN', 'violate content policies', 'abc123', null);
+
+    expect(message).toContain('Your content was removed');
+  });
+
   it('should produce correct message for QUARANTINE', () => {
     const message = getMessageForAction('QUARANTINE', 'potential violation', 'ghi789');
 
@@ -401,6 +421,20 @@ describe('DM Sender - selectTemplate (Category-Specific)', () => {
     expect(msg).not.toContain('divine.video/video/');
     expect(msg).toContain('content policies');
     expect(msg).toContain('divine.video/terms');
+  });
+
+  it('should include title in template when provided', () => {
+    const msg = selectTemplate('PERMANENT_BAN', null, '{"nudity": 0.95}', 'abc123', 'Sunset Clip');
+
+    expect(msg).toContain('Your video "Sunset Clip" was removed');
+    expect(msg).not.toContain('Your content was');
+    expect(msg).toContain('sexual or nude content');
+  });
+
+  it('should fall back to "your content" when title is null', () => {
+    const msg = selectTemplate('PERMANENT_BAN', null, '{"nudity": 0.95}', 'abc123', null);
+
+    expect(msg).toContain('Your content was removed');
   });
 });
 
