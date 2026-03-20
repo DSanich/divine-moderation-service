@@ -110,3 +110,5 @@ crons = ["*/5 * * * *"]
 # RELAY_ADMIN_URL - Funnelcake admin API endpoint for cache purge / event deletion
 # REALITY_DEFENDER_API_KEY - Reality Defender API key for secondary AI verification (api.prd.realitydefender.xyz)
 # ADMIN_PASSWORD_HASH - SHA-256 hash of admin dashboard password
+# ATPROTO_LABELER_WEBHOOK_URL - URL of the divine-labeler webhook endpoint (https://labels.divine.video/webhook/moderation-result)
+# ATPROTO_LABELER_TOKEN - Bearer token for authenticating to the labeler webhook
