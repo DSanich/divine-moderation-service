@@ -1531,7 +1531,6 @@ export default {
       // Notify reporters who filed reports on this content (non-blocking)
       const { notifyReporters } = await import('./nostr/dm-sender.mjs');
       notifyReporters(sha256, action, env, '[ADMIN]');
-
       // Notify ATProto labeler of manual override
       notifyAtprotoLabeler({ sha256, action, scores: updated.scores || {}, reviewed_by: 'admin' }, env).catch(err => {
         console.error('[ADMIN] ATProto labeler notification failed:', err.message);
