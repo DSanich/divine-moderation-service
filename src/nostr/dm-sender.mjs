@@ -40,8 +40,11 @@ const TEMPLATES = {
   QUARANTINE: (_reason, sha256) =>
     `Your content has been temporarily hidden while we review it. A moderator will take a look shortly. If you'd like to provide context, you can reply to this message.\n\n${sha256 ? `divine.video/video/${sha256}\n` : ''}${FOOTER_LINKS}`,
 
-  REPORT_OUTCOME: (action) =>
-    `Thank you for your report. After review, the reported content has been ${action}. We appreciate your help keeping the community safe.`,
+  REPORT_OUTCOME_ACTION: (outcome, sha256) =>
+    `Thanks for your report. We've reviewed the content and it has been ${outcome}. We appreciate you helping keep the community safe.\n\nIf you have questions, you can reply to this message.\n\ndivine.video/video/${sha256}\n${FOOTER_LINKS}`,
+
+  REPORT_OUTCOME_NO_ACTION: (sha256) =>
+    `Thanks for your report. We've reviewed the content and no action was taken at this time. We appreciate you helping keep the community safe.\n\nIf you disagree with this outcome, you can reply to this message.\n\ndivine.video/video/${sha256}\n${FOOTER_LINKS}`,
 };
 
 // Per-action default reasons so AGE_RESTRICTED gets its own fallback text
@@ -139,11 +142,23 @@ export function getMessageForAction(action, reason = 'violate Divine\'s content 
 
 /**
  * Get report outcome message text.
- * @param {string} action - The action taken
+ * @param {string} action - The moderation action (PERMANENT_BAN, AGE_RESTRICTED, SAFE, DISMISS, etc.)
+ * @param {string} sha256 - Content hash for divine.video link
  * @returns {string}
  */
-export function getReportOutcomeMessage(action) {
-  return TEMPLATES.REPORT_OUTCOME(action);
+export function getReportOutcomeMessage(action, sha256 = 'unknown') {
+  const ACTION_OUTCOMES = {
+    PERMANENT_BAN: 'removed',
+    AGE_RESTRICTED: 'age-restricted',
+  };
+
+  const outcome = ACTION_OUTCOMES[action];
+  const contentHash = sha256 || 'unknown';
+
+  if (outcome) {
+    return TEMPLATES.REPORT_OUTCOME_ACTION(outcome, contentHash);
+  }
+  return TEMPLATES.REPORT_OUTCOME_NO_ACTION(contentHash);
 }
 
 // --- Key Management ---
@@ -583,13 +598,13 @@ export async function sendModerationDM(recipientPubkey, sha256, action, reason, 
  * Never throws.
  *
  * @param {string} reporterPubkey - Hex pubkey of the reporter
- * @param {string} sha256 - Video hash that was reported
- * @param {string} outcome - Human-readable outcome (e.g., "removed", "age-restricted")
+ * @param {string} sha256 - Content hash that was reported
+ * @param {string} action - Moderation action (PERMANENT_BAN, AGE_RESTRICTED, SAFE, etc.)
  * @param {Object} env
  * @param {Object} ctx
  * @returns {Promise<{ sent: boolean, reason?: string }>}
  */
-export async function sendReportOutcomeDM(reporterPubkey, sha256, outcome, env, ctx) {
+export async function sendReportOutcomeDM(reporterPubkey, sha256, action, env, ctx) {
   try {
     if (!reporterPubkey || typeof reporterPubkey !== 'string') {
       return { sent: false, reason: 'Invalid reporter pubkey' };
@@ -603,7 +618,7 @@ export async function sendReportOutcomeDM(reporterPubkey, sha256, outcome, env, 
       return { sent: false, reason: err.message };
     }
 
-    const message = TEMPLATES.REPORT_OUTCOME(outcome || 'reviewed');
+    const message = getReportOutcomeMessage(action, sha256);
 
     const withinLimit = await checkRateLimit(reporterPubkey, env);
     if (!withinLimit) {

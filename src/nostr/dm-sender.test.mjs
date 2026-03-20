@@ -63,12 +63,35 @@ describe('DM Sender - Message Templates', () => {
     expect(message).not.toContain('divine.video/video/');
   });
 
-  it('should produce correct report outcome message', () => {
-    const message = getReportOutcomeMessage('removed');
+  it('should produce correct report outcome message for removal', () => {
+    const message = getReportOutcomeMessage('PERMANENT_BAN', 'abc123');
 
-    expect(message).toContain('Thank you');
-    expect(message).toContain('removed');
-    expect(message).toContain('community safe');
+    expect(message).toContain('Thanks for your report');
+    expect(message).toContain('has been removed');
+    expect(message).toContain('divine.video/video/abc123');
+    expect(message).toContain('divine.video/terms');
+    expect(message).toContain('reply to this message');
+  });
+
+  it('should produce correct report outcome message for age restriction', () => {
+    const message = getReportOutcomeMessage('AGE_RESTRICTED', 'def456');
+
+    expect(message).toContain('has been age-restricted');
+    expect(message).toContain('divine.video/video/def456');
+  });
+
+  it('should produce correct report outcome message for no action', () => {
+    const message = getReportOutcomeMessage('SAFE', 'ghi789');
+
+    expect(message).toContain('no action was taken');
+    expect(message).toContain('disagree with this outcome');
+    expect(message).toContain('divine.video/video/ghi789');
+  });
+
+  it('should treat dismiss as no action', () => {
+    const message = getReportOutcomeMessage('DISMISS', 'jkl012');
+
+    expect(message).toContain('no action was taken');
   });
 });
 
