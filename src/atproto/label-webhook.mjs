@@ -24,6 +24,7 @@ export function buildLabelWebhookPayload(result) {
     labels,
     reviewed_by: result.reviewed_by || null,
     timestamp: new Date().toISOString(),
+    nostr_event_id: result.nostr_event_id || result.eventId || null,
   };
 }
 
