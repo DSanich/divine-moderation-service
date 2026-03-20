@@ -27,15 +27,18 @@ const RELAY_TIMEOUT_MS = 5000;
 
 // --- Message Templates ---
 
+const FOOTER_LINKS = 'about.divine.video/faqs/ | divine.video/support';
+
 const TEMPLATES = {
-  PERMANENT_BAN: (reason) =>
-    `Your video has been removed for violating Divine's content policies. Reason: ${reason}. If you believe this is an error, you can reply to this message to appeal.`,
+  PERMANENT_BAN: (reason, sha256) =>
+    `Your content was removed because it was found to ${reason}.\n\nIf you believe this was a mistake, you can reply to this message to appeal.\n\ndivine.video/video/${sha256}\n${FOOTER_LINKS}`,
 
-  AGE_RESTRICTED: (reason) =>
-    `Your video has been age-restricted: ${reason}. It remains available but will only be shown to users who have confirmed their age.`,
+  AGE_RESTRICTED: (reason, sha256) =>
+    `Your content has been age-restricted because it was found to ${reason}. It's still available, but only visible to viewers who have confirmed their age.\n\ndivine.video/video/${sha256}\n${FOOTER_LINKS}`,
 
-  QUARANTINE: (reason) =>
-    `Your video has been temporarily hidden pending manual review. Reason: ${reason}. A moderator will review it shortly. You can reply to this message with any context.`,
+  // QUARANTINE intentionally ignores reason — the message is generic per spec
+  QUARANTINE: (_reason, sha256) =>
+    `Your content has been temporarily hidden while we review it. A moderator will take a look shortly. If you'd like to provide context, you can reply to this message.\n\ndivine.video/video/${sha256}\n${FOOTER_LINKS}`,
 
   REPORT_OUTCOME: (action) =>
     `Thank you for your report. After review, the reported content has been ${action}. We appreciate your help keeping the community safe.`,
@@ -45,28 +48,28 @@ const TEMPLATES = {
 
 const CATEGORY_TEMPLATES = {
   nudity: {
-    reason: 'sexual or nude content',
+    reason: 'contain sexual or nude content',
     policy: 'https://divine.video/policies#sexual-content',
   },
   ai_generated: {
-    reason: 'AI-generated content without disclosure',
+    reason: 'contain AI-generated content without disclosure',
     policy: 'https://divine.video/policies#ai-content',
   },
   deepfake: {
-    reason: 'deepfake or manipulated media',
+    reason: 'contain deepfake or manipulated media',
     policy: 'https://divine.video/policies#manipulated-media',
   },
   offensive: {
-    reason: 'offensive or hateful content',
+    reason: 'contain offensive or hateful content',
     policy: 'https://divine.video/policies#hate-speech',
   },
   self_harm: {
-    reason: 'content depicting self-harm',
+    reason: 'depict self-harm',
     policy: 'https://divine.video/policies#self-harm',
     extra: '\n\nIf you or someone you know is struggling, please reach out: 988 Suicide & Crisis Lifeline (call or text 988).',
   },
   scam: {
-    reason: 'fraudulent or scam content',
+    reason: 'contain fraudulent or scam content',
     policy: 'https://divine.video/policies#fraud',
   },
 };
@@ -75,11 +78,14 @@ const CATEGORY_TEMPLATES = {
  * Select a category-specific template for a moderation action.
  * Falls back to generic reason if no category match.
  * @param {string} action - PERMANENT_BAN, AGE_RESTRICTED, or QUARANTINE
- * @param {string|null} reason - Human-readable reason
+ * @param {string|null} reason - Ignored when category matches. When used as fallback,
+ *   must be a sentence completion after "was found to" (e.g., "violate community guidelines").
+ *   Caller-provided freeform reasons are overridden by per-action defaults when no category matches.
  * @param {string|null} categories - JSON string of categories or plain category string
+ * @param {string|null} sha256 - Content hash for divine.video link
  * @returns {string|null} Message text or null if action has no template
  */
-export function selectTemplate(action, reason, categories) {
+export function selectTemplate(action, reason, categories, sha256) {
   let categoryInfo = null;
   if (categories && typeof categories === 'string') {
     try {
@@ -96,17 +102,24 @@ export function selectTemplate(action, reason, categories) {
     }
   }
 
-  const specificReason = categoryInfo?.reason || reason || 'content policy violation';
-  const policyLink = categoryInfo?.policy || 'https://divine.video/policies';
-  const extra = categoryInfo?.extra || '';
-
-  const templates = {
-    PERMANENT_BAN: `Your video has been removed for: ${specificReason}.\n\nPolicy: ${policyLink}\n\nIf you believe this is an error, reply to this message to appeal.${extra}`,
-    AGE_RESTRICTED: `Your video has been age-restricted: ${specificReason}. It remains available but will only be shown to users who have confirmed their age.\n\nPolicy: ${policyLink}`,
-    QUARANTINE: `Your video has been temporarily hidden pending review: ${specificReason}. A moderator will review it shortly — you can reply with context.\n\nPolicy: ${policyLink}`,
+  // Per-action default reasons so AGE_RESTRICTED gets its own fallback text
+  const DEFAULT_REASONS = {
+    PERMANENT_BAN: 'violate Divine\'s community guidelines',
+    AGE_RESTRICTED: 'contain material that may not be suitable for all audiences',
+    QUARANTINE: '', // QUARANTINE template ignores reason
   };
 
-  return templates[action] || null;
+  // Category reason takes priority. Caller-provided reason is ignored because it may not
+  // fit the "was found to {reason}" grammar (e.g., "Manual moderator action").
+  // Per-action defaults provide grammatically correct fallbacks.
+  const specificReason = categoryInfo?.reason || DEFAULT_REASONS[action] || 'violate Divine\'s community guidelines';
+  const extra = categoryInfo?.extra || '';
+  const contentHash = sha256 || 'unknown';
+
+  const template = TEMPLATES[action];
+  if (!template) return null;
+
+  return template(specificReason, contentHash) + extra;
 }
 
 /**
@@ -115,9 +128,9 @@ export function selectTemplate(action, reason, categories) {
  * @param {string} reason
  * @returns {string|null} Message text or null if action has no template
  */
-export function getMessageForAction(action, reason = 'content policy violation') {
+export function getMessageForAction(action, reason = 'violate Divine\'s community guidelines', sha256 = 'unknown') {
   const template = TEMPLATES[action];
-  return template ? template(reason) : null;
+  return template ? template(reason, sha256) : null;
 }
 
 /**
@@ -497,7 +510,7 @@ export async function sendModerationDM(recipientPubkey, sha256, action, reason, 
     }
 
     // Build message: prefer category-specific template, fall back to generic
-    const message = selectTemplate(action, reason, categories);
+    const message = selectTemplate(action, reason, categories, sha256);
     if (!message) {
       return { sent: false, reason: `Unknown action: ${action}` };
     }
