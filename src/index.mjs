@@ -22,6 +22,8 @@ import { initUploaderEnforcementTable, getUploaderEnforcement, setUploaderEnforc
 import { formatForStorage, formatForGorse, formatForFunnelcake } from './classification/pipeline.mjs';
 import { topicsToLabels, topicsToWeightedFeatures } from './classification/topic-extractor.mjs';
 import { getKVThresholds, setKVThresholds, DEFAULT_THRESHOLDS } from './moderation/classifier.mjs';
+import { parseVttText } from './moderation/text-classifier.mjs';
+import { notifyAtprotoLabeler } from './atproto/label-webhook.mjs';
 /**
  * NIP-32 label mapping for content categories
  * Maps internal category names to NIP-32/NIP-56 compatible labels
@@ -375,6 +377,44 @@ function getRelayAdminHeaders(env) {
   }
 
   return headers;
+}
+
+function getTranscriptSourceUrl(sha256, env) {
+  return `https://${env.CDN_DOMAIN || 'media.divine.video'}/${sha256}.vtt`;
+}
+
+function getAdminTranscriptProxyUrl(sha256) {
+  return `/admin/transcript/${sha256}.vtt`;
+}
+
+async function fetchTranscriptAsset(sha256, env) {
+  const sourceUrl = getTranscriptSourceUrl(sha256, env);
+  const response = await fetch(sourceUrl);
+
+  if (response.status === 404) {
+    return {
+      found: false,
+      sha256,
+      sourceUrl,
+      subtitleUrl: getAdminTranscriptProxyUrl(sha256),
+      vttContent: null,
+      transcriptText: ''
+    };
+  }
+
+  if (!response.ok) {
+    throw new Error(`Transcript fetch failed with HTTP ${response.status}`);
+  }
+
+  const vttContent = await response.text();
+  return {
+    found: true,
+    sha256,
+    sourceUrl,
+    subtitleUrl: getAdminTranscriptProxyUrl(sha256),
+    vttContent,
+    transcriptText: parseVttText(vttContent).trim()
+  };
 }
 
 async function callRelayAdminAction(env, payload) {
@@ -1496,6 +1536,11 @@ export default {
         }
       }
 
+      // Notify ATProto labeler of manual override
+      notifyAtprotoLabeler({ sha256, action, scores: updated.scores || {}, reviewed_by: 'admin' }, env).catch(err => {
+        console.error('[ADMIN] ATProto labeler notification failed:', err.message);
+      });
+
       return new Response(JSON.stringify({
         success: true,
         sha256,
@@ -1736,6 +1781,52 @@ export default {
       }
     }
 
+    if (url.pathname.startsWith('/admin/api/transcript/')) {
+      const authError = await requireAuth(request, env);
+      if (authError) {
+        return authError;
+      }
+
+      const sha256 = url.pathname.split('/')[4];
+      if (!sha256 || sha256.length !== 64) {
+        return new Response(JSON.stringify({ error: 'Invalid sha256 hash' }), {
+          status: 400,
+          headers: JSON_HEADERS
+        });
+      }
+
+      try {
+        const transcript = await fetchTranscriptAsset(sha256, env);
+        if (!transcript.found) {
+          return new Response(JSON.stringify({
+            sha256,
+            found: false,
+            subtitleUrl: transcript.subtitleUrl,
+            sourceUrl: transcript.sourceUrl
+          }), {
+            status: 404,
+            headers: JSON_HEADERS
+          });
+        }
+
+        return new Response(JSON.stringify({
+          sha256,
+          found: true,
+          subtitleUrl: transcript.subtitleUrl,
+          sourceUrl: transcript.sourceUrl,
+          transcriptText: transcript.transcriptText
+        }), {
+          headers: JSON_HEADERS
+        });
+      } catch (error) {
+        console.error(`[ADMIN] Error fetching transcript for ${sha256}:`, error);
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: JSON_HEADERS
+        });
+      }
+    }
+
     // Get current moderation thresholds (KV overrides + defaults)
     if (url.pathname === '/admin/api/thresholds' && request.method === 'GET') {
       const authError = await requireAuth(request, env);
@@ -1970,6 +2061,35 @@ export default {
           status: 502,
           headers: { 'Content-Type': 'application/json' }
         });
+      }
+    }
+
+    if (url.pathname.startsWith('/admin/transcript/')) {
+      const authError = await requireAuth(request, env);
+      if (authError) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+
+      const sha256 = url.pathname.split('/')[3].replace('.vtt', '');
+      if (!isValidSha256(sha256)) {
+        return new Response('Invalid sha256 hash', { status: 400 });
+      }
+
+      try {
+        const transcript = await fetchTranscriptAsset(sha256, env);
+        if (!transcript.found || !transcript.vttContent) {
+          return new Response('Transcript not found', { status: 404 });
+        }
+
+        return new Response(transcript.vttContent, {
+          headers: {
+            'Content-Type': 'text/vtt; charset=utf-8',
+            'Cache-Control': 'private, no-store'
+          }
+        });
+      } catch (error) {
+        console.error(`[ADMIN] Transcript proxy error for ${sha256}:`, error);
+        return new Response('Failed to fetch transcript', { status: 502 });
       }
     }
 
@@ -3524,6 +3644,11 @@ async function handleModerationResult(result, env) {
   } catch (err) {
     console.error('[MODERATION] Failed to write moderation labels:', err.message);
   }
+
+  // Notify ATProto labeler service (fire-and-forget)
+  notifyAtprotoLabeler({ sha256, action, scores, reviewed_by: result.reviewed_by }, env).catch(err => {
+    console.error('[MODERATION] ATProto labeler notification failed:', err.message);
+  });
 
   console.log(`[MODERATION] handleModerationResult finished for ${sha256}`);
 }
