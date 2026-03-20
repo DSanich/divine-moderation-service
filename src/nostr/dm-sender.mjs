@@ -66,7 +66,7 @@ const CATEGORY_TEMPLATES = {
   self_harm: {
     reason: 'depict self-harm',
     policy: 'https://divine.video/policies#self-harm',
-    extra: '\n\nIf you or someone you know is struggling, please reach out: 988 Suicide & Crisis Lifeline (call or text 988).',
+    extra: '\n\nIf you or someone you know is struggling, please reach out. International crisis lines: helpguide.org/find-help | suicide.org/international-suicide-hotlines.html — In the US/Canada, call or text 988.',
   },
   scam: {
     reason: 'contain fraudulent or scam content',

@@ -276,10 +276,12 @@ describe('DM Sender - selectTemplate (Category-Specific)', () => {
     expect(msg).not.toContain('https://divine.video/policies#sexual-content');
   });
 
-  it('should include crisis hotline for self_harm category', () => {
+  it('should include crisis resources for self_harm category', () => {
     const msg = selectTemplate('PERMANENT_BAN', null, '{"self_harm": 0.8}', 'abc123');
 
     expect(msg).toContain('self-harm');
+    expect(msg).toContain('helpguide.org/find-help');
+    expect(msg).toContain('suicide.org/international-suicide-hotlines.html');
     expect(msg).toContain('988');
     expect(msg).not.toContain('https://divine.video/policies#self-harm');
   });
@@ -356,10 +358,11 @@ describe('DM Sender - selectTemplate (Category-Specific)', () => {
     expect(msg).toContain('divine.video/video/ghi789');
   });
 
-  it('should append crisis hotline to AGE_RESTRICTED for self_harm', () => {
+  it('should append crisis resources to AGE_RESTRICTED for self_harm', () => {
     const msg = selectTemplate('AGE_RESTRICTED', null, '{"self_harm": 0.8}', 'abc123');
 
     expect(msg).toContain('age-restricted');
+    expect(msg).toContain('helpguide.org/find-help');
     expect(msg).toContain('988');
   });
 
