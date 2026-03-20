@@ -84,3 +84,50 @@ export async function writeModerationLabels(sha256, classification, env, source)
     console.error('[LABELS] ClickHouse write error:', err.message);
   }
 }
+
+/**
+ * Write an inbound ATProto label to ClickHouse moderation_labels table.
+ *
+ * @param {string} sha256 - Content hash
+ * @param {Object} labelData
+ * @param {string} labelData.labeler_did - Source labeler DID
+ * @param {string} labelData.val - ATProto label value
+ * @param {boolean} labelData.neg - Is this a negation
+ * @param {Object} env - Worker environment
+ */
+export async function writeInboundAtprotoLabel(sha256, labelData, env) {
+  if (!env.CLICKHOUSE_URL || !env.CLICKHOUSE_PASSWORD) return;
+
+  const row = {
+    sha256,
+    label: normalizeLabel(labelData.val),
+    source_id: labelData.labeler_did,
+    source_owner: 'atproto',
+    source_type: 'external-labeler',
+    transport: 'atproto-firehose',
+    confidence: 1.0,
+    operation: labelData.neg ? 'clear' : 'apply',
+    review_state: 'external',
+    action: '',
+    updated_at: new Date().toISOString(),
+  };
+
+  const query = 'INSERT INTO moderation_labels FORMAT JSONEachRow';
+
+  try {
+    const resp = await fetch(`${env.CLICKHOUSE_URL}/?database=default&query=${encodeURIComponent(query)}`, {
+      method: 'POST',
+      headers: {
+        'X-ClickHouse-User': env.CLICKHOUSE_USER || 'default',
+        'X-ClickHouse-Key': env.CLICKHOUSE_PASSWORD,
+        'Content-Type': 'application/x-ndjson',
+      },
+      body: JSON.stringify(row),
+    });
+    if (!resp.ok) {
+      console.error('[LABELS] ClickHouse inbound write failed:', resp.status, await resp.text());
+    }
+  } catch (err) {
+    console.error('[LABELS] ClickHouse inbound write error:', err.message);
+  }
+}
