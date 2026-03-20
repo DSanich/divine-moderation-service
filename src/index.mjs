@@ -1572,6 +1572,29 @@ export default {
       });
     }
 
+    // GET /admin/api/inbound-labels — list pending inbound ATProto labels
+    if (url.pathname === '/admin/api/inbound-labels' && request.method === 'GET') {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+      // Query pending inbound labels from bridge DB via REST
+      // For MVP: query the bridge DB's inbound_labels table via its API
+      // This will be wired once the Rust labeler has an HTTP API
+      return new Response(JSON.stringify({ labels: [], message: 'Pending bridge DB integration' }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // POST /admin/api/inbound-labels/:id/approve — approve an inbound label for Nostr propagation
+    if (url.pathname.match(/^\/admin\/api\/inbound-labels\/\d+\/approve$/) && request.method === 'POST') {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+      // For MVP: stub - will call bridge DB API to update review_state
+      // Then publish NIP-32 label to Nostr via existing publishLabelEvent()
+      return new Response(JSON.stringify({ status: 'approved', message: 'Pending bridge DB integration' }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Get Nostr event context for a video
     if (url.pathname.startsWith('/admin/api/nostr-context/')) {
       // Check authentication
