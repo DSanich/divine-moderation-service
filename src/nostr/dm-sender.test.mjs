@@ -459,4 +459,14 @@ describe('DM Sender - notifyReporters', () => {
     const result = await notifyReporters('abc123', 'PERMANENT_BAN', {}, '[TEST]');
     expect(result).toEqual({ notified: 0, failed: 0 });
   });
+
+  it('should skip notification for QUARANTINE (intermediate state)', async () => {
+    const result = await notifyReporters('abc123', 'QUARANTINE', { NOSTR_PRIVATE_KEY: testHex }, '[TEST]');
+    expect(result).toEqual({ notified: 0, failed: 0 });
+  });
+
+  it('should skip notification for REVIEW (intermediate state)', async () => {
+    const result = await notifyReporters('abc123', 'REVIEW', { NOSTR_PRIVATE_KEY: testHex }, '[TEST]');
+    expect(result).toEqual({ notified: 0, failed: 0 });
+  });
 });

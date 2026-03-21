@@ -706,6 +706,14 @@ export async function notifyReporters(sha256, action, env, logPrefix = '[DM]') {
     return { notified: 0, failed: 0 };
   }
 
+  // Don't notify reporters for intermediate states. QUARANTINE and REVIEW are
+  // pending human review -- the reporter should hear back when it resolves to
+  // a final outcome (ban, age-restrict, or no-action).
+  const INTERMEDIATE_ACTIONS = ['QUARANTINE', 'REVIEW'];
+  if (INTERMEDIATE_ACTIONS.includes(action)) {
+    return { notified: 0, failed: 0 };
+  }
+
   let reporters;
   try {
     const { getReporterPubkeys } = await import('../reports.mjs');
