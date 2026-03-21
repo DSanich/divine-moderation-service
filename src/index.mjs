@@ -49,7 +49,7 @@ const CATEGORY_TO_LABEL = {
 const ADMIN_HOSTNAME = 'moderation.admin.divine.video';
 const API_HOSTNAME = 'moderation-api.divine.video';
 const DEFAULT_RELAY_ADMIN_URL = 'https://relay.admin.divine.video';
-const JSON_HEADERS = { 'Content-Type': 'application/json' };
+const JSON_HEADERS = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 /**
@@ -841,7 +841,7 @@ export default {
         hasMore,
         nextOffset: hasMore ? offset + limit : null
       }), {
-        headers: { 'Content-Type': 'application/json' }
+        headers: JSON_HEADERS
       });
     }
 
@@ -1024,7 +1024,7 @@ export default {
           limit,
           hasMore: offset + limit < (countResult?.total || 0)
         }), {
-          headers: { 'Content-Type': 'application/json' }
+          headers: JSON_HEADERS
         });
       } catch (error) {
         console.error('[ADMIN] Failed to fetch untriaged videos:', error);
