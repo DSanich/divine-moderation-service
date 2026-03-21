@@ -24,27 +24,32 @@ const testPubkey = getPublicKey(testSecretKey);
 
 describe('DM Sender - Message Templates', () => {
   it('should produce correct message for PERMANENT_BAN', () => {
-    const message = getMessageForAction('PERMANENT_BAN', 'explicit content');
+    const message = getMessageForAction('PERMANENT_BAN', 'contain explicit content', 'abc123');
 
-    expect(message).toContain('removed');
-    expect(message).toContain('explicit content');
-    expect(message).toContain('appeal');
+    expect(message).toContain('Your content was removed');
+    expect(message).toContain('contain explicit content');
+    expect(message).toContain('reply to this message to appeal');
+    expect(message).toContain('divine.video/video/abc123');
+    expect(message).toContain('divine.video/terms');
+    expect(message).toContain('about.divine.video/faqs/');
+    expect(message).toContain('divine.video/support');
   });
 
   it('should produce correct message for AGE_RESTRICTED', () => {
-    const message = getMessageForAction('AGE_RESTRICTED', 'mature themes');
+    const message = getMessageForAction('AGE_RESTRICTED', 'contain mature themes', 'def456');
 
     expect(message).toContain('age-restricted');
-    expect(message).toContain('mature themes');
+    expect(message).toContain('contain mature themes');
     expect(message).toContain('confirmed their age');
+    expect(message).toContain('divine.video/video/def456');
   });
 
   it('should produce correct message for QUARANTINE', () => {
-    const message = getMessageForAction('QUARANTINE', 'potential violation');
+    const message = getMessageForAction('QUARANTINE', 'potential violation', 'ghi789');
 
     expect(message).toContain('temporarily hidden');
-    expect(message).toContain('potential violation');
-    expect(message).toContain('review');
+    expect(message).toContain('moderator will take a look');
+    expect(message).toContain('divine.video/video/ghi789');
   });
 
   it('should return null for unknown action', () => {
@@ -54,7 +59,8 @@ describe('DM Sender - Message Templates', () => {
 
   it('should use default reason when none provided', () => {
     const message = getMessageForAction('PERMANENT_BAN');
-    expect(message).toContain('content policy violation');
+    expect(message).toContain('content policies');
+    expect(message).not.toContain('divine.video/video/');
   });
 
   it('should produce correct report outcome message', () => {
@@ -261,74 +267,115 @@ describe('DM Sender - Error Handling', () => {
 });
 
 describe('DM Sender - selectTemplate (Category-Specific)', () => {
-  it('should include policy link and specific reason for nudity category', () => {
-    const msg = selectTemplate('PERMANENT_BAN', null, '{"nudity": 0.95}');
+  it('should include specific reason for nudity category and content link', () => {
+    const msg = selectTemplate('PERMANENT_BAN', null, '{"nudity": 0.95}', 'abc123');
 
     expect(msg).toContain('sexual or nude content');
-    expect(msg).toContain('https://divine.video/policies#sexual-content');
-    expect(msg).toContain('appeal');
+    expect(msg).toContain('divine.video/video/abc123');
+    expect(msg).toContain('reply to this message to appeal');
+    expect(msg).toContain('about.divine.video/faqs/');
+    expect(msg).not.toContain('https://divine.video/policies#sexual-content');
   });
 
-  it('should include crisis hotline for self_harm category', () => {
-    const msg = selectTemplate('PERMANENT_BAN', null, '{"self_harm": 0.8}');
+  it('should include crisis resources for self_harm category before footer', () => {
+    const msg = selectTemplate('PERMANENT_BAN', null, '{"self_harm": 0.8}', 'abc123');
 
     expect(msg).toContain('self-harm');
+    expect(msg).toContain('helpguide.org/find-help');
+    expect(msg).toContain('suicide.org/international-suicide-hotlines.html');
     expect(msg).toContain('988');
-    expect(msg).toContain('https://divine.video/policies#self-harm');
+    expect(msg).not.toContain('https://divine.video/policies#self-harm');
+    // Crisis resources should appear before footer links
+    const crisisIdx = msg.indexOf('helpguide.org');
+    const footerIdx = msg.indexOf('divine.video/terms');
+    expect(crisisIdx).toBeLessThan(footerIdx);
   });
 
-  it('should fall back to custom reason when no category match', () => {
-    const msg = selectTemplate('QUARANTINE', 'custom reason', null);
+  it('should ignore caller-provided reason for QUARANTINE (intentional)', () => {
+    const msg = selectTemplate('QUARANTINE', 'custom reason', null, 'abc123');
 
-    expect(msg).toContain('custom reason');
-    expect(msg).toContain('https://divine.video/policies');
+    // QUARANTINE template is generic per spec — reason param is unused
+    expect(msg).toContain('temporarily hidden');
+    expect(msg).not.toContain('custom reason');
   });
 
-  it('should use default reason when no category and no reason', () => {
-    const msg = selectTemplate('PERMANENT_BAN', null, null);
+  it('should use per-action default reason when no category and no reason (PERMANENT_BAN)', () => {
+    const msg = selectTemplate('PERMANENT_BAN', null, null, 'abc123');
 
-    expect(msg).toContain('content policy violation');
-    expect(msg).toContain('https://divine.video/policies');
+    expect(msg).toContain('content policies');
+    expect(msg).toContain('divine.video/video/abc123');
+  });
+
+  it('should use per-action default reason for AGE_RESTRICTED', () => {
+    const msg = selectTemplate('AGE_RESTRICTED', null, null, 'abc123');
+
+    expect(msg).toContain('not be suitable for all audiences');
+    expect(msg).toContain('divine.video/video/abc123');
+  });
+
+  it('should ignore raw caller reason in favor of per-action default', () => {
+    // Callers like index.mjs pass freeform reasons like "Manual moderator action"
+    // which don't fit the "was found to {reason}" grammar. selectTemplate ignores them.
+    const msg = selectTemplate('PERMANENT_BAN', 'Manual moderator action', null, 'abc123');
+
+    expect(msg).not.toContain('Manual moderator action');
+    expect(msg).toContain('content policies');
   });
 
   it('should return null for unknown action', () => {
-    const msg = selectTemplate('SAFE', null, null);
+    const msg = selectTemplate('SAFE', null, null, 'abc123');
     expect(msg).toBeNull();
   });
 
   it('should handle plain string category', () => {
-    const msg = selectTemplate('AGE_RESTRICTED', null, 'offensive');
+    const msg = selectTemplate('AGE_RESTRICTED', null, 'offensive', 'abc123');
 
     expect(msg).toContain('offensive or hateful content');
-    expect(msg).toContain('https://divine.video/policies#hate-speech');
+    expect(msg).toContain('divine.video/video/abc123');
   });
 
   it('should handle ai_generated category', () => {
-    const msg = selectTemplate('PERMANENT_BAN', null, '{"ai_generated": 0.9}');
+    const msg = selectTemplate('PERMANENT_BAN', null, '{"ai_generated": 0.9}', 'abc123');
 
     expect(msg).toContain('AI-generated');
-    expect(msg).toContain('https://divine.video/policies#ai-content');
+    expect(msg).not.toContain('https://divine.video/policies#ai-content');
   });
 
   it('should handle scam category', () => {
-    const msg = selectTemplate('PERMANENT_BAN', null, 'scam');
+    const msg = selectTemplate('PERMANENT_BAN', null, 'scam', 'abc123');
 
     expect(msg).toContain('fraudulent or scam');
-    expect(msg).toContain('https://divine.video/policies#fraud');
   });
 
-  it('should produce AGE_RESTRICTED template', () => {
-    const msg = selectTemplate('AGE_RESTRICTED', null, '{"nudity": 0.7}');
+  it('should produce AGE_RESTRICTED template with content link', () => {
+    const msg = selectTemplate('AGE_RESTRICTED', null, '{"nudity": 0.7}', 'def456');
 
     expect(msg).toContain('age-restricted');
     expect(msg).toContain('confirmed their age');
+    expect(msg).toContain('divine.video/video/def456');
   });
 
-  it('should produce QUARANTINE template', () => {
-    const msg = selectTemplate('QUARANTINE', null, '{"deepfake": 0.85}');
+  it('should produce QUARANTINE template with reply invitation', () => {
+    const msg = selectTemplate('QUARANTINE', null, '{"deepfake": 0.85}', 'ghi789');
 
     expect(msg).toContain('temporarily hidden');
-    expect(msg).toContain('manipulated media');
-    expect(msg).toContain('reply with context');
+    expect(msg).toContain('reply to this message');
+    expect(msg).toContain('divine.video/video/ghi789');
+  });
+
+  it('should append crisis resources to AGE_RESTRICTED for self_harm', () => {
+    const msg = selectTemplate('AGE_RESTRICTED', null, '{"self_harm": 0.8}', 'abc123');
+
+    expect(msg).toContain('age-restricted');
+    expect(msg).toContain('helpguide.org/find-help');
+    expect(msg).toContain('988');
+  });
+
+  it('should handle missing sha256 gracefully', () => {
+    const msg = selectTemplate('PERMANENT_BAN', null, null, null);
+
+    expect(msg).not.toContain('divine.video/video/');
+    expect(msg).toContain('content policies');
+    expect(msg).toContain('divine.video/terms');
   });
 });
