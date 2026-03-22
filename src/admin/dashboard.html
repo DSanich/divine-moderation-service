@@ -2272,7 +2272,7 @@
           document.getElementById('safe-count').textContent = (realStats.breakdown?.safe || 0).toLocaleString();
           document.getElementById('review-count').textContent = (realStats.pending?.review || 0).toLocaleString();
           document.getElementById('quarantine-count').textContent =
-            ((realStats.pending?.ageRestricted || 0) + (realStats.pending?.permanentBan || 0)).toLocaleString();
+            ((realStats.pending?.quarantine || 0) + (realStats.pending?.ageRestricted || 0) + (realStats.pending?.permanentBan || 0)).toLocaleString();
 
           triageCount = realStats.untriaged || 0;
 
@@ -4391,9 +4391,12 @@
 
     // Refresh stats when returning from another page (e.g., Quick Review).
     // Browsers restore bfcache state on back-navigation, so the initial
-    // loadRealStats() doesn't re-fire. This catches that.
+    // loadRealStats() doesn't re-fire. Debounce to avoid hammering the
+    // endpoint when a moderator flips between tabs frequently.
+    let lastStatsFetch = 0;
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
+      if (document.visibilityState === 'visible' && Date.now() - lastStatsFetch > 30000) {
+        lastStatsFetch = Date.now();
         loadRealStats();
       }
     });

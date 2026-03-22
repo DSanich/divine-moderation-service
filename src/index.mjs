@@ -905,6 +905,7 @@ export default {
 
         // Parse pending review stats (items not yet reviewed by a human)
         let pendingReviewCount = 0;
+        let pendingQuarantineCount = 0;
         let pendingAgeRestrictedCount = 0;
         let pendingPermanentBanCount = 0;
 
@@ -912,12 +913,13 @@ export default {
           const count = row.count || 0;
           switch (row.action) {
             case 'REVIEW': pendingReviewCount = count; break;
+            case 'QUARANTINE': pendingQuarantineCount = count; break;
             case 'AGE_RESTRICTED': pendingAgeRestrictedCount = count; break;
             case 'PERMANENT_BAN': pendingPermanentBanCount = count; break;
           }
         }
 
-        const pendingFlagged = pendingReviewCount + pendingAgeRestrictedCount + pendingPermanentBanCount;
+        const pendingFlagged = pendingReviewCount + pendingQuarantineCount + pendingAgeRestrictedCount + pendingPermanentBanCount;
         const untriaged = Math.max(0, totalInD1 - totalModerated);
 
         console.log(`[${requestId}] Stats: total=${totalInD1}, moderated=${totalModerated}, untriaged=${untriaged}, pendingFlagged=${pendingFlagged} in ${Date.now() - startTime}ms`);
@@ -934,6 +936,7 @@ export default {
           },
           pending: {
             review: pendingReviewCount,
+            quarantine: pendingQuarantineCount,
             ageRestricted: pendingAgeRestrictedCount,
             permanentBan: pendingPermanentBanCount
           }
