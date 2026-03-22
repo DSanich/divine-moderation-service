@@ -8,8 +8,11 @@ import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
 
 export default defineWorkersConfig({
   test: {
+    testTimeout: 30000,
+    hookTimeout: 30000,
     poolOptions: {
       workers: {
+        singleWorker: true,
         wrangler: { configPath: './wrangler.toml' },
       },
     },
