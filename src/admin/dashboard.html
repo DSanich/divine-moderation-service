@@ -4389,6 +4389,15 @@
     loadRealStats();
     updateMuteToggleButton();
 
+    // Refresh stats when returning from another page (e.g., Quick Review).
+    // Browsers restore bfcache state on back-navigation, so the initial
+    // loadRealStats() doesn't re-fire. This catches that.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        loadRealStats();
+      }
+    });
+
     // Restore filters from URL, or default to TRIAGE
     const hasUrlFilter = restoreFiltersFromUrl();
     if (hasUrlFilter) {
