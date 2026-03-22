@@ -849,17 +849,26 @@ export default {
       console.log(`[${requestId}] Fetching videos: filter=${actionFilter}, limit=${limit}, offset=${offset}`);
 
       // Build SQL query based on filter
-      let whereClause = '';
+      let conditions = [];
       const params = [];
 
       if (actionFilter === 'FLAGGED') {
-        whereClause = "WHERE action IN ('REVIEW', 'AGE_RESTRICTED', 'PERMANENT_BAN') AND reviewed_by IS NULL";
+        conditions.push("action IN ('REVIEW', 'AGE_RESTRICTED', 'PERMANENT_BAN') AND reviewed_by IS NULL");
       } else if (actionFilter === 'QUARANTINE') {
-        whereClause = "WHERE action IN ('AGE_RESTRICTED', 'PERMANENT_BAN') AND reviewed_by IS NULL";
+        conditions.push("action IN ('AGE_RESTRICTED', 'PERMANENT_BAN') AND reviewed_by IS NULL");
       } else if (actionFilter !== 'all') {
-        whereClause = 'WHERE action = ?';
+        conditions.push('action = ?');
         params.push(actionFilter.toUpperCase());
       }
+
+      // Date filter — exclude old test content from review queues
+      const sinceParam = url.searchParams.get('since');
+      if (sinceParam) {
+        conditions.push('moderated_at >= ?');
+        params.push(sinceParam);
+      }
+
+      const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
 
       // Query D1 with pagination
       const query = `

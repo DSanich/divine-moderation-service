@@ -349,6 +349,15 @@
       background: #14532d;
     }
 
+    .action-btn.skip {
+      background: #374151;
+      color: #d1d5db;
+    }
+
+    .action-btn.skip:hover {
+      background: #4b5563;
+    }
+
     .keyboard-hints {
       margin-top: 15px;
       padding: 12px;
@@ -565,6 +574,13 @@
   <div class="header">
     <h1>Quick Review</h1>
     <div class="header-actions">
+      <select id="since-filter" class="btn" onchange="applySinceFilter()" style="appearance: auto;">
+        <option value="2025-12-01">Since Dec 2025</option>
+        <option value="2026-01-01">Since Jan 2026</option>
+        <option value="2026-02-01">Since Feb 2026</option>
+        <option value="2026-03-01">Since Mar 2026</option>
+        <option value="">All time</option>
+      </select>
       <button class="btn" onclick="window.location.href='/admin/dashboard'">Dashboard</button>
       <button class="btn" onclick="logout()">Logout</button>
     </div>
@@ -605,11 +621,25 @@
     let currentY = 0;
     let swipeDirection = null; // 'horizontal' or 'vertical'
 
+    function applySinceFilter() {
+      // Reset queue and reload with new filter
+      reviewQueue = [];
+      currentIndex = 0;
+      reviewedCount = 0;
+      document.getElementById('review-container').style.display = 'none';
+      document.getElementById('empty').style.display = 'none';
+      document.getElementById('progress').style.display = 'none';
+      document.getElementById('loading').style.display = 'block';
+      loadReviewQueue();
+    }
+
     async function loadReviewQueue() {
       try {
         // Load AI flagged videos FIRST (priority), then untriaged
+        const sinceValue = document.getElementById('since-filter').value;
+        const sinceParam = sinceValue ? `&since=${sinceValue}` : '';
         const [flaggedResponse, untriagedResponse] = await Promise.all([
-          fetch('/admin/api/videos?action=FLAGGED&limit=100'),
+          fetch('/admin/api/videos?action=FLAGGED&limit=100' + sinceParam),
           fetch('/admin/api/untriaged?limit=50')
         ]);
 
@@ -1137,6 +1167,9 @@
               </button>
               <button class="action-btn approve" onclick="handleAction('${sha256}', 'SAFE')">
                 Approve
+              </button>
+              <button class="action-btn skip" onclick="skipVideo()">
+                Skip
               </button>
             </div>
 

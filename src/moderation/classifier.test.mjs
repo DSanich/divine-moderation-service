@@ -178,7 +178,7 @@ describe('Moderation Classifier', () => {
       maxScores: {
         nudity: 0.1,
         violence: 0.1,
-        ai_generated: 0.85
+        ai_generated: 0.92
       }
     });
 
@@ -195,7 +195,7 @@ describe('Moderation Classifier', () => {
       maxScores: {
         nudity: 0.1,
         violence: 0.1,
-        ai_generated: 0.65
+        ai_generated: 0.75
       }
     });
 
