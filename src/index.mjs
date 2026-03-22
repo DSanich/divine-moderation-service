@@ -856,7 +856,7 @@ export default {
 
       try {
         // All stats from D1 - fast SQL queries instead of KV iteration
-        const [totalResult, moderationStats] = await Promise.all([
+        const [totalResult, moderationStats, pendingStats] = await Promise.all([
           // Total videos (excluding deleted/error)
           env.BLOSSOM_DB.prepare(`
             SELECT COUNT(DISTINCT sha256) as total
@@ -864,19 +864,28 @@ export default {
             WHERE sha256 IS NOT NULL
               AND status_name NOT IN ('error', 'deleted')
           `).first(),
-          // Moderation breakdown by action
+          // Moderation breakdown by action (all, for "Total Moderated" and "Safe" cards)
           env.BLOSSOM_DB.prepare(`
             SELECT
               action,
               COUNT(*) as count
             FROM moderation_results
             GROUP BY action
+          `).all(),
+          // Pending review breakdown (unreviewed, for "AI Flagged" and queue counts)
+          env.BLOSSOM_DB.prepare(`
+            SELECT
+              action,
+              COUNT(*) as count
+            FROM moderation_results
+            WHERE reviewed_by IS NULL
+            GROUP BY action
           `).all()
         ]);
 
         const totalInD1 = totalResult?.total || 0;
 
-        // Parse moderation stats
+        // Parse total moderation stats
         let totalModerated = 0;
         let safeCount = 0;
         let reviewCount = 0;
@@ -894,21 +903,42 @@ export default {
           }
         }
 
+        // Parse pending review stats (items not yet reviewed by a human)
+        let pendingReviewCount = 0;
+        let pendingAgeRestrictedCount = 0;
+        let pendingPermanentBanCount = 0;
+
+        for (const row of (pendingStats?.results || [])) {
+          const count = row.count || 0;
+          switch (row.action) {
+            case 'REVIEW': pendingReviewCount = count; break;
+            case 'AGE_RESTRICTED': pendingAgeRestrictedCount = count; break;
+            case 'PERMANENT_BAN': pendingPermanentBanCount = count; break;
+          }
+        }
+
+        const pendingFlagged = pendingReviewCount + pendingAgeRestrictedCount + pendingPermanentBanCount;
         const untriaged = Math.max(0, totalInD1 - totalModerated);
 
-        console.log(`[${requestId}] Stats: total=${totalInD1}, moderated=${totalModerated}, untriaged=${untriaged}, safe=${safeCount}, review=${reviewCount} in ${Date.now() - startTime}ms`);
+        console.log(`[${requestId}] Stats: total=${totalInD1}, moderated=${totalModerated}, untriaged=${untriaged}, pendingFlagged=${pendingFlagged} in ${Date.now() - startTime}ms`);
         return new Response(JSON.stringify({
           totalInD1,
           totalModerated,
           untriaged,
+          pendingFlagged,
           breakdown: {
             safe: safeCount,
             review: reviewCount,
             ageRestricted: ageRestrictedCount,
             permanentBan: permanentBanCount
+          },
+          pending: {
+            review: pendingReviewCount,
+            ageRestricted: pendingAgeRestrictedCount,
+            permanentBan: pendingPermanentBanCount
           }
         }), {
-          headers: { 'Content-Type': 'application/json' }
+          headers: JSON_HEADERS
         });
       } catch (error) {
         console.error(`[${requestId}] Failed to get stats:`, error);

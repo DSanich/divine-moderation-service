@@ -2262,20 +2262,17 @@
         if (response.ok) {
           realStats = await response.json();
 
-          // Calculate flagged count (REVIEW + AGE_RESTRICTED + PERMANENT_BAN)
-          const reviewCount = realStats.breakdown?.review || 0;
-          const ageRestrictedCount = realStats.breakdown?.ageRestricted || 0;
-          const permanentBanCount = realStats.breakdown?.permanentBan || 0;
-          const flaggedCount = reviewCount + ageRestrictedCount + permanentBanCount;
+          // Pending flagged count (items not yet reviewed by a human)
+          const pendingFlagged = realStats.pendingFlagged || 0;
 
-          // Update all stat cards with REAL numbers
+          // Update all stat cards
           document.getElementById('triage-count').textContent = (realStats.untriaged || 0).toLocaleString();
-          document.getElementById('flagged-count').textContent = flaggedCount.toLocaleString();
+          document.getElementById('flagged-count').textContent = pendingFlagged.toLocaleString();
           document.getElementById('total-count').textContent = (realStats.totalModerated || 0).toLocaleString();
           document.getElementById('safe-count').textContent = (realStats.breakdown?.safe || 0).toLocaleString();
-          document.getElementById('review-count').textContent = reviewCount.toLocaleString();
+          document.getElementById('review-count').textContent = (realStats.pending?.review || 0).toLocaleString();
           document.getElementById('quarantine-count').textContent =
-            (ageRestrictedCount + permanentBanCount).toLocaleString();
+            ((realStats.pending?.ageRestricted || 0) + (realStats.pending?.permanentBan || 0)).toLocaleString();
 
           triageCount = realStats.untriaged || 0;
 
