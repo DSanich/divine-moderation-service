@@ -1252,7 +1252,8 @@
           const response = await fetch('/admin/api/queue-moderation', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sha256 })
+            body: JSON.stringify({ sha256 }),
+            keepalive: true
           });
 
           if (!response.ok) {
@@ -1272,7 +1273,8 @@
         const response = await fetch('/admin/api/moderate/' + sha256, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, reason: 'Quick review: ' + action })
+          body: JSON.stringify({ action, reason: 'Quick review: ' + action }),
+          keepalive: true
         });
 
         if (!response.ok) {
