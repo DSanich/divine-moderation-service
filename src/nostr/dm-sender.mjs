@@ -542,7 +542,9 @@ export async function sendModerationDM(recipientPubkey, sha256, action, reason, 
     if (!recipientPubkey || typeof recipientPubkey !== 'string') {
       return { sent: false, reason: 'Invalid recipient pubkey' };
     }
-    if (!sha256 || typeof sha256 !== 'string') {
+    // sha256 is optional — relay-only actions (ban_pubkey, delete_event) may not
+    // have a content hash. Templates handle sha256=null by omitting the content link.
+    if (sha256 && typeof sha256 !== 'string') {
       return { sent: false, reason: 'Invalid sha256' };
     }
 
@@ -612,7 +614,7 @@ export async function sendModerationDM(recipientPubkey, sha256, action, reason, 
       console.log('[DM] DM store not available, skipping log');
     }
 
-    console.log(`[DM] Sent ${action} notification to ${recipientPubkey.substring(0, 16)}... for ${sha256.substring(0, 16)}... (${success} relays)`);
+    console.log(`[DM] Sent ${action} notification to ${recipientPubkey.substring(0, 16)}...${sha256 ? ` for ${sha256.substring(0, 16)}...` : ''} (${success} relays)`);
     return { sent: true, relaysPublished: success };
   } catch (err) {
     console.error('[DM] Unexpected error sending moderation DM:', err.message);

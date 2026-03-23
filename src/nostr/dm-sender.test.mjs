@@ -84,6 +84,17 @@ describe('DM Sender - Message Templates', () => {
     expect(message).not.toContain('divine.video/video/');
   });
 
+  it('should handle null sha256 for relay-only actions', () => {
+    const message = getMessageForAction('PERMANENT_BAN', 'violate Divine\'s content policies', null);
+    expect(message).toContain('Your content was removed');
+    expect(message).not.toContain('divine.video/video/');
+  });
+
+  it('should include sha256 link when provided', () => {
+    const message = getMessageForAction('AGE_RESTRICTED', 'contain mature content', 'deadbeef1234');
+    expect(message).toContain('divine.video/video/deadbeef1234');
+  });
+
   it('should produce correct report outcome message for removal', () => {
     const message = getReportOutcomeMessage('PERMANENT_BAN', 'abc123', 'Sunset Clip', '2026-03-10T00:00:00Z', '2026-03-18T00:00:00Z');
 
