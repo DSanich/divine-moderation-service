@@ -104,6 +104,14 @@ describe('DM Sender - Message Templates', () => {
     expect(message).toContain('divine.video/video/def456');
   });
 
+  it('should produce account suspension message without content reference', () => {
+    const message = getMessageForAction('ACCOUNT_SUSPENDED');
+    expect(message).toContain('Your account has been suspended');
+    expect(message).toContain('reply to this message to appeal');
+    expect(message).not.toContain('divine.video/video/');
+    expect(message).not.toContain('Your content');
+  });
+
   it('should produce correct report outcome message for no action', () => {
     const message = getReportOutcomeMessage('SAFE', 'ghi789');
 

@@ -55,6 +55,11 @@ const TEMPLATES = {
   QUARANTINE: (_reason, sha256, title, publishedAt) =>
     `${contentSubject(title)}${postedDate(publishedAt)} has been temporarily hidden while we review it. A moderator will take a look shortly. If you'd like to provide context, you can reply to this message.\n${contentLink(sha256)}\n${FOOTER}`,
 
+  // Account-level suspension — no content link, not content-specific.
+  // Used by relay-manager when banning a user's pubkey.
+  ACCOUNT_SUSPENDED: () =>
+    `Your account has been suspended for violating Divine's content policies.\n\nIf you believe this was a mistake, you can reply to this message to appeal.\n\n${FOOTER}`,
+
   REPORT_OUTCOME_ACTION: (outcome, sha256, title, publishedAt, reportedAt) =>
     `Thanks for your report. We've reviewed ${contentSubject(title, 'the reported content')}${postedDate(publishedAt)} and it has been ${outcome}.${reportedAt ? ` You reported this content on ${formatDate(reportedAt)}.` : ''}\n${contentLink(sha256)}\nIf you have questions, you can reply to this message.\n\n${FOOTER}`,
 
