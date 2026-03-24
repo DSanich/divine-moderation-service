@@ -19,30 +19,36 @@ The quick review (swipe review) UI sorts AI-flagged items by highest Hive AI sco
 
 Add a sort dropdown to the quick review header, next to the existing "since" filter.
 
-### Sort Options
+### Two Independent Controls
+
+**Load order** (backend, re-fetches): determines which 100 items get pulled from the full queue.
 
 | Label | Behavior | Notes |
 |-------|----------|-------|
-| By score | Highest max Hive AI score first | Current default, now made visible |
-| Newest | Most recently classified first (`moderated_at` DESC) | Raw DB order |
-| Oldest | Oldest classified first (`moderated_at` ASC) | Reverse of DB order |
+| Load: Newest first | Most recently classified from full queue | Default, current behavior |
+| Load: Oldest first | Oldest classified from full queue | Backend `ORDER BY moderated_at ASC` |
 
-Default: "By score" (preserves current behavior).
+**Sort order** (client-side, re-sorts loaded batch): reorders the 100 loaded items.
+
+| Label | Behavior | Notes |
+|-------|----------|-------|
+| Sort: Highest score | Highest max Hive AI score first | Current default, now made visible |
+| Sort: Lowest score | Lowest max Hive AI score first | |
 
 ### UI
 
-- Dropdown styled to match the existing "since" filter
-- Label format: "Sort: By score" / "Sort: Newest" / "Sort: Oldest"
-- Placed immediately left of or right of the existing "since" dropdown
-- Selection applies immediately (re-sorts current queue, no re-fetch)
-- Sort preference resets on page reload (no persistence needed)
+- Two dropdowns styled to match the existing "since" filter
+- Placed left of the existing "since" dropdown
+- Subtitle under "Quick Review" heading: "Showing AI-flagged items awaiting review"
+- Load order change triggers re-fetch; sort order change re-sorts in place
+- Preferences reset on page reload (no persistence needed)
 
 ### Scope
 
-- Frontend-only change in `src/admin/swipe-review.html`
+- Frontend change in `src/admin/swipe-review.html` (two dropdowns, sort/load logic)
+- Backend change in `src/index.mjs` (accept `sort=oldest` query param on `/admin/api/videos`)
 - Sorting applies to the AI-flagged portion of the queue only
 - Untriaged tail ordering unchanged (appended after flagged items)
-- No backend changes needed -- `moderated_at` and `scores` are already in the response
 
 ## Follow-up (separate issue)
 

@@ -572,12 +572,18 @@
 </head>
 <body>
   <div class="header">
-    <h1>Quick Review</h1>
+    <div>
+      <h1 style="margin-bottom: 2px;">Quick Review</h1>
+      <div style="font-size: 12px; color: #888;">Showing AI-flagged items awaiting review</div>
+    </div>
     <div class="header-actions">
+      <select id="queue-order" class="btn" onchange="applyQueueOrder()" style="appearance: auto;">
+        <option value="newest">Load: Newest first</option>
+        <option value="oldest">Load: Oldest first</option>
+      </select>
       <select id="sort-order" class="btn" onchange="applySortOrder()" style="appearance: auto;">
-        <option value="score">Sort: By score</option>
-        <option value="newest">Sort: Newest</option>
-        <option value="oldest">Sort: Oldest</option>
+        <option value="high">Sort: Highest score</option>
+        <option value="low">Sort: Lowest score</option>
       </select>
       <select id="since-filter" class="btn" onchange="applySinceFilter()" style="appearance: auto;">
         <option value="2025-12-01">Since Dec 2025</option>
@@ -645,8 +651,10 @@
         // Load AI flagged videos FIRST (priority), then untriaged
         const sinceValue = document.getElementById('since-filter').value;
         const sinceParam = sinceValue ? `&since=${sinceValue}` : '';
+        const queueOrder = document.getElementById('queue-order').value;
+        const sortParam = queueOrder === 'oldest' ? '&sort=oldest' : '';
         const [flaggedResponse, untriagedResponse] = await Promise.all([
-          fetch('/admin/api/videos?action=FLAGGED&limit=100' + sinceParam),
+          fetch('/admin/api/videos?action=FLAGGED&limit=100' + sinceParam + sortParam),
           fetch('/admin/api/untriaged?limit=50')
         ]);
 
@@ -669,7 +677,7 @@
         // Sort flagged videos by selected order, then append untriaged
         reviewQueue = [...sortFlaggedVideos(loadedFlaggedVideos), ...loadedUntriagedVideos];
 
-        console.log('[QuickReview] Loaded:', flaggedVideos.length, 'AI flagged,', untriagedVideos.length, 'untriaged');
+        console.log('[QuickReview] Loaded:', loadedFlaggedVideos.length, 'AI flagged,', loadedUntriagedVideos.length, 'untriaged');
 
         document.getElementById('loading').style.display = 'none';
 
@@ -709,17 +717,21 @@
     function sortFlaggedVideos(videos) {
       const order = document.getElementById('sort-order').value;
       const sorted = [...videos];
-      if (order === 'score') {
+      if (order === 'high') {
         sorted.sort((a, b) => getMaxScore(b.scores) - getMaxScore(a.scores));
-      } else if (order === 'newest') {
-        sorted.sort((a, b) => new Date(b.moderated_at) - new Date(a.moderated_at));
-      } else if (order === 'oldest') {
-        sorted.sort((a, b) => new Date(a.moderated_at) - new Date(b.moderated_at));
+      } else if (order === 'low') {
+        sorted.sort((a, b) => getMaxScore(a.scores) - getMaxScore(b.scores));
       }
       return sorted;
     }
 
+    function applyQueueOrder() {
+      // Re-fetch: different queue orders pull different items from the backend
+      applySinceFilter();
+    }
+
     function applySortOrder() {
+      // Re-sort the already-loaded batch client-side
       if (loadedFlaggedVideos.length === 0) return;
       reviewQueue = [...sortFlaggedVideos(loadedFlaggedVideos), ...loadedUntriagedVideos];
       currentIndex = 0;
