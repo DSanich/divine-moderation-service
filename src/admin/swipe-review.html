@@ -574,6 +574,11 @@
   <div class="header">
     <h1>Quick Review</h1>
     <div class="header-actions">
+      <select id="sort-order" class="btn" onchange="applySortOrder()" style="appearance: auto;">
+        <option value="score">Sort: By score</option>
+        <option value="newest">Sort: Newest</option>
+        <option value="oldest">Sort: Oldest</option>
+      </select>
       <select id="since-filter" class="btn" onchange="applySinceFilter()" style="appearance: auto;">
         <option value="2025-12-01">Since Dec 2025</option>
         <option value="2026-01-01">Since Jan 2026</option>
@@ -608,6 +613,8 @@
 
   <script>
     let reviewQueue = [];
+    let loadedFlaggedVideos = [];
+    let loadedUntriagedVideos = [];
     let currentIndex = 0;
     let reviewedCount = 0;
     let currentToast = null;
@@ -651,19 +658,16 @@
         const flaggedData = await flaggedResponse.json();
         const untriagedData = await untriagedResponse.json();
 
-        // AI flagged videos - sorted by highest score first
-        const flaggedVideos = (flaggedData.videos || [])
-          .sort((a, b) => getMaxScore(b.scores) - getMaxScore(a.scores));
-
-        const untriagedVideos = (untriagedData.videos || []).map(v => ({
+        loadedFlaggedVideos = flaggedData.videos || [];
+        loadedUntriagedVideos = (untriagedData.videos || []).map(v => ({
           ...v,
           isUntriaged: true,
           action: 'UNTRIAGED',
           scores: {}
         }));
 
-        // AI FLAGGED FIRST (they need attention!), then untriaged
-        reviewQueue = [...flaggedVideos, ...untriagedVideos];
+        // Sort flagged videos by selected order, then append untriaged
+        reviewQueue = [...sortFlaggedVideos(loadedFlaggedVideos), ...loadedUntriagedVideos];
 
         console.log('[QuickReview] Loaded:', flaggedVideos.length, 'AI flagged,', untriagedVideos.length, 'untriaged');
 
@@ -700,6 +704,28 @@
     function getMaxScore(scores) {
       if (!scores) return 0;
       return Math.max(...Object.values(scores).filter(v => typeof v === 'number'));
+    }
+
+    function sortFlaggedVideos(videos) {
+      const order = document.getElementById('sort-order').value;
+      const sorted = [...videos];
+      if (order === 'score') {
+        sorted.sort((a, b) => getMaxScore(b.scores) - getMaxScore(a.scores));
+      } else if (order === 'newest') {
+        sorted.sort((a, b) => new Date(b.moderated_at) - new Date(a.moderated_at));
+      } else if (order === 'oldest') {
+        sorted.sort((a, b) => new Date(a.moderated_at) - new Date(b.moderated_at));
+      }
+      return sorted;
+    }
+
+    function applySortOrder() {
+      if (loadedFlaggedVideos.length === 0) return;
+      reviewQueue = [...sortFlaggedVideos(loadedFlaggedVideos), ...loadedUntriagedVideos];
+      currentIndex = 0;
+      reviewedCount = 0;
+      showCurrentVideo();
+      updateProgress();
     }
 
     function showCurrentVideo() {
