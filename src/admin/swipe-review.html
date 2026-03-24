@@ -29,10 +29,14 @@
       padding: 15px 20px;
       background: #1a1a1a;
       border-bottom: 1px solid #333;
+      flex-shrink: 0;
+    }
+
+    .header-top {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      flex-shrink: 0;
+      margin-bottom: 10px;
     }
 
     .header h1 {
@@ -40,9 +44,15 @@
       color: #fff;
     }
 
-    .header-actions {
+    .header-nav {
       display: flex;
       gap: 10px;
+    }
+
+    .header-filters {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
     }
 
     .btn {
@@ -572,11 +582,17 @@
 </head>
 <body>
   <div class="header">
-    <div>
-      <h1 style="margin-bottom: 2px;">Quick Review</h1>
-      <div style="font-size: 12px; color: #888;">Showing AI-flagged items awaiting review</div>
+    <div class="header-top">
+      <div>
+        <h1 style="margin-bottom: 2px;">Quick Review</h1>
+        <div style="font-size: 12px; color: #888;">Showing AI-flagged items awaiting review</div>
+      </div>
+      <div class="header-nav">
+        <button class="btn" onclick="window.location.href='/admin/dashboard'">Dashboard</button>
+        <button class="btn" onclick="logout()">Logout</button>
+      </div>
     </div>
-    <div class="header-actions">
+    <div class="header-filters">
       <select id="queue-order" class="btn" onchange="applyQueueOrder()" style="appearance: auto;">
         <option value="newest">Load: Newest first</option>
         <option value="oldest">Load: Oldest first</option>
@@ -592,8 +608,6 @@
         <option value="2026-03-01">Since Mar 2026</option>
         <option value="">All time</option>
       </select>
-      <button class="btn" onclick="window.location.href='/admin/dashboard'">Dashboard</button>
-      <button class="btn" onclick="logout()">Logout</button>
     </div>
   </div>
 
