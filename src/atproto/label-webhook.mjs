@@ -9,10 +9,12 @@ const LABEL_THRESHOLD = 0.5;
  * Returns null if no labels should be emitted (SAFE result).
  */
 export function buildLabelWebhookPayload(result) {
-  if (result.action === 'SAFE') return null;
+  const signalScores = result.downstreamSignals?.scores || result.scores || {};
+  const hasExplicitSignals = result.downstreamSignals?.hasSignals === true;
+  if (result.action === 'SAFE' && !hasExplicitSignals) return null;
 
   const labels = [];
-  for (const [category, score] of Object.entries(result.scores || {})) {
+  for (const [category, score] of Object.entries(signalScores)) {
     if (score >= LABEL_THRESHOLD) {
       labels.push({ category, score });
     }

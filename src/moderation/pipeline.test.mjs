@@ -4,8 +4,53 @@
 // ABOUTME: Tests for full moderation pipeline orchestration
 // ABOUTME: Verifies end-to-end flow from video URL to classified result
 
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { moderateVideo } from './pipeline.mjs';
+
+const OriginalWebSocket = globalThis.WebSocket;
+
+function createNostrLookupWebSocket(event) {
+  return class FakeWebSocket {
+    constructor() {
+      this.listeners = {};
+      this.readyState = 0;
+      queueMicrotask(() => {
+        this.readyState = 1;
+        this.emit('open');
+      });
+    }
+
+    addEventListener(type, handler) {
+      if (!this.listeners[type]) {
+        this.listeners[type] = [];
+      }
+      this.listeners[type].push(handler);
+    }
+
+    send(message) {
+      const [, subscriptionId] = JSON.parse(message);
+      queueMicrotask(() => {
+        this.emit('message', { data: JSON.stringify(['EVENT', subscriptionId, event]) });
+        this.emit('message', { data: JSON.stringify(['EOSE', subscriptionId]) });
+      });
+    }
+
+    close() {
+      this.readyState = 3;
+      queueMicrotask(() => this.emit('close'));
+    }
+
+    emit(type, payload = {}) {
+      for (const handler of this.listeners[type] || []) {
+        handler(payload);
+      }
+    }
+  };
+}
+
+afterEach(() => {
+  globalThis.WebSocket = OriginalWebSocket;
+});
 
 describe('Moderation Pipeline', () => {
   it('should run full pipeline and return SAFE classification', async () => {
@@ -199,5 +244,119 @@ describe('Moderation Pipeline', () => {
         uploadedAt: Date.now()
       }, env)
     ).rejects.toThrow('CDN_DOMAIN not configured');
+  });
+
+  it('keeps imported original vines SAFE while retaining raw AI scores', async () => {
+    const sha256 = 'i'.repeat(64);
+    globalThis.WebSocket = createNostrLookupWebSocket({
+      id: 'evt-original-vine',
+      content: 'classic archive vine',
+      created_at: 1700000000,
+      tags: [
+        ['d', sha256],
+        ['platform', 'vine'],
+        ['r', 'https://vine.co/v/abc123']
+      ]
+    });
+
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          status: 'success',
+          data: {
+            frames: [
+              {
+                info: { position: 0 },
+                nudity: { raw: 0.05, partial: 0.03, safe: 0.92 },
+                violence: { prob: 0.02 },
+                type: { ai_generated: 0.96 }
+              }
+            ]
+          }
+        })
+      })
+      .mockResolvedValueOnce({
+        status: 404,
+        ok: false,
+        text: async () => ''
+      });
+
+    const env = {
+      SIGHTENGINE_API_USER: 'test-user',
+      SIGHTENGINE_API_SECRET: 'test-secret',
+      CDN_DOMAIN: 'cdn.divine.video'
+    };
+
+    const result = await moderateVideo({
+      sha256,
+      uploadedAt: Date.now(),
+      metadata: { videoUrl: 'https://archive.example.com/original-vine.mp4' }
+    }, env, mockFetch);
+
+    expect(result.action).toBe('SAFE');
+    expect(result.policyContext?.originalVine).toBe(true);
+    expect(result.policyContext?.enforcementOverridden).toBe(true);
+    expect(result.scores.ai_generated).toBe(0.96);
+    expect(result.downstreamSignals?.scores?.ai_generated ?? 0).toBe(0);
+    expect(result.downstreamSignals?.hasSignals).toBe(false);
+  });
+
+  it('keeps downstream moderation signals for original vines when non-AI scores are high', async () => {
+    const sha256 = 'j'.repeat(64);
+    globalThis.WebSocket = createNostrLookupWebSocket({
+      id: 'evt-original-vine-signals',
+      content: 'classic archive vine',
+      created_at: 1700000000,
+      tags: [
+        ['d', sha256],
+        ['platform', 'vine']
+      ]
+    });
+
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          status: 'success',
+          data: {
+            frames: [
+              {
+                info: { position: 0 },
+                nudity: { raw: 0.86, partial: 0.2, safe: 0.1 },
+                violence: { prob: 0.15 },
+                type: { ai_generated: 0.82 }
+              }
+            ]
+          }
+        })
+      })
+      .mockResolvedValueOnce({
+        status: 404,
+        ok: false,
+        text: async () => ''
+      });
+
+    const env = {
+      SIGHTENGINE_API_USER: 'test-user',
+      SIGHTENGINE_API_SECRET: 'test-secret',
+      CDN_DOMAIN: 'cdn.divine.video'
+    };
+
+    const result = await moderateVideo({
+      sha256,
+      uploadedAt: Date.now(),
+      metadata: { videoUrl: 'https://archive.example.com/original-vine-nudity.mp4' }
+    }, env, mockFetch);
+
+    expect(result.action).toBe('SAFE');
+    expect(result.policyContext?.originalVine).toBe(true);
+    expect(result.scores.nudity).toBe(0.86);
+    expect(result.downstreamSignals?.hasSignals).toBe(true);
+    expect(result.downstreamSignals?.scores?.nudity).toBe(0.86);
+    expect(result.downstreamSignals?.scores?.ai_generated ?? 0).toBe(0);
+    expect(result.downstreamSignals?.primaryConcern).toBe('nudity');
   });
 });

@@ -43,4 +43,20 @@ describe('buildLabelWebhookPayload', () => {
     const payload = buildLabelWebhookPayload(result);
     expect(payload).toBeNull();
   });
+
+  it('builds payload from downstream signals even when action is SAFE', () => {
+    const result = {
+      sha256: 'abc123',
+      action: 'SAFE',
+      scores: { ai_generated: 0.97 },
+      downstreamSignals: {
+        hasSignals: true,
+        scores: { nudity: 0.88, ai_generated: 0 }
+      }
+    };
+    const payload = buildLabelWebhookPayload(result);
+    expect(payload?.sha256).toBe('abc123');
+    expect(payload?.action).toBe('SAFE');
+    expect(payload?.labels).toEqual([{ category: 'nudity', score: 0.88 }]);
+  });
 });
