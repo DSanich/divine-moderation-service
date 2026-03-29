@@ -9,8 +9,8 @@ const DEFAULT_NSFW_HIGH = 0.8;
 const DEFAULT_NSFW_MEDIUM = 0.6;
 const DEFAULT_VIOLENCE_HIGH = 0.8;
 const DEFAULT_VIOLENCE_MEDIUM = 0.6;
-const DEFAULT_AI_GENERATED_HIGH = 0.8;
-const DEFAULT_AI_GENERATED_MEDIUM = 0.6;
+const DEFAULT_AI_GENERATED_HIGH = 0.9;
+const DEFAULT_AI_GENERATED_MEDIUM = 0.7;
 const DEFAULT_DEEPFAKE_HIGH = 0.95;
 const DEFAULT_DEEPFAKE_MEDIUM = 0.8;
 const DEFAULT_GORE_HIGH = 0.8;
@@ -49,7 +49,7 @@ const THRESHOLDS_KV_KEY = 'admin:thresholds';
 export const DEFAULT_THRESHOLDS = {
   nudity: { high: DEFAULT_NSFW_HIGH, medium: DEFAULT_NSFW_MEDIUM },
   violence: { high: DEFAULT_VIOLENCE_HIGH, medium: DEFAULT_VIOLENCE_MEDIUM },
-  ai_generated: { high: DEFAULT_AI_GENERATED_HIGH, medium: DEFAULT_AI_GENERATED_MEDIUM },
+  ai_generated: { high: DEFAULT_AI_GENERATED_HIGH, medium: DEFAULT_AI_GENERATED_MEDIUM },  // 0.9/0.7 — raised to reduce false positives
   deepfake: { high: DEFAULT_DEEPFAKE_HIGH, medium: DEFAULT_DEEPFAKE_MEDIUM },
   gore: { high: DEFAULT_GORE_HIGH, medium: DEFAULT_GORE_MEDIUM },
   offensive: { high: DEFAULT_OFFENSIVE_HIGH, medium: DEFAULT_OFFENSIVE_MEDIUM },

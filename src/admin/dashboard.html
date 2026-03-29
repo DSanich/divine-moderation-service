@@ -1548,6 +1548,19 @@
   </style>
 </head>
 <body>
+<div style="background: #1a1a2e; border-bottom: 1px solid #2a2a3a; padding: 0 16px; display: flex; align-items: center; height: 36px; font-size: 12px; gap: 4px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;">
+  <a href="https://admin.divine.video" style="color: #8888aa; text-decoration: none; padding: 4px 8px; border-radius: 4px;" title="Dashboard">&#9670; Admin</a>
+  <span style="color: #2a2a3a;">|</span>
+  <a href="https://moderation.admin.divine.video/admin" style="color: #7c6ff7; text-decoration: none; padding: 4px 8px; border-radius: 4px; background: #1a1a26;" title="Video Moderation">Moderation</a>
+  <a href="https://review.admin.divine.video/admin" style="color: #8888aa; text-decoration: none; padding: 4px 8px; border-radius: 4px;" title="Automatic Labels">Review</a>
+  <a href="https://faro.admin.divine.video" style="color: #8888aa; text-decoration: none; padding: 4px 8px; border-radius: 4px;" title="Content Reports">Reports</a>
+  <a href="https://realness.admin.divine.video" style="color: #8888aa; text-decoration: none; padding: 4px 8px; border-radius: 4px;" title="AI Detection">Realness</a>
+  <a href="https://names.admin.divine.video" style="color: #8888aa; text-decoration: none; padding: 4px 8px; border-radius: 4px;" title="Name Server">Names</a>
+  <a href="https://relay.admin.divine.video" style="color: #8888aa; text-decoration: none; padding: 4px 8px; border-radius: 4px;" title="Relay Manager">Relay</a>
+  <a href="https://discovery.admin.divine.video" style="color: #8888aa; text-decoration: none; padding: 4px 8px; border-radius: 4px;" title="Vine Discovery">Discovery</a>
+  <span style="color: #2a2a3a;">|</span>
+  <a href="https://rabblelabs.zendesk.com/" style="color: #8888aa; text-decoration: none; padding: 4px 8px; border-radius: 4px;" title="Support">Zendesk</a>
+</div>
   <div class="header">
     <div style="display: flex; justify-content: space-between; align-items: center;">
       <h1>Divine Moderation Dashboard</h1>
@@ -2262,20 +2275,17 @@
         if (response.ok) {
           realStats = await response.json();
 
-          // Calculate flagged count (REVIEW + AGE_RESTRICTED + PERMANENT_BAN)
-          const reviewCount = realStats.breakdown?.review || 0;
-          const ageRestrictedCount = realStats.breakdown?.ageRestricted || 0;
-          const permanentBanCount = realStats.breakdown?.permanentBan || 0;
-          const flaggedCount = reviewCount + ageRestrictedCount + permanentBanCount;
+          // Pending flagged count (items not yet reviewed by a human)
+          const pendingFlagged = realStats.pendingFlagged || 0;
 
-          // Update all stat cards with REAL numbers
+          // Update all stat cards
           document.getElementById('triage-count').textContent = (realStats.untriaged || 0).toLocaleString();
-          document.getElementById('flagged-count').textContent = flaggedCount.toLocaleString();
+          document.getElementById('flagged-count').textContent = pendingFlagged.toLocaleString();
           document.getElementById('total-count').textContent = (realStats.totalModerated || 0).toLocaleString();
           document.getElementById('safe-count').textContent = (realStats.breakdown?.safe || 0).toLocaleString();
-          document.getElementById('review-count').textContent = reviewCount.toLocaleString();
+          document.getElementById('review-count').textContent = (realStats.pending?.review || 0).toLocaleString();
           document.getElementById('quarantine-count').textContent =
-            (ageRestrictedCount + permanentBanCount).toLocaleString();
+            ((realStats.pending?.quarantine || 0) + (realStats.pending?.ageRestricted || 0) + (realStats.pending?.permanentBan || 0)).toLocaleString();
 
           triageCount = realStats.untriaged || 0;
 
@@ -2412,7 +2422,7 @@
         ? `<button class="action-btn ban" onclick="toggleRelayBan('${pubkey}', ${enforcement?.relay_banned ? 'false' : 'true'}, this)">${enforcement?.relay_banned ? 'Unban User' : 'Ban User'}</button>`
         : '';
       const deleteButton = eventId
-        ? `<button class="action-btn secondary" onclick="deleteNostrEvent('${eventId}', this)">Delete Event</button>`
+        ? `<button class="action-btn secondary" onclick="deleteNostrEvent('${video.sha256 || ''}', '${eventId}', this)">Delete Event</button>`
         : '';
 
       return `
@@ -2770,7 +2780,7 @@
       );
     }
 
-    async function deleteNostrEvent(eventId, button) {
+    async function deleteNostrEvent(sha256, eventId, button) {
       const originalText = button.innerHTML;
       button.innerHTML = '⏳...';
       button.disabled = true;
@@ -2780,7 +2790,8 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            reason: 'Deleted from moderation dashboard'
+            reason: 'Deleted from moderation dashboard',
+            sha256: sha256 || null
           })
         });
 
@@ -2796,7 +2807,11 @@
 
         button.innerHTML = originalText;
         button.disabled = false;
-        setLookupStatus(`Deleted relay event ${truncateHex(eventId, 10, 6)}`);
+        const deletedCount = data?.relayResult?.deletedCount || 1;
+        const statusLabel = deletedCount > 1
+          ? `Deleted ${deletedCount} relay event versions for ${truncateHex(eventId, 10, 6)}`
+          : `Deleted relay event ${truncateHex(eventId, 10, 6)}`;
+        setLookupStatus(statusLabel);
       } catch (error) {
         button.innerHTML = originalText;
         button.disabled = false;
@@ -4391,6 +4406,18 @@
 
     loadRealStats();
     updateMuteToggleButton();
+
+    // Refresh stats when returning from another page (e.g., Quick Review).
+    // Browsers restore bfcache state on back-navigation, so the initial
+    // loadRealStats() doesn't re-fire. Debounce to avoid hammering the
+    // endpoint when a moderator flips between tabs frequently.
+    let lastStatsFetch = 0;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastStatsFetch > 30000) {
+        lastStatsFetch = Date.now();
+        loadRealStats();
+      }
+    });
 
     // Restore filters from URL, or default to TRIAGE
     const hasUrlFilter = restoreFiltersFromUrl();

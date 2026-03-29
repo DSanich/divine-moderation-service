@@ -178,7 +178,7 @@ describe('Moderation Classifier', () => {
       maxScores: {
         nudity: 0.1,
         violence: 0.1,
-        ai_generated: 0.85
+        ai_generated: 0.92
       }
     });
 
@@ -190,16 +190,17 @@ describe('Moderation Classifier', () => {
     expect(result.requiresSecondaryVerification).toBe(true);
   });
 
-  it('should classify medium AI-generated score as REVIEW', () => {
+  it('should classify medium AI-generated score as QUARANTINE (no REVIEW band with raised thresholds)', () => {
+    // With ai_generated medium=0.7 and QUARANTINE_THRESHOLD=0.7, scores at 0.7+ go to QUARANTINE
     const result = classifyModerationResult({
       maxScores: {
         nudity: 0.1,
         violence: 0.1,
-        ai_generated: 0.65
+        ai_generated: 0.75
       }
     });
 
-    expect(result.action).toBe('REVIEW');
+    expect(result.action).toBe('QUARANTINE');
     expect(result.severity).toBe('medium');
     expect(result.primaryConcern).toBe('ai_generated');
   });

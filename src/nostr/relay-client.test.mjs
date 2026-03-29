@@ -1,8 +1,14 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { describe, it, expect } from 'vitest';
-import { parseVideoEventMetadata, isOriginalVine, hasStrongOriginalVineEvidence } from './relay-client.mjs';
+import { afterEach, describe, it, expect } from 'vitest';
+import { fetchNostrVideoEventsByDTag, parseVideoEventMetadata, isOriginalVine, hasStrongOriginalVineEvidence } from './relay-client.mjs';
+
+const OriginalWebSocket = globalThis.WebSocket;
+
+afterEach(() => {
+  globalThis.WebSocket = OriginalWebSocket;
+});
 
 describe('parseVideoEventMetadata', () => {
   it('extracts title from title tag', () => {
@@ -166,5 +172,56 @@ describe('hasStrongOriginalVineEvidence', () => {
 
   it('returns false for timestamp-only legacy fallback matches', () => {
     expect(hasStrongOriginalVineEvidence({ publishedAt: 1514678400 })).toBe(false);
+  });
+});
+
+describe('fetchNostrVideoEventsByDTag', () => {
+  it('returns all matching event versions for the d-tag', async () => {
+    const sha256 = 'a'.repeat(64);
+    const versionA = { id: 'b'.repeat(64), kind: 34236, tags: [['d', sha256]] };
+    const versionB = { id: 'c'.repeat(64), kind: 34236, tags: [['d', sha256]] };
+
+    class FakeWebSocket {
+      constructor() {
+        this.listeners = {};
+        this.readyState = 0;
+        queueMicrotask(() => {
+          this.readyState = 1;
+          this.emit('open');
+        });
+      }
+
+      addEventListener(type, handler) {
+        if (!this.listeners[type]) {
+          this.listeners[type] = [];
+        }
+        this.listeners[type].push(handler);
+      }
+
+      send(message) {
+        const [, subscriptionId] = JSON.parse(message);
+        queueMicrotask(() => {
+          this.emit('message', { data: JSON.stringify(['EVENT', subscriptionId, versionA]) });
+          this.emit('message', { data: JSON.stringify(['EVENT', subscriptionId, versionB]) });
+          this.emit('message', { data: JSON.stringify(['EOSE', subscriptionId]) });
+        });
+      }
+
+      close() {
+        this.readyState = 3;
+        queueMicrotask(() => this.emit('close'));
+      }
+
+      emit(type, event = {}) {
+        for (const handler of this.listeners[type] || []) {
+          handler(event);
+        }
+      }
+    }
+
+    globalThis.WebSocket = FakeWebSocket;
+
+    const events = await fetchNostrVideoEventsByDTag(sha256);
+    expect(events).toEqual([versionA, versionB]);
   });
 });
