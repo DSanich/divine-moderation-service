@@ -282,15 +282,23 @@ export function parseVideoEventMetadata(event) {
 export function isOriginalVine(nostrContext) {
   if (!nostrContext) return false;
 
+  if (hasStrongOriginalVineEvidence(nostrContext)) return true;
+
+  // Check if published_at is before 2018 (Vine shut down Jan 2017)
+  // Timestamp 1514764800 = Jan 1, 2018
+  if (nostrContext.publishedAt && nostrContext.publishedAt < 1514764800) return true;
+
+  return false;
+}
+
+export function hasStrongOriginalVineEvidence(nostrContext) {
+  if (!nostrContext) return false;
+
   // Direct indicators of original Vine content
   if (nostrContext.platform === 'vine') return true;
   if (nostrContext.client === 'vine-archaeologist') return true;
   if (nostrContext.vineHashId) return true;
   if (nostrContext.sourceUrl && nostrContext.sourceUrl.includes('vine.co')) return true;
-
-  // Check if published_at is before 2018 (Vine shut down Jan 2017)
-  // Timestamp 1514764800 = Jan 1, 2018
-  if (nostrContext.publishedAt && nostrContext.publishedAt < 1514764800) return true;
 
   return false;
 }

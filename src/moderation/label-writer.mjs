@@ -29,7 +29,8 @@ import { normalizeLabel, classifierCategoryToLabels } from './vocabulary.mjs';
 export async function writeModerationLabels(sha256, classification, env, source) {
   if (!env.CLICKHOUSE_URL || !env.CLICKHOUSE_PASSWORD) return;
 
-  const { action, scores, category, severity } = classification;
+  const { action, category, severity } = classification;
+  const scores = classification.downstreamSignals?.scores || classification.scores;
   const reviewState = classification.reviewed_by ? 'human-confirmed' : 'automated';
   const sourceId = source?.sourceId || classification.provider || 'divine-hive';
   const sourceOwner = source?.sourceOwner || 'divine';

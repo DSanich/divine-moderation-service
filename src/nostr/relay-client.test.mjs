@@ -2,7 +2,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { afterEach, describe, it, expect } from 'vitest';
-import { fetchNostrVideoEventsByDTag, parseVideoEventMetadata, isOriginalVine } from './relay-client.mjs';
+import { fetchNostrVideoEventsByDTag, parseVideoEventMetadata, isOriginalVine, hasStrongOriginalVineEvidence } from './relay-client.mjs';
 
 const OriginalWebSocket = globalThis.WebSocket;
 
@@ -161,6 +161,19 @@ describe('isOriginalVine', () => {
   });
 });
 
+describe('hasStrongOriginalVineEvidence', () => {
+  it('returns true for explicit vine platform markers', () => {
+    expect(hasStrongOriginalVineEvidence({ platform: 'vine' })).toBe(true);
+  });
+
+  it('returns true for vine.co source URLs', () => {
+    expect(hasStrongOriginalVineEvidence({ sourceUrl: 'https://vine.co/v/abc123' })).toBe(true);
+  });
+
+  it('returns false for timestamp-only legacy fallback matches', () => {
+    expect(hasStrongOriginalVineEvidence({ publishedAt: 1514678400 })).toBe(false);
+  });
+});
 describe('fetchNostrVideoEventsByDTag', () => {
   it('returns all matching event versions for the d-tag', async () => {
     const sha256 = 'a'.repeat(64);

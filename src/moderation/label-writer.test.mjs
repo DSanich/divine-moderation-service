@@ -235,4 +235,20 @@ describe('writeModerationLabels', () => {
     const row = JSON.parse(body);
     expect(row.action).toBe('PERMANENT_BAN');
   });
+
+  it('should prefer downstream signal scores over raw scores when provided', async () => {
+    await writeModerationLabels('abc123', {
+      action: 'SAFE',
+      scores: { nudity: 0.9, ai_generated: 0.97 },
+      downstreamSignals: {
+        hasSignals: true,
+        scores: { nudity: 0.9, ai_generated: 0 }
+      }
+    }, mockEnv);
+
+    const body = fetchSpy.mock.calls[0][1].body;
+    const rows = body.split('\n').map(line => JSON.parse(line));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].label).toBe('nudity');
+  });
 });
