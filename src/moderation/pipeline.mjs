@@ -7,9 +7,51 @@
 import { moderateWithFallback } from './providers/index.mjs';
 import { classifyModerationResult, getKVThresholds, kvThresholdsToEnv } from './classifier.mjs';
 import { classifyText, parseVttText } from './text-classifier.mjs';
-import { fetchNostrEventBySha256, parseVideoEventMetadata, isOriginalVine } from '../nostr/relay-client.mjs';
+import { fetchNostrEventBySha256, parseVideoEventMetadata, isOriginalVine, hasStrongOriginalVineEvidence } from '../nostr/relay-client.mjs';
 import { classifyVideo } from '../classification/pipeline.mjs';
 import { extractTopics } from '../classification/topic-extractor.mjs';
+
+const ORIGINAL_VINE_SUPPRESSED_CATEGORIES = new Set(['ai_generated', 'deepfake']);
+const DOWNSTREAM_SIGNAL_THRESHOLD = 0.5;
+
+function applyOriginalVineEnforcementOverride(classification) {
+  return {
+    ...classification,
+    action: 'SAFE',
+    severity: 'low',
+    category: null,
+    reason: 'Original Vine archive content remains serveable; moderation signals retained for trust and safety context',
+    requiresSecondaryVerification: false
+  };
+}
+
+function deriveDownstreamSignals(classification, { originalVine = false } = {}) {
+  const sourceScores = classification?.scores || {};
+  const filteredScores = {};
+
+  for (const [category, score] of Object.entries(sourceScores)) {
+    const shouldSuppress = originalVine && ORIGINAL_VINE_SUPPRESSED_CATEGORIES.has(category);
+    filteredScores[category] = shouldSuppress ? 0 : score;
+  }
+
+  const signalEntries = Object.entries(filteredScores)
+    .filter(([, score]) => score >= DOWNSTREAM_SIGNAL_THRESHOLD)
+    .sort((a, b) => b[1] - a[1]);
+
+  const primaryConcern = signalEntries[0]?.[0] || null;
+  const primaryScore = signalEntries[0]?.[1] || 0;
+
+  return {
+    hasSignals: signalEntries.length > 0,
+    scores: filteredScores,
+    primaryConcern,
+    category: primaryConcern,
+    severity: primaryScore >= 0.8 ? 'high' : (primaryScore > 0 ? 'medium' : 'low'),
+    reason: primaryConcern
+      ? `Moderation signal retained for ${primaryConcern}`
+      : null
+  };
+}
 
 /**
  * Run classify-only pipeline on a video that already has moderation results.
@@ -128,35 +170,38 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
   let videoUrl = metadata?.videoUrl || `https://${env.CDN_DOMAIN}/${sha256}`; // Default: blossom content-addressed URL
   let nostrEventId = metadata?.eventId || null;
 
-  // If we don't have a video URL from metadata, try to fetch from Nostr relay
-  if (!metadata?.videoUrl) {
-    try {
-      const relays = env.NOSTR_RELAY_URL ? [env.NOSTR_RELAY_URL] : ['wss://relay.divine.video'];
-      const event = await fetchNostrEventBySha256(sha256, relays);
-      if (event) {
-        nostrContext = parseVideoEventMetadata(event);
-        nostrEventId = event.id;
-        console.log(`[MODERATION] Found Nostr context for ${sha256}:`, nostrContext);
+  // Always attempt to resolve Nostr context so policy decisions can use archive metadata
+  try {
+    const relays = env.NOSTR_RELAY_URL ? [env.NOSTR_RELAY_URL] : ['wss://relay.divine.video'];
+    const event = await fetchNostrEventBySha256(sha256, relays);
+    if (event) {
+      nostrContext = parseVideoEventMetadata(event);
+      nostrEventId = event.id;
+      console.log(`[MODERATION] Found Nostr context for ${sha256}:`, nostrContext);
 
-        // Use the video URL from Nostr event if available
-        if (nostrContext.url) {
-          videoUrl = nostrContext.url;
-          console.log(`[MODERATION] Using video URL from Nostr event: ${videoUrl}`);
-        }
-      } else {
-        console.log(`[MODERATION] No Nostr event found for ${sha256}, using fallback URL: ${videoUrl}`);
+      // Prefer explicit metadata.videoUrl when provided, otherwise trust the relay URL
+      if (!metadata?.videoUrl && nostrContext.url) {
+        videoUrl = nostrContext.url;
+        console.log(`[MODERATION] Using video URL from Nostr event: ${videoUrl}`);
       }
-    } catch (error) {
-      console.error(`[MODERATION] Failed to fetch Nostr context for ${sha256}:`, error);
-      console.log(`[MODERATION] Using fallback URL: ${videoUrl}`);
-      // Don't fail moderation if Nostr fetch fails
+    } else {
+      console.log(`[MODERATION] No Nostr event found for ${sha256}, using fallback URL: ${videoUrl}`);
     }
-  } else {
+  } catch (error) {
+    console.error(`[MODERATION] Failed to fetch Nostr context for ${sha256}:`, error);
+    console.log(`[MODERATION] Using fallback URL: ${videoUrl}`);
+    // Don't fail moderation if Nostr fetch fails
+  }
+
+  if (metadata?.videoUrl) {
     console.log(`[MODERATION] Using video URL from metadata: ${videoUrl}`);
+  } else {
+    console.log(`[MODERATION] Using resolved video URL: ${videoUrl}`);
   }
 
   // Step 2: Check if this is an original Vine (skip AI detection for pre-2018 content)
   const skipAIDetection = isOriginalVine(nostrContext);
+  const shouldForceServeable = hasStrongOriginalVineEvidence(nostrContext);
   if (skipAIDetection) {
     console.log(`[MODERATION] Original Vine detected - skipping AI detection for ${sha256}`);
   }
@@ -268,8 +313,29 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     text_scores: textScores
   }, effectiveEnv);
 
+  const policyContext = {
+    originalVine: shouldForceServeable,
+    originalVineLegacyFallback: skipAIDetection && !shouldForceServeable,
+    enforcementOverridden: false,
+    overrideReason: null,
+    originalAction: classification.action
+  };
+
+  const downstreamSignals = deriveDownstreamSignals(classification, { originalVine: shouldForceServeable });
+
+  const finalClassification = shouldForceServeable
+    ? (() => {
+      const overridden = applyOriginalVineEnforcementOverride(classification);
+      if (classification.action !== overridden.action) {
+        policyContext.enforcementOverridden = true;
+        policyContext.overrideReason = 'original-vine-serveable';
+      }
+      return overridden;
+    })()
+    : classification;
+
   // Step 4.5: If AI-flagged, submit to Reality Defender for secondary verification (fire-and-forget)
-  if (classification.requiresSecondaryVerification && env.REALITY_DEFENDER_API_KEY) {
+  if (finalClassification.requiresSecondaryVerification && env.REALITY_DEFENDER_API_KEY) {
     try {
       const { submitToRealityDefender } = await import('./realness-client.mjs');
       const rdResult = await submitToRealityDefender(sha256, videoUrl, env);
@@ -287,7 +353,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
   // Step 5: Return complete result
   return {
     // Classification
-    ...classification,
+    ...finalClassification,
 
     // Provider used
     provider: moderationResult.provider,
@@ -310,6 +376,10 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
 
     // Nostr event context (if found)
     nostrContext,
+
+    // Explicit policy metadata for serveability vs downstream moderation signals
+    policyContext,
+    downstreamSignals,
 
     // Text analysis scores from VTT transcript (null if no VTT available)
     text_scores: textScores,
