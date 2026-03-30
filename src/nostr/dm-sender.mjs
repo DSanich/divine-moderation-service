@@ -529,10 +529,14 @@ function publishToSingleRelay(event, relayUrl, env) {
  * @param {string} reason - Human-readable reason
  * @param {Object} env - Cloudflare Workers env
  * @param {Object} ctx - Execution context (for waitUntil)
- * @param {string} [categories] - JSON string of categories from moderation result
+ * @param {Object} [options] - Optional parameters
+ * @param {string} [options.categories] - JSON string of categories from moderation result
+ * @param {string} [options.title] - Content title
+ * @param {string} [options.publishedAt] - ISO date when content was published
  * @returns {Promise<{ sent: boolean, reason?: string }>}
  */
-export async function sendModerationDM(recipientPubkey, sha256, action, reason, env, ctx, categories, title = null, publishedAt = null) {
+export async function sendModerationDM(recipientPubkey, sha256, action, reason, env, ctx, options = {}) {
+  const { categories = null, title = null, publishedAt = null } = options;
   try {
     // Validate inputs
     if (!recipientPubkey || typeof recipientPubkey !== 'string') {
