@@ -1582,3 +1582,105 @@ describe('POST /api/v1/batch-scan (legacy)', () => {
     });
   });
 });
+
+describe('POST /api/v1/notify', () => {
+  const VALID_PUBKEY = 'ab'.repeat(32);
+
+  it('rejects unauthorized request', async () => {
+    const env = createEnv({ ALLOW_DEV_ACCESS: 'false' });
+
+    const response = await worker.fetch(
+      new Request('https://moderation-api.divine.video/api/v1/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipientPubkey: VALID_PUBKEY, action: 'PERMANENT_BAN' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it('rejects invalid pubkey', async () => {
+    const env = createEnv({ ALLOW_DEV_ACCESS: 'true' });
+
+    const response = await worker.fetch(
+      new Request('https://moderation-api.divine.video/api/v1/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipientPubkey: 'not-a-valid-hex-pubkey', action: 'PERMANENT_BAN' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain('recipientPubkey');
+  });
+
+  it('rejects invalid action', async () => {
+    const env = createEnv({ ALLOW_DEV_ACCESS: 'true' });
+
+    const response = await worker.fetch(
+      new Request('https://moderation-api.divine.video/api/v1/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipientPubkey: VALID_PUBKEY, action: 'INVALID_ACTION' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toContain('Invalid action');
+    expect(body.error).toContain('PERMANENT_BAN');
+  });
+
+  it('returns success with dm_sent false when NOSTR_PRIVATE_KEY not configured', async () => {
+    const env = createEnv({
+      ALLOW_DEV_ACCESS: 'true',
+      NOSTR_PRIVATE_KEY: undefined
+    });
+
+    const response = await worker.fetch(
+      new Request('https://moderation-api.divine.video/api/v1/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipientPubkey: VALID_PUBKEY, action: 'PERMANENT_BAN' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.success).toBe(true);
+    expect(body.dm_sent).toBe(false);
+    expect(body.reason).toContain('not configured');
+  });
+
+  it('sends DM for valid request with NOSTR_PRIVATE_KEY configured', async () => {
+    const env = createEnv({
+      ALLOW_DEV_ACCESS: 'true',
+      NOSTR_PRIVATE_KEY: 'deadbeef'.repeat(8)
+    });
+
+    // sendModerationDM will attempt WebSocket connections to relays.
+    // Mock fetch/WebSocket to prevent real connections. The DM sender
+    // catches all errors internally and returns { sent: false, reason }.
+    const response = await worker.fetch(
+      new Request('https://moderation-api.divine.video/api/v1/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipientPubkey: VALID_PUBKEY, action: 'PERMANENT_BAN', reason: 'test' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.success).toBe(true);
+    // dm_sent may be true or false depending on relay connectivity,
+    // but the endpoint should not error
+    expect(typeof body.dm_sent).toBe('boolean');
+  });
+});

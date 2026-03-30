@@ -2666,7 +2666,7 @@ async function runMigration() {
         const body = await request.json();
         const { recipientPubkey, action, reason, sha256, eventId } = body;
 
-        if (!recipientPubkey || typeof recipientPubkey !== 'string' || recipientPubkey.length !== 64) {
+        if (!isValidPubkey(recipientPubkey)) {
           return new Response(JSON.stringify({ error: 'Valid recipientPubkey (64-char hex) required' }), {
             status: 400,
             headers: { 'Content-Type': 'application/json' }
@@ -2675,6 +2675,16 @@ async function runMigration() {
 
         if (!action || typeof action !== 'string') {
           return new Response(JSON.stringify({ error: 'action required' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        const validNotifyActions = ['PERMANENT_BAN', 'AGE_RESTRICTED', 'QUARANTINE', 'ACCOUNT_SUSPENDED', 'REPORT_OUTCOME_ACTION', 'REPORT_OUTCOME_NO_ACTION'];
+        if (!validNotifyActions.includes(action)) {
+          return new Response(JSON.stringify({
+            error: `Invalid action. Must be one of: ${validNotifyActions.join(', ')}`
+          }), {
             status: 400,
             headers: { 'Content-Type': 'application/json' }
           });
@@ -2694,7 +2704,6 @@ async function runMigration() {
           action,
           reason || null,
           env,
-          null,
           null
         );
 
