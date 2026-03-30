@@ -638,6 +638,7 @@
     let loadedUntriagedVideos = [];
     let currentIndex = 0;
     let reviewedCount = 0;
+    const reviewedSha256s = new Set();
     let currentToast = null;
     const transcriptCache = new Map();
 
@@ -746,11 +747,12 @@
     }
 
     function applySortOrder() {
-      // Re-sort the already-loaded batch client-side
+      // Re-sort the already-loaded batch client-side, filtering out already-reviewed items
       if (loadedFlaggedVideos.length === 0) return;
-      reviewQueue = [...sortFlaggedVideos(loadedFlaggedVideos), ...loadedUntriagedVideos];
+      const remainingFlagged = loadedFlaggedVideos.filter(v => !reviewedSha256s.has(v.sha256));
+      const remainingUntriaged = loadedUntriagedVideos.filter(v => !reviewedSha256s.has(v.sha256));
+      reviewQueue = [...sortFlaggedVideos(remainingFlagged), ...remainingUntriaged];
       currentIndex = 0;
-      reviewedCount = 0;
       showCurrentVideo();
       updateProgress();
     }
@@ -1347,6 +1349,7 @@
           }
 
           reviewedCount++;
+          reviewedSha256s.add(sha256);
           showToast('Queued for AI moderation', null, 2000);
 
           // Move to next video
@@ -1368,6 +1371,7 @@
         }
 
         reviewedCount++;
+        reviewedSha256s.add(sha256);
 
         const actionName = action === 'SAFE' ? 'approved' :
                           action === 'AGE_RESTRICTED' ? 'age-restricted' :
@@ -1388,6 +1392,7 @@
             if (undoResponse.ok) {
               currentIndex--;
               reviewedCount--;
+              reviewedSha256s.delete(sha256);
               showCurrentVideo();
               showToast('Action undone', null, 2000);
             }
