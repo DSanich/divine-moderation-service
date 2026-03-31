@@ -870,12 +870,16 @@ export default {
 
       const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
 
+      // Sort order — 'oldest' fetches from the back of the queue
+      const sortParam = url.searchParams.get('sort');
+      const orderDirection = sortParam === 'oldest' ? 'ASC' : 'DESC';
+
       // Query D1 with pagination
       const query = `
         SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, uploaded_by
         FROM moderation_results
         ${whereClause}
-        ORDER BY moderated_at DESC
+        ORDER BY moderated_at ${orderDirection}
         LIMIT ? OFFSET ?
       `;
       params.push(limit + 1, offset); // Fetch one extra to check if more exist

@@ -29,10 +29,14 @@
       padding: 15px 20px;
       background: #1a1a1a;
       border-bottom: 1px solid #333;
+      flex-shrink: 0;
+    }
+
+    .header-top {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      flex-shrink: 0;
+      margin-bottom: 10px;
     }
 
     .header h1 {
@@ -40,9 +44,16 @@
       color: #fff;
     }
 
-    .header-actions {
+    .header-nav {
       display: flex;
       gap: 10px;
+    }
+
+    .header-filters {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
     }
 
     .btn {
@@ -572,8 +583,25 @@
 </head>
 <body>
   <div class="header">
-    <h1>Quick Review</h1>
-    <div class="header-actions">
+    <div class="header-top">
+      <div>
+        <h1 style="margin-bottom: 2px;">Quick Review</h1>
+        <div style="font-size: 12px; color: #888;">Showing AI-flagged items awaiting review</div>
+      </div>
+      <div class="header-nav">
+        <button class="btn" onclick="window.location.href='/admin/dashboard'">Dashboard</button>
+        <button class="btn" onclick="logout()">Logout</button>
+      </div>
+    </div>
+    <div class="header-filters">
+      <select id="queue-order" class="btn" onchange="applyQueueOrder()" style="appearance: auto;">
+        <option value="newest">Load: Newest first</option>
+        <option value="oldest">Load: Oldest first</option>
+      </select>
+      <select id="sort-order" class="btn" onchange="applySortOrder()" style="appearance: auto;">
+        <option value="high">Sort: Highest score</option>
+        <option value="low">Sort: Lowest score</option>
+      </select>
       <select id="since-filter" class="btn" onchange="applySinceFilter()" style="appearance: auto;">
         <option value="2025-12-01">Since Dec 2025</option>
         <option value="2026-01-01">Since Jan 2026</option>
@@ -581,8 +609,6 @@
         <option value="2026-03-01">Since Mar 2026</option>
         <option value="">All time</option>
       </select>
-      <button class="btn" onclick="window.location.href='/admin/dashboard'">Dashboard</button>
-      <button class="btn" onclick="logout()">Logout</button>
     </div>
   </div>
 
@@ -608,8 +634,11 @@
 
   <script>
     let reviewQueue = [];
+    let loadedFlaggedVideos = [];
+    let loadedUntriagedVideos = [];
     let currentIndex = 0;
     let reviewedCount = 0;
+    const reviewedSha256s = new Set();
     let currentToast = null;
     const transcriptCache = new Map();
 
@@ -638,8 +667,10 @@
         // Load AI flagged videos FIRST (priority), then untriaged
         const sinceValue = document.getElementById('since-filter').value;
         const sinceParam = sinceValue ? `&since=${sinceValue}` : '';
+        const queueOrder = document.getElementById('queue-order').value;
+        const sortParam = queueOrder === 'oldest' ? '&sort=oldest' : '';
         const [flaggedResponse, untriagedResponse] = await Promise.all([
-          fetch('/admin/api/videos?action=FLAGGED&limit=100' + sinceParam),
+          fetch('/admin/api/videos?action=FLAGGED&limit=100' + sinceParam + sortParam),
           fetch('/admin/api/untriaged?limit=50')
         ]);
 
@@ -651,21 +682,18 @@
         const flaggedData = await flaggedResponse.json();
         const untriagedData = await untriagedResponse.json();
 
-        // AI flagged videos - sorted by highest score first
-        const flaggedVideos = (flaggedData.videos || [])
-          .sort((a, b) => getMaxScore(b.scores) - getMaxScore(a.scores));
-
-        const untriagedVideos = (untriagedData.videos || []).map(v => ({
+        loadedFlaggedVideos = flaggedData.videos || [];
+        loadedUntriagedVideos = (untriagedData.videos || []).map(v => ({
           ...v,
           isUntriaged: true,
           action: 'UNTRIAGED',
           scores: {}
         }));
 
-        // AI FLAGGED FIRST (they need attention!), then untriaged
-        reviewQueue = [...flaggedVideos, ...untriagedVideos];
+        // Sort flagged videos by selected order, then append untriaged
+        reviewQueue = [...sortFlaggedVideos(loadedFlaggedVideos), ...loadedUntriagedVideos];
 
-        console.log('[QuickReview] Loaded:', flaggedVideos.length, 'AI flagged,', untriagedVideos.length, 'untriaged');
+        console.log('[QuickReview] Loaded:', loadedFlaggedVideos.length, 'AI flagged,', loadedUntriagedVideos.length, 'untriaged');
 
         document.getElementById('loading').style.display = 'none';
 
@@ -700,6 +728,33 @@
     function getMaxScore(scores) {
       if (!scores) return 0;
       return Math.max(...Object.values(scores).filter(v => typeof v === 'number'));
+    }
+
+    function sortFlaggedVideos(videos) {
+      const order = document.getElementById('sort-order').value;
+      const sorted = [...videos];
+      if (order === 'high') {
+        sorted.sort((a, b) => getMaxScore(b.scores) - getMaxScore(a.scores));
+      } else if (order === 'low') {
+        sorted.sort((a, b) => getMaxScore(a.scores) - getMaxScore(b.scores));
+      }
+      return sorted;
+    }
+
+    function applyQueueOrder() {
+      // Re-fetch: different queue orders pull different items from the backend
+      applySinceFilter();
+    }
+
+    function applySortOrder() {
+      // Re-sort the already-loaded batch client-side, filtering out already-reviewed items
+      if (loadedFlaggedVideos.length === 0) return;
+      const remainingFlagged = loadedFlaggedVideos.filter(v => !reviewedSha256s.has(v.sha256));
+      const remainingUntriaged = loadedUntriagedVideos.filter(v => !reviewedSha256s.has(v.sha256));
+      reviewQueue = [...sortFlaggedVideos(remainingFlagged), ...remainingUntriaged];
+      currentIndex = 0;
+      showCurrentVideo();
+      updateProgress();
     }
 
     function showCurrentVideo() {
@@ -1294,6 +1349,7 @@
           }
 
           reviewedCount++;
+          reviewedSha256s.add(sha256);
           showToast('Queued for AI moderation', null, 2000);
 
           // Move to next video
@@ -1315,6 +1371,7 @@
         }
 
         reviewedCount++;
+        reviewedSha256s.add(sha256);
 
         const actionName = action === 'SAFE' ? 'approved' :
                           action === 'AGE_RESTRICTED' ? 'age-restricted' :
@@ -1335,6 +1392,7 @@
             if (undoResponse.ok) {
               currentIndex--;
               reviewedCount--;
+              reviewedSha256s.delete(sha256);
               showCurrentVideo();
               showToast('Action undone', null, 2000);
             }
