@@ -27,6 +27,7 @@ import { isValidSha256, isValidLookupIdentifier, isValidPubkey, parseMaybeJson, 
 import { parseVttText } from './moderation/text-classifier.mjs';
 import { notifyAtprotoLabeler } from './atproto/label-webhook.mjs';
 import { buildDownstreamPublishContext } from './moderation/downstream-publishing.mjs';
+import { runClassicVineRollback } from './moderation/classic-vine-rollback.mjs';
 /**
  * NIP-32 label mapping for content categories
  * Maps internal category names to NIP-32/NIP-56 compatible labels
@@ -2593,6 +2594,22 @@ async function runMigration() {
         return new Response(JSON.stringify({ error: 'No realness verification found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (url.pathname === '/admin/api/classic-vines/rollback' && request.method === 'POST') {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      try {
+        const body = await request.json();
+        const result = await runClassicVineRollback(body, env, {
+          notifyBlossom: (sha256, action) => notifyBlossom(sha256, action, env)
+        });
+        return jsonResponse(200, result);
+      } catch (error) {
+        console.error('[CLASSIC-VINES] Rollback error:', error);
+        return jsonResponse(error.status || 500, { error: error.message });
+      }
     }
 
     // API: Submit a user report for a piece of content (NIP-56)

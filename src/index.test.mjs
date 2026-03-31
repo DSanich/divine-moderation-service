@@ -1036,6 +1036,261 @@ describe('notifyBlossom integration via admin moderate endpoint', () => {
   });
 });
 
+describe('classic vine rollback admin endpoint', () => {
+  function createRollbackDb(rowBySha = new Map()) {
+    return {
+      prepare(sql) {
+        let bindings = [];
+
+        return {
+          bind(...args) {
+            bindings = args;
+            return this;
+          },
+          async run() {
+            return { success: true };
+          },
+          async first() {
+            if (sql.includes('FROM moderation_results') && sql.includes('WHERE sha256 = ?')) {
+              return rowBySha.get(bindings[0]) ?? null;
+            }
+            return null;
+          },
+          async all() {
+            return { results: [] };
+          }
+        };
+      },
+      async batch() {
+        return [];
+      }
+    };
+  }
+
+  function createRollbackEnv({ rows = new Map(), kvStore = new Map(), blossomPayloads = [] } = {}) {
+    return {
+      ALLOW_DEV_ACCESS: 'true',
+      SERVICE_API_TOKEN: 'test-service-token',
+      BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/classic-vines/rollback',
+      BLOSSOM_WEBHOOK_SECRET: 'test-webhook-secret',
+      BLOSSOM_DB: createRollbackDb(rows),
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      },
+      MODERATION_QUEUE: { async send() {} },
+      __fetchInterceptor: (url, init) => {
+        if (url === 'https://mock-blossom.test/classic-vines/rollback') {
+          blossomPayloads.push(JSON.parse(init.body));
+          return new Response(JSON.stringify({ success: true }), { status: 200 });
+        }
+        return null;
+      }
+    };
+  }
+
+  it('previews classic vine rollback candidates without mutating enforcement state', async () => {
+    const env = createRollbackEnv({
+      rows: new Map([[SHA256, {
+        sha256: SHA256,
+        action: 'PERMANENT_BAN',
+        provider: 'hiveai',
+        scores: JSON.stringify({ ai_generated: 0.97 }),
+        categories: JSON.stringify(['ai_generated']),
+        moderated_at: '2026-03-12T00:00:00.000Z'
+      }]])
+    });
+
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/api/classic-vines/rollback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'preview',
+          source: 'sha-list',
+          videos: [{
+            sha256: SHA256,
+            nostrContext: {
+              platform: 'vine',
+              sourceUrl: 'https://vine.co/v/abc123',
+              publishedAt: 1389756506
+            }
+          }]
+        })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      mode: 'preview',
+      processed: 1,
+      restored: 0,
+      skipped: 0,
+      failed: 0,
+      candidates: [{
+        sha256: SHA256,
+        would_restore: true,
+        reason: 'confirmed-classic-vine'
+      }]
+    });
+  });
+
+  it('restores enforcement for confirmed classic vines without calling moderation providers', async () => {
+    const kvStore = new Map([
+      [`review:${SHA256}`, JSON.stringify({ action: 'REVIEW' })],
+      [`quarantine:${SHA256}`, JSON.stringify({ action: 'QUARANTINE' })],
+      [`age-restricted:${SHA256}`, JSON.stringify({ action: 'AGE_RESTRICTED' })],
+      [`permanent-ban:${SHA256}`, JSON.stringify({ action: 'PERMANENT_BAN' })],
+    ]);
+    const blossomPayloads = [];
+    const providerRequests = [];
+    const env = createRollbackEnv({
+      rows: new Map([[SHA256, {
+        sha256: SHA256,
+        action: 'PERMANENT_BAN',
+        provider: 'hiveai',
+        scores: JSON.stringify({ ai_generated: 0.97 }),
+        categories: JSON.stringify(['ai_generated']),
+        moderated_at: '2026-03-12T00:00:00.000Z'
+      }]]),
+      kvStore,
+      blossomPayloads
+    });
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const intercepted = env.__fetchInterceptor(url, init);
+      if (intercepted) return intercepted;
+      providerRequests.push(String(url));
+      return new Response('{}', { status: 404 });
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/classic-vines/rollback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'execute',
+            source: 'sha-list',
+            videos: [{
+              sha256: SHA256,
+              nostrContext: {
+                platform: 'vine',
+                sourceUrl: 'https://vine.co/v/abc123',
+                publishedAt: 1389756506
+              }
+            }]
+          })
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        mode: 'execute',
+        processed: 1,
+        restored: 1,
+        skipped: 0,
+        failed: 0,
+        candidates: [{
+          sha256: SHA256,
+          restored: true,
+          reason: 'confirmed-classic-vine'
+        }]
+      });
+      expect(blossomPayloads).toHaveLength(1);
+      expect(blossomPayloads[0].action).toBe('SAFE');
+      expect(providerRequests).toEqual([]);
+      expect(kvStore.has(`review:${SHA256}`)).toBe(false);
+      expect(kvStore.has(`quarantine:${SHA256}`)).toBe(false);
+      expect(kvStore.has(`age-restricted:${SHA256}`)).toBe(false);
+      expect(kvStore.has(`permanent-ban:${SHA256}`)).toBe(false);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('returns a cursor for unfinished classic vine rollback batches', async () => {
+    const blossomPayloads = [];
+    const env = createRollbackEnv({
+      rows: new Map([
+        [SHA256, {
+          sha256: SHA256,
+          action: 'PERMANENT_BAN',
+          provider: 'hiveai',
+          scores: JSON.stringify({ ai_generated: 0.97 }),
+          categories: JSON.stringify(['ai_generated']),
+          moderated_at: '2026-03-12T00:00:00.000Z'
+        }],
+        ['b'.repeat(64), {
+          sha256: 'b'.repeat(64),
+          action: 'PERMANENT_BAN',
+          provider: 'hiveai',
+          scores: JSON.stringify({ ai_generated: 0.96 }),
+          categories: JSON.stringify(['ai_generated']),
+          moderated_at: '2026-03-12T00:00:00.000Z'
+        }]
+      ]),
+      blossomPayloads
+    });
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const intercepted = env.__fetchInterceptor(url, init);
+      if (intercepted) return intercepted;
+      return new Response('{}', { status: 404 });
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/classic-vines/rollback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'execute',
+            source: 'sha-list',
+            limit: 1,
+            videos: [
+              {
+                sha256: SHA256,
+                nostrContext: {
+                  platform: 'vine',
+                  sourceUrl: 'https://vine.co/v/abc123',
+                  publishedAt: 1389756506
+                }
+              },
+              {
+                sha256: 'b'.repeat(64),
+                nostrContext: {
+                  vineHashId: 'second-vine',
+                  publishedAt: 1390000000
+                }
+              }
+            ]
+          })
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        mode: 'execute',
+        processed: 1,
+        restored: 1,
+        next_cursor: '1'
+      });
+      expect(blossomPayloads).toHaveLength(1);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
 describe('DM exclusion for QUARANTINE via admin moderate', () => {
   it('does not send DM when action is QUARANTINE even with NOSTR_PRIVATE_KEY set', async () => {
     let dmAttempted = false;
