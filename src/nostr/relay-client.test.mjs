@@ -1,14 +1,8 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { afterEach, describe, it, expect } from 'vitest';
-import { fetchNostrVideoEventsByDTag, parseVideoEventMetadata, isOriginalVine, hasStrongOriginalVineEvidence } from './relay-client.mjs';
-
-const OriginalWebSocket = globalThis.WebSocket;
-
-afterEach(() => {
-  globalThis.WebSocket = OriginalWebSocket;
-});
+import { describe, it, expect } from 'vitest';
+import { parseVideoEventMetadata, isOriginalVine, hasStrongOriginalVineEvidence } from './relay-client.mjs';
 
 describe('parseVideoEventMetadata', () => {
   it('extracts title from title tag', () => {
