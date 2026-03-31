@@ -1396,7 +1396,12 @@ export default {
           reviewed_by = excluded.reviewed_by,
           reviewed_at = excluded.reviewed_at,
           review_notes = excluded.review_notes,
-          uploaded_by = COALESCE(moderation_results.uploaded_by, excluded.uploaded_by)
+          uploaded_by = COALESCE(moderation_results.uploaded_by, excluded.uploaded_by),
+          title = COALESCE(moderation_results.title, excluded.title),
+          author = COALESCE(moderation_results.author, excluded.author),
+          event_id = COALESCE(moderation_results.event_id, excluded.event_id),
+          content_url = COALESCE(moderation_results.content_url, excluded.content_url),
+          published_at = COALESCE(moderation_results.published_at, excluded.published_at)
       `).bind(
         sha256,
         action,
@@ -1495,11 +1500,11 @@ export default {
         try {
           // Look up uploaded_by from D1
           const uploaderRow = await env.BLOSSOM_DB.prepare(
-            'SELECT uploaded_by, categories FROM moderation_results WHERE sha256 = ?'
+            'SELECT uploaded_by, categories, title, published_at FROM moderation_results WHERE sha256 = ?'
           ).bind(sha256).first();
           if (uploaderRow?.uploaded_by) {
             const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
-            await sendModerationDM(uploaderRow.uploaded_by, sha256, action, reason || 'Manual moderator action', env, null, uploaderRow?.categories);
+            await sendModerationDM(uploaderRow.uploaded_by, sha256, action, reason || 'Manual moderator action', env, null, { categories: uploaderRow?.categories, title: uploaderRow?.title, publishedAt: uploaderRow?.published_at });
             dmSent = true;
             console.log(`[ADMIN] DM sent to creator ${uploaderRow.uploaded_by.substring(0, 16)}...`);
           }
@@ -1507,6 +1512,10 @@ export default {
           console.error(`[ADMIN] DM to creator failed:`, dmErr.message);
         }
       }
+
+      // Notify reporters who filed reports on this content (non-blocking)
+      const { notifyReporters } = await import('./nostr/dm-sender.mjs');
+      notifyReporters(sha256, action, env, '[ADMIN]').catch(() => {});
 
       // Notify ATProto labeler of manual override
       notifyAtprotoLabeler({ sha256, action, scores: updated.scores || {}, reviewed_by: 'admin' }, env).catch(err => {
@@ -3246,8 +3255,9 @@ async function runMigration() {
         // Store result in D1
         await env.BLOSSOM_DB.prepare(`
           INSERT OR REPLACE INTO moderation_results
-          (sha256, action, provider, scores, categories, raw_response, moderated_at, uploaded_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          (sha256, action, provider, scores, categories, raw_response, moderated_at, uploaded_by,
+           title, author, event_id, content_url, published_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           sha256,
           result.action,
@@ -3256,7 +3266,12 @@ async function runMigration() {
           JSON.stringify(result.categories || []),
           JSON.stringify(result.rawResponse || {}),
           new Date().toISOString(),
-          result.uploadedBy || null
+          result.uploadedBy || null,
+          result.nostrContext?.title || null,
+          result.nostrContext?.author || null,
+          result.nostrEventId || null,
+          result.nostrContext?.url || result.cdnUrl || null,
+          result.nostrContext?.publishedAt || null
         ).run();
         console.log(`[MODERATION] Step 7: D1 write successful`);
 
@@ -3515,12 +3530,19 @@ async function runMigration() {
                   if (uploadedBy && env.NOSTR_PRIVATE_KEY) {
                     try {
                       const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
-                      await sendModerationDM(uploadedBy, sha256, 'PERMANENT_BAN', moderation.reason, env);
+                      const metaRow = await env.BLOSSOM_DB.prepare(
+                        'SELECT title, published_at FROM moderation_results WHERE sha256 = ?'
+                      ).bind(sha256).first();
+                      await sendModerationDM(uploadedBy, sha256, 'PERMANENT_BAN', moderation.reason, env, null, { title: metaRow?.title, publishedAt: metaRow?.published_at });
                       console.log(`[CRON] DM sent to creator for auto-escalated ${sha256}`);
                     } catch (dmErr) {
                       console.error(`[CRON] DM failed for ${sha256}:`, dmErr.message);
                     }
                   }
+
+                  // Notify reporters
+                  const { notifyReporters: notifyCronReporters } = await import('./nostr/dm-sender.mjs');
+                  notifyCronReporters(sha256, 'PERMANENT_BAN', env, '[CRON]').catch(() => {});
 
                   // Mark escalation complete so cron doesn't retry
                   const rdCached = await env.MODERATION_KV.get(`rd:${sha256}`);
@@ -3620,12 +3642,16 @@ async function handleModerationResult(result, env) {
   if (['PERMANENT_BAN', 'AGE_RESTRICTED'].includes(action) && uploadedBy && env.NOSTR_PRIVATE_KEY) {
     try {
       const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
-      await sendModerationDM(uploadedBy, sha256, action, reason, env, null, result.categories);
+      await sendModerationDM(uploadedBy, sha256, action, reason, env, null, { categories: result.categories, title: result.nostrContext?.title, publishedAt: result.nostrContext?.publishedAt });
       console.log(`[MODERATION] ${sha256} - DM notification sent to creator ${uploadedBy.substring(0, 16)}...`);
     } catch (dmErr) {
       console.error(`[MODERATION] ${sha256} - DM notification failed:`, dmErr.message);
     }
   }
+
+  // Notify reporters who filed reports on this content (non-blocking)
+  const { notifyReporters: notifyReportersOfOutcome } = await import('./nostr/dm-sender.mjs');
+  notifyReportersOfOutcome(sha256, action, env, '[MODERATION]').catch(() => {});
 
   // Write normalized moderation labels to ClickHouse
   try {

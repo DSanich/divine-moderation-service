@@ -14,7 +14,8 @@ import {
   checkRateLimit,
   discoverUserRelays,
   sendModerationDM,
-  selectTemplate
+  selectTemplate,
+  notifyReporters,
 } from './dm-sender.mjs';
 
 // Generate a stable test key in hex format (matching production usage)
@@ -30,9 +31,8 @@ describe('DM Sender - Message Templates', () => {
     expect(message).toContain('contain explicit content');
     expect(message).toContain('reply to this message to appeal');
     expect(message).toContain('divine.video/video/abc123');
+    expect(message).toContain('Learn more about our content policies');
     expect(message).toContain('divine.video/terms');
-    expect(message).toContain('about.divine.video/faqs/');
-    expect(message).toContain('divine.video/support');
   });
 
   it('should produce correct message for AGE_RESTRICTED', () => {
@@ -42,6 +42,27 @@ describe('DM Sender - Message Templates', () => {
     expect(message).toContain('contain mature themes');
     expect(message).toContain('confirmed their age');
     expect(message).toContain('divine.video/video/def456');
+  });
+
+  it('should include title and published date when provided', () => {
+    const message = getMessageForAction('PERMANENT_BAN', 'violate content policies', 'abc123', 'My Cool Video', '2026-03-15T00:00:00Z');
+
+    expect(message).toContain('Your video "My Cool Video"');
+    expect(message).toContain('(posted Mar 15)');
+    expect(message).not.toContain('Your content was');
+  });
+
+  it('should include title in AGE_RESTRICTED when provided', () => {
+    const message = getMessageForAction('AGE_RESTRICTED', 'contain mature themes', 'def456', 'Beach Day');
+
+    expect(message).toContain('Your video "Beach Day" has been age-restricted');
+  });
+
+  it('should fall back to "your content" when title is null', () => {
+    const message = getMessageForAction('PERMANENT_BAN', 'violate content policies', 'abc123', null);
+
+    expect(message).toContain('Your content was removed');
+    expect(message).not.toContain('(posted');
   });
 
   it('should produce correct message for QUARANTINE', () => {
@@ -63,12 +84,53 @@ describe('DM Sender - Message Templates', () => {
     expect(message).not.toContain('divine.video/video/');
   });
 
-  it('should produce correct report outcome message', () => {
-    const message = getReportOutcomeMessage('removed');
+  it('should produce correct report outcome message for removal', () => {
+    const message = getReportOutcomeMessage('PERMANENT_BAN', 'abc123', 'Sunset Clip', '2026-03-10T00:00:00Z', '2026-03-18T00:00:00Z');
 
-    expect(message).toContain('Thank you');
-    expect(message).toContain('removed');
-    expect(message).toContain('community safe');
+    expect(message).toContain('Thanks for your report');
+    expect(message).toContain('"Sunset Clip"');
+    expect(message).toContain('(posted Mar 10)');
+    expect(message).toContain('has been removed');
+    expect(message).toContain('reported this content on Mar 18');
+    expect(message).toContain('divine.video/video/abc123');
+    expect(message).toContain('Learn more about our content policies');
+  });
+
+  it('should produce correct report outcome message for age restriction', () => {
+    const message = getReportOutcomeMessage('AGE_RESTRICTED', 'def456');
+
+    expect(message).toContain('age-restricted');
+    expect(message).toContain('confirmed their age');
+    expect(message).toContain('divine.video/video/def456');
+  });
+
+  it('should produce account suspension message without content reference', () => {
+    const message = getMessageForAction('ACCOUNT_SUSPENDED');
+    expect(message).toContain('Your account has been suspended');
+    expect(message).toContain('reply to this message to appeal');
+    expect(message).not.toContain('divine.video/video/');
+    expect(message).not.toContain('Your content');
+  });
+
+  it('should produce correct report outcome message for no action', () => {
+    const message = getReportOutcomeMessage('SAFE', 'ghi789');
+
+    expect(message).toContain('no action was taken');
+    expect(message).toContain('disagree with this outcome');
+  });
+
+  it('should treat dismiss as no action', () => {
+    const message = getReportOutcomeMessage('DISMISS', 'jkl012');
+
+    expect(message).toContain('no action was taken');
+  });
+
+  it('should omit dates when not provided in report outcome', () => {
+    const message = getReportOutcomeMessage('PERMANENT_BAN', 'abc123');
+
+    expect(message).toContain('the reported content');
+    expect(message).not.toContain('(posted');
+    expect(message).not.toContain('reported this content on');
   });
 });
 
@@ -273,7 +335,7 @@ describe('DM Sender - selectTemplate (Category-Specific)', () => {
     expect(msg).toContain('sexual or nude content');
     expect(msg).toContain('divine.video/video/abc123');
     expect(msg).toContain('reply to this message to appeal');
-    expect(msg).toContain('about.divine.video/faqs/');
+    expect(msg).toContain('Learn more about our content policies');
     expect(msg).not.toContain('https://divine.video/policies#sexual-content');
   });
 
@@ -377,5 +439,42 @@ describe('DM Sender - selectTemplate (Category-Specific)', () => {
     expect(msg).not.toContain('divine.video/video/');
     expect(msg).toContain('content policies');
     expect(msg).toContain('divine.video/terms');
+  });
+
+  it('should include title and published date in template when provided', () => {
+    const msg = selectTemplate('PERMANENT_BAN', null, '{"nudity": 0.95}', 'abc123', 'Sunset Clip', '2026-03-15T00:00:00Z');
+
+    expect(msg).toContain('Your video "Sunset Clip"');
+    expect(msg).toContain('(posted Mar 15)');
+    expect(msg).not.toContain('Your content was');
+    expect(msg).toContain('sexual or nude content');
+  });
+
+  it('should fall back to "your content" with no date when metadata is null', () => {
+    const msg = selectTemplate('PERMANENT_BAN', null, '{"nudity": 0.95}', 'abc123', null, null);
+
+    expect(msg).toContain('Your content was removed');
+    expect(msg).not.toContain('(posted');
+  });
+});
+
+describe('DM Sender - notifyReporters', () => {
+  it('should be a function', () => {
+    expect(typeof notifyReporters).toBe('function');
+  });
+
+  it('should return zeros when NOSTR_PRIVATE_KEY is missing', async () => {
+    const result = await notifyReporters('abc123', 'PERMANENT_BAN', {}, '[TEST]');
+    expect(result).toEqual({ notified: 0, failed: 0 });
+  });
+
+  it('should skip notification for QUARANTINE (intermediate state)', async () => {
+    const result = await notifyReporters('abc123', 'QUARANTINE', { NOSTR_PRIVATE_KEY: testHex }, '[TEST]');
+    expect(result).toEqual({ notified: 0, failed: 0 });
+  });
+
+  it('should skip notification for REVIEW (intermediate state)', async () => {
+    const result = await notifyReporters('abc123', 'REVIEW', { NOSTR_PRIVATE_KEY: testHex }, '[TEST]');
+    expect(result).toEqual({ notified: 0, failed: 0 });
   });
 });

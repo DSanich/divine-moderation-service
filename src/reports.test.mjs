@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { env } from 'cloudflare:test';
-import { initReportsTable, addReport, getReportCount } from './reports.mjs';
+import { initReportsTable, addReport, getReportCount, getReporterPubkeys } from './reports.mjs';
 
 const SHA256 = ('a'.repeat(63) + '1').slice(0, 64);
 const REPORTER1 = ('b'.repeat(63) + '1').slice(0, 64);
@@ -107,6 +107,40 @@ describe('reports', () => {
       const unreportedSha256 = ('c'.repeat(63) + '1').slice(0, 64);
       const count = await getReportCount(db, unreportedSha256);
       expect(count).toBe(0);
+    });
+  });
+
+  describe('getReporterPubkeys', () => {
+    it('should return empty array for unreported sha256', async () => {
+      const reporters = await getReporterPubkeys(db, ('c'.repeat(63) + '1').slice(0, 64));
+      expect(reporters).toEqual([]);
+    });
+
+    it('should return unique reporters with report dates', async () => {
+      await addReport(db, { sha256: SHA256, reporter_pubkey: REPORTER1, report_type: 'nudity' });
+      await addReport(db, { sha256: SHA256, reporter_pubkey: REPORTER2, report_type: 'nudity' });
+      // Duplicate from REPORTER1 -- should not appear twice
+      await addReport(db, { sha256: SHA256, reporter_pubkey: REPORTER1, report_type: 'spam' });
+
+      const reporters = await getReporterPubkeys(db, SHA256);
+      expect(reporters).toHaveLength(2);
+      const pubkeys = reporters.map(r => r.pubkey);
+      expect(pubkeys).toContain(REPORTER1);
+      expect(pubkeys).toContain(REPORTER2);
+      // Each reporter should have a reportedAt date
+      for (const r of reporters) {
+        expect(r.reportedAt).toBeTruthy();
+      }
+    });
+
+    it('should not return reporters for different sha256', async () => {
+      const otherSha256 = ('d'.repeat(63) + '1').slice(0, 64);
+      await addReport(db, { sha256: SHA256, reporter_pubkey: REPORTER1, report_type: 'nudity' });
+      await addReport(db, { sha256: otherSha256, reporter_pubkey: REPORTER2, report_type: 'nudity' });
+
+      const reporters = await getReporterPubkeys(db, SHA256);
+      expect(reporters).toHaveLength(1);
+      expect(reporters[0].pubkey).toBe(REPORTER1);
     });
   });
 });
