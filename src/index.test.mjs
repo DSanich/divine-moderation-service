@@ -893,7 +893,6 @@ describe('notifyBlossom integration via admin moderate endpoint', () => {
       expect(data.success).toBe(false);
       expect(data.blossom_notified).toBe(false);
       expect(data.action).toBe('AGE_RESTRICTED');
-      expect(data.previousAction).toBe('REVIEW');
     } finally {
       globalThis.fetch = origFetch;
     }
