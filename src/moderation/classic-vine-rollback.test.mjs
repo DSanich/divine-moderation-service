@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildClassicVineRollbackUpdate,
+  executeClassicVineRollback,
   getClassicVineRollbackKvKeys,
   isClassicVineRollbackCandidate
 } from './classic-vine-rollback.mjs';
@@ -69,5 +70,52 @@ describe('getClassicVineRollbackKvKeys', () => {
       `age-restricted:${'a'.repeat(64)}`,
       `permanent-ban:${'a'.repeat(64)}`
     ]);
+  });
+});
+
+describe('executeClassicVineRollback', () => {
+  it('skips the D1 rewrite for rows that are already SAFE', async () => {
+    const writes = [];
+    const kvStore = new Map();
+    const env = {
+      BLOSSOM_DB: {
+        prepare(sql) {
+          let bindings = [];
+          return {
+            bind(...args) {
+              bindings = args;
+              return this;
+            },
+            async first() {
+              return {
+                sha256: 'a'.repeat(64),
+                action: 'SAFE',
+                provider: 'classic-vine-rollback',
+                scores: JSON.stringify({}),
+                categories: JSON.stringify([]),
+                moderated_at: '2026-03-01T00:00:00.000Z',
+                uploaded_by: null
+              };
+            },
+            async run() {
+              writes.push({ sql, bindings });
+              return { success: true };
+            }
+          };
+        }
+      },
+      MODERATION_KV: {
+        async get(key) { return kvStore.get(key) ?? null; },
+        async delete(key) { kvStore.delete(key); }
+      }
+    };
+
+    const result = await executeClassicVineRollback({ sha256: 'a'.repeat(64) }, env, {
+      notifyBlossom: async () => ({ success: true, skipped: true })
+    });
+
+    expect(writes).toHaveLength(0);
+    expect(result.alreadySafe).toBe(true);
+    expect(result.blossomNotified).toBe(true);
   });
 });

@@ -1037,7 +1037,7 @@ describe('notifyBlossom integration via admin moderate endpoint', () => {
 });
 
 describe('classic vine rollback admin endpoint', () => {
-  function createRollbackDb(rowBySha = new Map()) {
+  function createRollbackDb(rowBySha = new Map(), writes = []) {
     return {
       prepare(sql) {
         let bindings = [];
@@ -1048,6 +1048,7 @@ describe('classic vine rollback admin endpoint', () => {
             return this;
           },
           async run() {
+            writes.push({ sql, bindings });
             return { success: true };
           },
           async first() {
@@ -1067,13 +1068,13 @@ describe('classic vine rollback admin endpoint', () => {
     };
   }
 
-  function createRollbackEnv({ rows = new Map(), kvStore = new Map(), blossomPayloads = [] } = {}) {
+  function createRollbackEnv({ rows = new Map(), kvStore = new Map(), blossomPayloads = [], dbWrites = [] } = {}) {
     return {
       ALLOW_DEV_ACCESS: 'true',
       SERVICE_API_TOKEN: 'test-service-token',
       BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/classic-vines/rollback',
       BLOSSOM_WEBHOOK_SECRET: 'test-webhook-secret',
-      BLOSSOM_DB: createRollbackDb(rows),
+      BLOSSOM_DB: createRollbackDb(rows, dbWrites),
       MODERATION_KV: {
         store: kvStore,
         async get(key) { return kvStore.get(key) ?? null; },
@@ -1285,6 +1286,139 @@ describe('classic vine rollback admin endpoint', () => {
         next_cursor: '1'
       });
       expect(blossomPayloads).toHaveLength(1);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('treats already-SAFE rows as skipped without rewriting D1', async () => {
+    const dbWrites = [];
+    const blossomPayloads = [];
+    const env = createRollbackEnv({
+      rows: new Map([[SHA256, {
+        sha256: SHA256,
+        action: 'SAFE',
+        provider: 'classic-vine-rollback',
+        scores: JSON.stringify({}),
+        categories: JSON.stringify([]),
+        moderated_at: '2026-03-12T00:00:00.000Z'
+      }]]),
+      blossomPayloads,
+      dbWrites
+    });
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const intercepted = env.__fetchInterceptor(url, init);
+      if (intercepted) return intercepted;
+      return new Response('{}', { status: 404 });
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/classic-vines/rollback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'execute',
+            source: 'sha-list',
+            videos: [{
+              sha256: SHA256,
+              nostrContext: {
+                platform: 'vine',
+                sourceUrl: 'https://vine.co/v/abc123',
+                publishedAt: 1389756506
+              }
+            }]
+          })
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        mode: 'execute',
+        processed: 1,
+        restored: 0,
+        skipped: 1,
+        failed: 0,
+        candidates: [{
+          sha256: SHA256,
+          reason: 'already-safe',
+          already_safe: true,
+          restored: false
+        }]
+      });
+      expect(dbWrites.filter(({ sql }) => sql.includes('INSERT INTO moderation_results'))).toHaveLength(0);
+      expect(blossomPayloads).toHaveLength(0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('reports Blossom failures instead of claiming rollback success', async () => {
+    const kvStore = new Map([
+      [`permanent-ban:${SHA256}`, JSON.stringify({ action: 'PERMANENT_BAN' })],
+    ]);
+    const dbWrites = [];
+    const env = createRollbackEnv({
+      rows: new Map([[SHA256, {
+        sha256: SHA256,
+        action: 'PERMANENT_BAN',
+        provider: 'hiveai',
+        scores: JSON.stringify({ ai_generated: 0.97 }),
+        categories: JSON.stringify(['ai_generated']),
+        moderated_at: '2026-03-12T00:00:00.000Z'
+      }]]),
+      kvStore,
+      dbWrites
+    });
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (url === 'https://mock-blossom.test/classic-vines/rollback') {
+        return new Response('Service Unavailable', { status: 503 });
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/classic-vines/rollback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'execute',
+            source: 'sha-list',
+            videos: [{
+              sha256: SHA256,
+              nostrContext: {
+                platform: 'vine',
+                sourceUrl: 'https://vine.co/v/abc123',
+                publishedAt: 1389756506
+              }
+            }]
+          })
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        mode: 'execute',
+        processed: 1,
+        restored: 0,
+        skipped: 0,
+        failed: 1,
+        candidates: [{
+          sha256: SHA256,
+          reason: 'blossom-notification-failed',
+          blossom_notified: false,
+          restored: false
+        }]
+      });
+      expect(dbWrites.filter(({ sql }) => sql.includes('INSERT INTO moderation_results'))).toHaveLength(1);
+      expect(kvStore.has(`permanent-ban:${SHA256}`)).toBe(false);
     } finally {
       globalThis.fetch = origFetch;
     }

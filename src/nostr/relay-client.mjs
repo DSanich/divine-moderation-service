@@ -296,7 +296,7 @@ export function hasStrongOriginalVineEvidence(nostrContext) {
 
   // Direct indicators of original Vine content
   if (nostrContext.platform === 'vine') return true;
-  if (nostrContext.client === 'vine-archaeologist') return true;
+  if (nostrContext.client && /vine-(archive-importer|archaeologist)/.test(nostrContext.client)) return true;
   if (nostrContext.vineHashId) return true;
   if (nostrContext.sourceUrl && nostrContext.sourceUrl.includes('vine.co')) return true;
 

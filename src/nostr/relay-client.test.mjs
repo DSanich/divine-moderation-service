@@ -166,6 +166,10 @@ describe('hasStrongOriginalVineEvidence', () => {
     expect(hasStrongOriginalVineEvidence({ platform: 'vine' })).toBe(true);
   });
 
+  it('returns true for archive importer client markers', () => {
+    expect(hasStrongOriginalVineEvidence({ client: 'vine-archive-importer' })).toBe(true);
+  });
+
   it('returns true for vine.co source URLs', () => {
     expect(hasStrongOriginalVineEvidence({ sourceUrl: 'https://vine.co/v/abc123' })).toBe(true);
   });
@@ -174,6 +178,7 @@ describe('hasStrongOriginalVineEvidence', () => {
     expect(hasStrongOriginalVineEvidence({ publishedAt: 1514678400 })).toBe(false);
   });
 });
+
 describe('fetchNostrVideoEventsByDTag', () => {
   it('returns all matching event versions for the d-tag', async () => {
     const sha256 = 'a'.repeat(64);

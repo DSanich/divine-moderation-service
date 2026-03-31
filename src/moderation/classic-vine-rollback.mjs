@@ -133,6 +133,12 @@ export function getClassicVineRollbackKvKeys(sha256) {
   ];
 }
 
+async function getClassicVineRollbackStaleKvKeys(sha256, env) {
+  const keys = getClassicVineRollbackKvKeys(sha256);
+  const values = await Promise.all(keys.map((key) => env.MODERATION_KV.get(key)));
+  return keys.filter((_, index) => values[index] !== null);
+}
+
 export async function executeClassicVineRollback(item, env, deps = {}) {
   const now = typeof deps.now === 'function' ? deps.now() : new Date().toISOString();
   const notifyBlossom = deps.notifyBlossom || (async () => ({ success: true, skipped: true }));
@@ -140,52 +146,63 @@ export async function executeClassicVineRollback(item, env, deps = {}) {
   const existingRow = await env.BLOSSOM_DB.prepare(
     'SELECT sha256, action, provider, scores, categories, moderated_at, uploaded_by FROM moderation_results WHERE sha256 = ?'
   ).bind(item.sha256).first();
+  const staleKvKeys = await getClassicVineRollbackStaleKvKeys(item.sha256, env);
+  const alreadySafe = existingRow?.action === 'SAFE';
 
-  const update = buildClassicVineRollbackUpdate(existingRow || {
-    sha256: item.sha256,
-    action: 'SAFE',
-    provider: 'classic-vine-rollback',
-    scores: JSON.stringify({}),
-    categories: JSON.stringify([]),
-    moderated_at: now,
-    uploaded_by: null
-  }, now);
+  if (!alreadySafe) {
+    const update = buildClassicVineRollbackUpdate(existingRow || {
+      sha256: item.sha256,
+      action: 'SAFE',
+      provider: 'classic-vine-rollback',
+      scores: JSON.stringify({}),
+      categories: JSON.stringify([]),
+      moderated_at: now,
+      uploaded_by: null
+    }, now);
 
-  await env.BLOSSOM_DB.prepare(`
-    INSERT INTO moderation_results (
-      sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(sha256) DO UPDATE SET
-      action = excluded.action,
-      provider = excluded.provider,
-      scores = excluded.scores,
-      categories = excluded.categories,
-      reviewed_by = excluded.reviewed_by,
-      reviewed_at = excluded.reviewed_at,
-      review_notes = excluded.review_notes,
-      uploaded_by = COALESCE(moderation_results.uploaded_by, excluded.uploaded_by)
-  `).bind(
-    item.sha256,
-    update.action,
-    update.provider || 'classic-vine-rollback',
-    update.scores || JSON.stringify({}),
-    update.categories || JSON.stringify([]),
-    update.moderated_at || now,
-    update.reviewed_by,
-    update.reviewed_at,
-    update.review_notes,
-    update.uploaded_by || null
-  ).run();
+    await env.BLOSSOM_DB.prepare(`
+      INSERT INTO moderation_results (
+        sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(sha256) DO UPDATE SET
+        action = excluded.action,
+        provider = excluded.provider,
+        scores = excluded.scores,
+        categories = excluded.categories,
+        reviewed_by = excluded.reviewed_by,
+        reviewed_at = excluded.reviewed_at,
+        review_notes = excluded.review_notes,
+        uploaded_by = COALESCE(moderation_results.uploaded_by, excluded.uploaded_by)
+    `).bind(
+      item.sha256,
+      update.action,
+      update.provider || 'classic-vine-rollback',
+      update.scores || JSON.stringify({}),
+      update.categories || JSON.stringify([]),
+      update.moderated_at || now,
+      update.reviewed_by,
+      update.reviewed_at,
+      update.review_notes,
+      update.uploaded_by || null
+    ).run();
+  }
 
-  await Promise.all(
-    getClassicVineRollbackKvKeys(item.sha256).map((key) => env.MODERATION_KV.delete(key))
-  );
+  if (staleKvKeys.length > 0) {
+    await Promise.all(staleKvKeys.map((key) => env.MODERATION_KV.delete(key)));
+  }
 
-  await notifyBlossom(item.sha256, 'SAFE');
+  const shouldNotifyBlossom = !alreadySafe || staleKvKeys.length > 0;
+  const blossomResult = shouldNotifyBlossom
+    ? await notifyBlossom(item.sha256, 'SAFE')
+    : { success: true, skipped: true };
 
   return {
     sha256: item.sha256,
-    previousAction: existingRow?.action || null
+    previousAction: existingRow?.action || null,
+    alreadySafe,
+    staleKvKeysCleared: staleKvKeys,
+    blossomNotified: blossomResult.success || blossomResult.skipped || false,
+    blossomError: blossomResult.success || blossomResult.skipped ? null : blossomResult.error || 'Unknown Blossom notification failure'
   };
 }
 
@@ -232,10 +249,37 @@ export async function runClassicVineRollback(body, env, deps = {}) {
       }
 
       const rollbackResult = await executeClassicVineRollback(item, env, deps);
+
+      if (!rollbackResult.blossomNotified) {
+        failed += 1;
+        candidates.push(createRollbackCandidateResult(item.sha256, 'blossom-notification-failed', {
+          restored: false,
+          previous_action: rollbackResult.previousAction,
+          already_safe: rollbackResult.alreadySafe,
+          blossom_notified: false,
+          stale_kv_keys_cleared: rollbackResult.staleKvKeysCleared,
+          error: rollbackResult.blossomError
+        }));
+        continue;
+      }
+
+      if (rollbackResult.alreadySafe) {
+        skipped += 1;
+        candidates.push(createRollbackCandidateResult(item.sha256, 'already-safe', {
+          restored: false,
+          previous_action: rollbackResult.previousAction,
+          already_safe: true,
+          blossom_notified: true,
+          stale_kv_keys_cleared: rollbackResult.staleKvKeysCleared
+        }));
+        continue;
+      }
+
       restored += 1;
       candidates.push(createRollbackCandidateResult(item.sha256, 'confirmed-classic-vine', {
         restored: true,
-        previous_action: rollbackResult.previousAction
+        previous_action: rollbackResult.previousAction,
+        blossom_notified: true
       }));
     } catch (error) {
       failed += 1;
