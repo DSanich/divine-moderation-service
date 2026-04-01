@@ -2019,21 +2019,44 @@ export default {
       const cdnUrl = `https://${env.CDN_DOMAIN}/${sha256}`;
       const adminBypassUrl = `https://${env.CDN_DOMAIN}/admin/api/blob/${sha256}/content`;
 
+      const BROWSER_PLAYABLE_TYPES = new Set(['video/mp4', 'video/webm', 'video/ogg']);
+
       try {
         // CDN fetch (unauthenticated) — works for SAFE/unmoderated content
         const cdnResponse = await fetch(cdnUrl);
         if (cdnResponse.ok) {
-          console.log(`[ADMIN] Serving video from CDN: ${sha256}`);
-          return new Response(cdnResponse.body, {
-            headers: {
-              'Content-Type': cdnResponse.headers.get('Content-Type') || 'video/mp4',
-              'Cache-Control': 'private, no-store',
-              'X-Admin-Proxy': 'cdn'
-            }
-          });
+          const contentType = cdnResponse.headers.get('Content-Type') || 'video/mp4';
+
+          // If the format is browser-playable, serve directly
+          if (BROWSER_PLAYABLE_TYPES.has(contentType)) {
+            console.log(`[ADMIN] Serving video from CDN: ${sha256}`);
+            return new Response(cdnResponse.body, {
+              headers: {
+                'Content-Type': contentType,
+                'Cache-Control': 'private, no-store',
+                'X-Admin-Proxy': 'cdn'
+              }
+            });
+          }
+
+          // Non-browser format (e.g. video/3gpp, video/x-matroska) — try transcoded 720p MP4 from Blossom
+          console.log(`[ADMIN] CDN returned non-playable ${contentType}, trying transcoded 720p for ${sha256}`);
+          const transcodeUrl = `https://${env.CDN_DOMAIN}/${sha256}/720p.mp4`;
+          const transcodeResponse = await fetch(transcodeUrl);
+          if (transcodeResponse.ok) {
+            console.log(`[ADMIN] Serving transcoded 720p MP4 for ${sha256}`);
+            return new Response(transcodeResponse.body, {
+              headers: {
+                'Content-Type': transcodeResponse.headers.get('Content-Type') || 'video/mp4',
+                'Cache-Control': 'private, no-store',
+                'X-Admin-Proxy': 'cdn-transcode'
+              }
+            });
+          }
+          console.warn(`[ADMIN] Transcoded 720p not available (${transcodeResponse.status}) for ${sha256}`);
         }
 
-        // CDN returned non-200 (banned/restricted content returns 404)
+        // CDN returned non-200 or non-playable with no transcode available
         // Fall back to admin bypass endpoint which serves regardless of moderation status
         if (env.BLOSSOM_WEBHOOK_SECRET) {
           console.log(`[ADMIN] CDN returned ${cdnResponse.status}, trying admin bypass for ${sha256}`);
