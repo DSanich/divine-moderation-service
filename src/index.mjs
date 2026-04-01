@@ -3631,7 +3631,11 @@ async function runMigration() {
                     console.log(`[CRON] Deleted relay event ${relayDeleteResult.eventId} for auto-escalated ${sha256}`);
                   }
 
-                  // Send moderation DM to creator
+                  // Send moderation DM to creator.
+                  // KV stores classification state (action, scores, uploadedBy) but not
+                  // Nostr event metadata (title, published_at). D1 lookup is intentional --
+                  // without it the DM lacks content title. Same pattern as admin moderate
+                  // handler. Consolidation planned via dedicated DM service (Phase 3, #58).
                   const uploadedBy = moderation.uploadedBy;
                   if (uploadedBy && env.NOSTR_PRIVATE_KEY) {
                     try {
