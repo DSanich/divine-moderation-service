@@ -1458,17 +1458,7 @@ export default {
 
       if (!blossomResult.success && !blossomResult.skipped) {
         console.warn(`[ADMIN] Blossom notification failed: ${blossomResult.error}`);
-        return new Response(JSON.stringify({
-          success: false,
-          sha256,
-          action,
-          previousAction,
-          blossom_notified: false,
-          error: `Moderation recorded but media server did not confirm: ${blossomResult.error}`,
-        }), {
-          status: 502,
-          headers: { 'Content-Type': 'application/json' }
-        });
+        return blossomFailureResponse(sha256, action, blossomResult.error);
       }
 
       // For PERMANENT_BAN: also delete the event from the relay (funnelcake),
@@ -2821,17 +2811,7 @@ async function runMigration() {
         // The D1 record is written but enforcement didn't land.
         if (!blossomResult.success && !blossomResult.skipped) {
           console.warn(`[API] Blossom notification failed but moderation was recorded: ${blossomResult.error}`);
-          return new Response(JSON.stringify({
-            success: false,
-            sha256,
-            action: action.toUpperCase(),
-            updated_at: new Date().toISOString(),
-            blossom_notified: false,
-            error: `Moderation recorded but media server did not confirm: ${blossomResult.error}`,
-          }), {
-            status: 502,
-            headers: { 'Content-Type': 'application/json' }
-          });
+          return blossomFailureResponse(sha256, action.toUpperCase(), blossomResult.error);
         }
 
         return new Response(JSON.stringify({
@@ -3073,17 +3053,7 @@ async function runMigration() {
         // The D1/KV records are written but enforcement didn't land.
         if (!blossomResult.success && !blossomResult.skipped) {
           console.warn(`[API] Blossom notification failed for quarantine ${sha256}: ${blossomResult.error}`);
-          return new Response(JSON.stringify({
-            success: false,
-            sha256,
-            action: newAction,
-            updated_at: new Date().toISOString(),
-            blossom_notified: false,
-            error: `Quarantine recorded but media server did not confirm: ${blossomResult.error}`,
-          }), {
-            status: 502,
-            headers: { 'Content-Type': 'application/json' }
-          });
+          return blossomFailureResponse(sha256, newAction, blossomResult.error);
         }
 
         console.log(`[API] Quarantine updated: ${sha256} -> ${newAction} by ${authSource}`);
@@ -3810,6 +3780,24 @@ async function handleModerationResult(result, env) {
  * @param {Object} env - Environment with BLOSSOM_WEBHOOK_URL and BLOSSOM_WEBHOOK_SECRET
  * @returns {Promise<{success: boolean, error?: string}>}
  */
+
+/**
+ * Build a 502 response for when Blossom notification fails.
+ * Used by /admin/api/moderate, /api/v1/moderate, and /api/v1/quarantine.
+ */
+function blossomFailureResponse(sha256, action, blossomError) {
+  return new Response(JSON.stringify({
+    success: false,
+    sha256,
+    action,
+    blossom_notified: false,
+    error: `Moderation recorded but media server did not confirm: ${blossomError}`,
+  }), {
+    status: 502,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
 async function notifyBlossom(sha256, action, env) {
   // Skip if webhook not configured
   if (!env.BLOSSOM_WEBHOOK_URL) {
