@@ -56,6 +56,7 @@ function createEnv(overrides = {}) {
     MODERATION_QUEUE: {
       async send() {}
     },
+    CDN_DOMAIN: 'media.divine.video',
     ...overrides
   };
 }
@@ -538,7 +539,7 @@ This is a test`;
         new Request(`https://moderation.admin.divine.video/admin/api/transcript/${SHA256}`, {
           headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
         }),
-        createEnv({ CDN_DOMAIN: 'media.divine.video' })
+        createEnv()
       );
 
       expect(response.status).toBe(200);
@@ -576,12 +577,149 @@ Hello world`;
         new Request(`https://moderation.admin.divine.video/admin/transcript/${SHA256}.vtt`, {
           headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
         }),
-        createEnv({ CDN_DOMAIN: 'media.divine.video' })
+        createEnv()
       );
 
       expect(response.status).toBe(200);
       expect(response.headers.get('Content-Type')).toBe('text/vtt; charset=utf-8');
       await expect(response.text()).resolves.toBe(vttText);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe('admin video proxy format fallback', () => {
+  it('serves video directly when CDN returns browser-playable format', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url) === `https://media.divine.video/${SHA256}`) {
+        return new Response('mp4-bytes', {
+          status: 200,
+          headers: { 'Content-Type': 'video/mp4' }
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        createEnv()
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('Content-Type')).toBe('video/mp4');
+      expect(response.headers.get('X-Admin-Proxy')).toBe('cdn');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('falls back to transcoded 720p MP4 when CDN returns video/3gpp', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchedUrls = [];
+    globalThis.fetch = async (url, init) => {
+      fetchedUrls.push(String(url));
+      if (String(url) === `https://media.divine.video/${SHA256}`) {
+        return new Response('3gpp-bytes', {
+          status: 200,
+          headers: { 'Content-Type': 'video/3gpp' }
+        });
+      }
+      if (String(url) === `https://media.divine.video/${SHA256}/720p.mp4`) {
+        return new Response('transcoded-mp4-bytes', {
+          status: 200,
+          headers: { 'Content-Type': 'video/mp4' }
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        createEnv()
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('Content-Type')).toBe('video/mp4');
+      expect(response.headers.get('X-Admin-Proxy')).toBe('cdn-transcode');
+      expect(fetchedUrls).toContain(`https://media.divine.video/${SHA256}/720p.mp4`);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('falls back to admin bypass when transcode also unavailable', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (String(url) === `https://media.divine.video/${SHA256}`) {
+        return new Response('3gpp-bytes', {
+          status: 200,
+          headers: { 'Content-Type': 'video/3gpp' }
+        });
+      }
+      if (String(url) === `https://media.divine.video/${SHA256}/720p.mp4`) {
+        return new Response('not found', { status: 404 });
+      }
+      if (String(url) === `https://media.divine.video/admin/api/blob/${SHA256}/content`) {
+        return new Response('bypass-bytes', {
+          status: 200,
+          headers: { 'Content-Type': 'video/mp4' }
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        createEnv({ BLOSSOM_WEBHOOK_SECRET: 'test-secret' })
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('X-Admin-Proxy')).toBe('blossom-admin');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('falls back to transcoded MP4 for video/x-matroska (MKV)', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url) === `https://media.divine.video/${SHA256}`) {
+        return new Response('mkv-bytes', {
+          status: 200,
+          headers: { 'Content-Type': 'video/x-matroska' }
+        });
+      }
+      if (String(url) === `https://media.divine.video/${SHA256}/720p.mp4`) {
+        return new Response('transcoded-mp4-bytes', {
+          status: 200,
+          headers: { 'Content-Type': 'video/mp4' }
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        createEnv()
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('Content-Type')).toBe('video/mp4');
+      expect(response.headers.get('X-Admin-Proxy')).toBe('cdn-transcode');
     } finally {
       globalThis.fetch = originalFetch;
     }
