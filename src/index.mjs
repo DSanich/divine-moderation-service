@@ -3773,15 +3773,6 @@ async function handleModerationResult(result, env) {
 }
 
 /**
- * Notify divine-blossom of moderation decision via webhook
- * This allows blossom to update blob status and enforce blocking
- * @param {string} sha256 - The blob hash
- * @param {string} action - The moderation action (SAFE, REVIEW, QUARANTINE, AGE_RESTRICTED, PERMANENT_BAN)
- * @param {Object} env - Environment with BLOSSOM_WEBHOOK_URL and BLOSSOM_WEBHOOK_SECRET
- * @returns {Promise<{success: boolean, error?: string}>}
- */
-
-/**
  * Build a 502 response for when Blossom notification fails.
  * Used by /admin/api/moderate, /api/v1/moderate, and /api/v1/quarantine.
  */
@@ -3798,6 +3789,14 @@ function blossomFailureResponse(sha256, action, blossomError) {
   });
 }
 
+/**
+ * Notify divine-blossom of moderation decision via webhook
+ * This allows blossom to update blob status and enforce blocking
+ * @param {string} sha256 - The blob hash
+ * @param {string} action - The moderation action (SAFE, REVIEW, QUARANTINE, AGE_RESTRICTED, PERMANENT_BAN)
+ * @param {Object} env - Environment with BLOSSOM_WEBHOOK_URL and BLOSSOM_WEBHOOK_SECRET
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
 async function notifyBlossom(sha256, action, env) {
   // Skip if webhook not configured
   if (!env.BLOSSOM_WEBHOOK_URL) {
