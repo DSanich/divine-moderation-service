@@ -92,11 +92,27 @@ describe('HTTP hostname routing', () => {
     );
 
     expect(response.status).toBe(200);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
     await expect(response.json()).resolves.toMatchObject({
       sha256: SHA256,
       moderated: true,
       action: 'SAFE',
       status: 'safe'
+    });
+  });
+
+  it('returns CORS headers for unknown public moderation status on moderation-api host', async () => {
+    const response = await worker.fetch(
+      new Request(`https://moderation-api.divine.video/check-result/${SHA256}`),
+      createEnv()
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    await expect(response.json()).resolves.toMatchObject({
+      sha256: SHA256,
+      status: 'unknown',
+      moderated: false
     });
   });
 

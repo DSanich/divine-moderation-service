@@ -2705,7 +2705,7 @@ async function runMigration() {
       `).bind(sha256).first();
 
       if (!d1Result) {
-        return new Response(JSON.stringify({
+        return corsResponse(new Response(JSON.stringify({
           sha256,
           status: 'unknown',
           moderated: false,
@@ -2713,12 +2713,12 @@ async function runMigration() {
           age_restricted: false
         }, null, 2), {
           headers: { 'Content-Type': 'application/json' }
-        });
+        }));
       }
 
       // Simplified response for external tools
       const action = d1Result.action;
-      return new Response(JSON.stringify({
+      return corsResponse(new Response(JSON.stringify({
         sha256,
         status: action.toLowerCase(),
         moderated: true,
@@ -2735,7 +2735,7 @@ async function runMigration() {
         reviewed_at: d1Result.reviewed_at
       }, null, 2), {
         headers: { 'Content-Type': 'application/json' }
-      });
+      }));
     }
 
     // API: Canonical moderation vocabulary (public, no auth required)
