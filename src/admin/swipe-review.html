@@ -883,9 +883,7 @@
 
       // Preload video element
       if (!next._preloadedVideo) {
-        const videoUrl = next.isUntriaged
-          ? (next.cdnUrl || 'https://media.divine.video/' + next.sha256 + '.mp4')
-          : '/admin/video/' + next.sha256 + '.mp4';
+        const videoUrl = '/admin/video/' + next.sha256 + '.mp4';
         const vid = document.createElement('video');
         vid.preload = 'auto';
         vid.src = videoUrl;
@@ -1074,11 +1072,8 @@
     }
 
     function createVideoCard(video) {
-      const { sha256, scores, nostrContext, provider, detailedCategories, isUntriaged, cdnUrl, classifierSummary, uploaded_by, moderated_at, receivedAt, eventId } = video;
-      // For untriaged videos, use CDN URL; for moderated, use admin endpoint
-      const videoUrl = isUntriaged
-        ? (cdnUrl || 'https://media.divine.video/' + sha256 + '.mp4')
-        : '/admin/video/' + sha256 + '.mp4';
+      const { sha256, scores, nostrContext, provider, detailedCategories, isUntriaged, classifierSummary, uploaded_by, moderated_at, receivedAt, eventId } = video;
+      const videoUrl = '/admin/video/' + sha256 + '.mp4';
 
       // Get top scores (empty for untriaged)
       const scoreEntries = Object.entries(scores || {})

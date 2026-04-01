@@ -2149,25 +2149,7 @@
       return true;
     }
 
-    function isCanonicalBlobVideoUrl(videoUrl, sha256) {
-      if (!videoUrl || !sha256) {
-        return false;
-      }
-
-      try {
-        const parsed = new URL(videoUrl, window.location.origin);
-        const pathname = parsed.pathname.replace(/\/+$/, '');
-        return pathname === `/${sha256}` || pathname === `/${sha256}.mp4`;
-      } catch (error) {
-        return false;
-      }
-    }
-
     function getPreferredPlaybackUrl(video) {
-      if (video?.cdnUrl && !isCanonicalBlobVideoUrl(video.cdnUrl, video.sha256)) {
-        return video.cdnUrl;
-      }
-
       return `/admin/video/${video.sha256}.mp4`;
     }
 
@@ -2449,8 +2431,9 @@
       const timestamp = receivedAt ? new Date(receivedAt).toLocaleString() : 'Unknown';
       const timeAgo = receivedAt ? getTimeAgo(new Date(receivedAt)) : '';
 
-      // Use CDN URL for video
-      const videoUrl = cdnUrl || 'https://media.divine.video/' + sha256 + '.mp4';
+      // Moderation playback should always bypass public CDN enforcement.
+      const videoUrl = `/admin/video/${sha256}.mp4`;
+      const copyVideoUrl = cdnUrl || 'https://media.divine.video/' + sha256 + '.mp4';
       const thumbUrl = thumbnailUrl || '';
 
       // Prefer resolved public URL when available (older imports often use stable IDs, not blob hashes)
@@ -2504,7 +2487,7 @@
         '<div class="video-info">' +
           '<div style="font-size: 11px; color: #666; margin-bottom: 6px; font-family: monospace;">' +
             '<span title="' + sha256 + '">' + sha256.substring(0, 16) + '...</span> ' +
-            '<button onclick="copyToClipboard(\'' + videoUrl + '\'); event.stopPropagation();" style="background: #333; color: #888; border: none; padding: 2px 6px; border-radius: 3px; cursor: pointer; font-size: 10px;" title="Copy video URL">📋 URL</button> ' +
+            '<button onclick="copyToClipboard(\'' + copyVideoUrl + '\'); event.stopPropagation();" style="background: #333; color: #888; border: none; padding: 2px 6px; border-radius: 3px; cursor: pointer; font-size: 10px;" title="Copy video URL">📋 URL</button> ' +
             '<button onclick="copyDashboardPermalink(\'' + sha256 + '\', this); event.stopPropagation();" style="background: #333; color: #888; border: none; padding: 2px 6px; border-radius: 3px; cursor: pointer; font-size: 10px;" title="Copy permalink to this item">🔗 Link</button>' +
           '</div>' +
           (metaLine ? '<div style="font-size: 12px; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + metaLine + '</div>' : '') +

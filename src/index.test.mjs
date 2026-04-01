@@ -512,6 +512,82 @@ describe('Admin video lookup', () => {
   });
 });
 
+describe('Admin playback access', () => {
+  it('falls back to Blossom admin bypass when CDN video is blocked', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (String(url) === `https://media.divine.video/${SHA256}`) {
+        return new Response('not found', { status: 404 });
+      }
+
+      if (String(url) === `https://media.divine.video/admin/api/blob/${SHA256}/content`) {
+        expect(init?.headers?.Authorization).toBe('Bearer test-webhook-secret');
+        return new Response('video-bytes', {
+          status: 200,
+          headers: {
+            'Content-Type': 'video/mp4',
+            'X-Moderation-Status': 'PERMANENT_BAN'
+          }
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        createEnv({
+          CDN_DOMAIN: 'media.divine.video',
+          BLOSSOM_WEBHOOK_SECRET: 'test-webhook-secret'
+        })
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('X-Admin-Proxy')).toBe('blossom-admin');
+      expect(response.headers.get('X-Moderation-Status')).toBe('PERMANENT_BAN');
+      await expect(response.text()).resolves.toBe('video-bytes');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('uses the admin video proxy for dashboard moderation playback', async () => {
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/dashboard', {
+        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+      }),
+      createEnv()
+    );
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("function getPreferredPlaybackUrl(video) {");
+    expect(html).toContain("return `/admin/video/${video.sha256}.mp4`;");
+    expect(html).not.toContain("if (video?.cdnUrl && !isCanonicalBlobVideoUrl(video.cdnUrl, video.sha256)) {");
+    expect(html).toContain("const videoUrl = `/admin/video/${sha256}.mp4`;");
+    expect(html).not.toContain("const videoUrl = cdnUrl || 'https://media.divine.video/' + sha256 + '.mp4';");
+  });
+
+  it('uses the admin video proxy for quick review playback and preload', async () => {
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/review', {
+        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+      }),
+      createEnv()
+    );
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("const videoUrl = '/admin/video/' + next.sha256 + '.mp4';");
+    expect(html).toContain("const videoUrl = '/admin/video/' + sha256 + '.mp4';");
+    expect(html).not.toContain("? (next.cdnUrl || 'https://media.divine.video/' + next.sha256 + '.mp4')");
+    expect(html).not.toContain("? (cdnUrl || 'https://media.divine.video/' + sha256 + '.mp4')");
+  });
+});
+
 describe('Admin transcript access', () => {
   it('returns parsed transcript text for admin transcript lookup', async () => {
     const vttText = `WEBVTT
