@@ -32,6 +32,38 @@ function createDbMock({ moderationResults = new Map(), webhookEvents = new Map()
           return null;
         },
         async all() {
+          if (sql.includes('FROM moderation_results')) {
+            let results = Array.from(moderationResults.values());
+
+            if (sql.includes("reviewed_by IS NULL")) {
+              results = results.filter((row) => row.reviewed_by == null);
+            }
+
+            if (sql.includes("action IN ('REVIEW', 'AGE_RESTRICTED', 'PERMANENT_BAN')")) {
+              const allowed = new Set(['REVIEW', 'AGE_RESTRICTED', 'PERMANENT_BAN']);
+              results = results.filter((row) => allowed.has(row.action));
+            }
+
+            if (sql.includes("action IN ('AGE_RESTRICTED', 'PERMANENT_BAN')")) {
+              const allowed = new Set(['AGE_RESTRICTED', 'PERMANENT_BAN']);
+              results = results.filter((row) => allowed.has(row.action));
+            }
+
+            if (sql.includes('moderated_at >= ?')) {
+              const since = bindings[0];
+              results = results.filter((row) => row.moderated_at >= since);
+            }
+
+            const limit = bindings[bindings.length - 2];
+            const offset = bindings[bindings.length - 1];
+            results = results
+              .sort((a, b) => a.moderated_at.localeCompare(b.moderated_at))
+              .reverse()
+              .slice(offset, offset + limit);
+
+            return { results };
+          }
+
           return { results: [] };
         }
       };
@@ -252,6 +284,48 @@ describe('HTTP hostname routing', () => {
 });
 
 describe('Admin video lookup', () => {
+  it('returns quick review queue rows with persisted metadata fields', async () => {
+    const env = createEnv({
+      BLOSSOM_DB: createDbMock({
+        moderationResults: new Map([[SHA256, {
+          sha256: SHA256,
+          action: 'REVIEW',
+          provider: 'hiveai',
+          scores: JSON.stringify({ ai_generated: 0.9 }),
+          categories: JSON.stringify(['ai_generated']),
+          moderated_at: '2026-03-11T00:00:00.000Z',
+          reviewed_by: null,
+          reviewed_at: null,
+          uploaded_by: 'f'.repeat(64),
+          title: 'Airport dance',
+          author: 'Creator Name',
+          event_id: 'e'.repeat(64),
+          content_url: 'https://media.divine.video/airport-dance.mp4',
+          published_at: '2026-03-10T12:00:00.000Z'
+        }]])
+      })
+    });
+
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/api/videos?action=FLAGGED&limit=100', {
+        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      videos: [{
+        sha256: SHA256,
+        title: 'Airport dance',
+        author: 'Creator Name',
+        event_id: 'e'.repeat(64),
+        content_url: 'https://media.divine.video/airport-dance.mp4',
+        published_at: '2026-03-10T12:00:00.000Z'
+      }]
+    });
+  });
+
   it('returns a moderated video and merges KV override fields', async () => {
     const env = createEnv({
       BLOSSOM_DB: createDbMock({
@@ -265,7 +339,12 @@ describe('Admin video lookup', () => {
           reviewed_by: 'admin',
           reviewed_at: '2026-03-07T01:00:00.000Z',
           review_notes: 'legacy note',
-          uploaded_by: 'npub123'
+          uploaded_by: 'npub123',
+          title: 'Stored title',
+          author: 'Stored author',
+          event_id: '1'.repeat(64),
+          content_url: 'https://media.divine.video/stored.mp4',
+          published_at: '2026-03-06T00:00:00.000Z'
         }]])
       }),
       MODERATION_KV: {
@@ -307,7 +386,15 @@ describe('Admin video lookup', () => {
         reason: 'Manual override',
         scores: {
           nudity: 0.91
-        }
+        },
+        nostrContext: {
+          title: 'Stored title',
+          author: 'Stored author',
+          url: 'https://media.divine.video/stored.mp4',
+          publishedAt: '2026-03-06T00:00:00.000Z'
+        },
+        eventId: '1'.repeat(64),
+        divineUrl: `https://divine.video/video/${'1'.repeat(64)}`
       }
     });
   });
@@ -510,6 +597,44 @@ describe('Admin video lookup', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe('Quick review HTML', () => {
+  it('serves metadata-first quick review sections', async () => {
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/review', {
+        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+      }),
+      createEnv()
+    );
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('review-primary-layout');
+    expect(html).toContain('Publisher');
+    expect(html).toContain('Post Context');
+    expect(html).toContain('Timeline');
+    expect(html).toContain('Technical Metadata');
+  });
+
+  it('includes labeled timestamps and full-context field wiring', async () => {
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/review', {
+        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+      }),
+      createEnv()
+    );
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('Published');
+    expect(html).toContain('Received');
+    expect(html).toContain('Moderated');
+    expect(html).toContain('Reviewed');
+    expect(html).toContain('published_at');
+    expect(html).toContain('content_url');
+    expect(html).toContain('event_id');
   });
 });
 

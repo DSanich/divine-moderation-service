@@ -401,7 +401,18 @@ async function fetchLookupNostrContext(hash, env) {
         content: metadata.content || event.content || null,
         pubkey: event.pubkey ? `${event.pubkey.substring(0, 16)}...` : null,
         eventId: event.id,
-        platform: metadata.platform || null
+        platform: metadata.platform || null,
+        url: metadata.url || null,
+        sourceUrl: metadata.sourceUrl || null,
+        loops: metadata.loops ?? null,
+        likes: metadata.likes ?? null,
+        comments: metadata.comments ?? null,
+        publishedAt: metadata.publishedAt || null,
+        archivedAt: metadata.archivedAt || null,
+        importedAt: metadata.importedAt || null,
+        vineHashId: metadata.vineHashId || null,
+        vineUserId: metadata.vineUserId || null,
+        createdAt: metadata.createdAt || null
       }
     };
   } catch (error) {
@@ -416,8 +427,18 @@ async function enrichAdminLookupVideo(video, env) {
   }
 
   let enriched = { ...video };
+  const needsNostrEnrichment = enriched.sha256 && (
+    !enriched.eventId
+    || !enriched.divineUrl
+    || !enriched.nostrContext
+    || !enriched.nostrContext.content
+    || !enriched.nostrContext.sourceUrl
+    || !enriched.nostrContext.platform
+    || !enriched.nostrContext.client
+    || !enriched.nostrContext.publishedAt
+  );
 
-  if (enriched.sha256 && (!enriched.eventId || !enriched.divineUrl || !enriched.nostrContext)) {
+  if (needsNostrEnrichment) {
     const nostrContext = await fetchLookupNostrContext(enriched.sha256, env);
     if (nostrContext) {
       enriched = {
@@ -459,7 +480,7 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
   const cdnUrl = `https://${env.CDN_DOMAIN || 'media.divine.video'}/${hash}`;
   if (hash) {
     const moderatedRow = await env.BLOSSOM_DB.prepare(`
-      SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by
+      SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by, title, author, event_id, content_url, published_at
       FROM moderation_results
       WHERE sha256 = ?
     `).bind(hash).first();
@@ -469,6 +490,20 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
 
     if (moderatedRow || kvModeration) {
       const moderatedAt = kvModeration?.moderated_at || moderatedRow?.moderated_at || null;
+      const eventId = moderatedRow?.event_id || null;
+      const persistedPublishedAt = moderatedRow?.published_at || null;
+      const persistedContentUrl = moderatedRow?.content_url || null;
+      const persistedNostrContext = (
+        moderatedRow?.title
+        || moderatedRow?.author
+        || persistedContentUrl
+        || persistedPublishedAt
+      ) ? {
+        title: moderatedRow?.title || null,
+        author: moderatedRow?.author || null,
+        url: persistedContentUrl,
+        publishedAt: persistedPublishedAt
+      } : null;
       return enrichAdminLookupVideo({
         sha256: hash,
         action: kvModeration?.action || moderatedRow?.action || 'REVIEW',
@@ -486,7 +521,10 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
         previousAction: kvModeration?.previousAction || null,
         detailedCategories: parseMaybeJson(kvModeration?.detailedCategories, null),
         categoryVerifications: parseMaybeJson(kvModeration?.categoryVerifications, {}) || {},
-        cdnUrl: kvModeration?.cdnUrl || cdnUrl
+        cdnUrl: kvModeration?.cdnUrl || persistedContentUrl || cdnUrl,
+        eventId,
+        divineUrl: eventId ? `https://divine.video/video/${encodeURIComponent(eventId)}` : null,
+        nostrContext: persistedNostrContext
       }, env);
     }
 
@@ -519,7 +557,19 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
             client: metadata?.client || null,
             content: metadata?.content || event.content || null,
             pubkey: event.pubkey ? `${event.pubkey.substring(0, 16)}...` : null,
-            eventId
+            eventId,
+            platform: metadata?.platform || null,
+            url: metadata?.url || null,
+            sourceUrl: metadata?.sourceUrl || null,
+            loops: metadata?.loops ?? null,
+            likes: metadata?.likes ?? null,
+            comments: metadata?.comments ?? null,
+            publishedAt: metadata?.publishedAt || null,
+            archivedAt: metadata?.archivedAt || null,
+            importedAt: metadata?.importedAt || null,
+            vineHashId: metadata?.vineHashId || null,
+            vineUserId: metadata?.vineUserId || null,
+            createdAt: metadata?.createdAt || null
           };
         }
       } catch (error) {
@@ -879,7 +929,7 @@ export default {
 
       // Query D1 with pagination
       const query = `
-        SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, uploaded_by
+        SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, uploaded_by, title, author, event_id, content_url, published_at
         FROM moderation_results
         ${whereClause}
         ORDER BY moderated_at ${orderDirection}
@@ -902,7 +952,12 @@ export default {
         moderated_at: row.moderated_at,
         reviewed_by: row.reviewed_by,
         reviewed_at: row.reviewed_at,
-        uploaded_by: row.uploaded_by || null
+        uploaded_by: row.uploaded_by || null,
+        title: row.title || null,
+        author: row.author || null,
+        event_id: row.event_id || null,
+        content_url: row.content_url || null,
+        published_at: row.published_at || null
       }));
 
       // Classifier summaries fetched client-side via /admin/api/classifier/{sha256}
