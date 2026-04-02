@@ -52,6 +52,32 @@ const ADMIN_HOSTNAME = 'moderation.admin.divine.video';
 const API_HOSTNAME = 'moderation-api.divine.video';
 const DEFAULT_RELAY_ADMIN_URL = 'https://relay.admin.divine.video';
 const JSON_HEADERS = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
+
+// ETags for admin HTML pages — computed once at module load, change only on deploy.
+// Allows browsers to cache the HTML but revalidate on every request (304 if unchanged).
+const HTML_ETAGS = {
+  dashboard: `"${hashCode(dashboardHTML)}"`,
+  review: `"${hashCode(swipeReviewHTML)}"`,
+  messages: `"${hashCode(messagesHTML)}"`,
+};
+
+function hashCode(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
+  return hash.toString(36);
+}
+
+function serveHTML(html, etag, request) {
+  if (request.headers.get('If-None-Match') === etag) {
+    return new Response(null, { status: 304, headers: { 'ETag': etag } });
+  }
+  return new Response(html, {
+    headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache', 'ETag': etag }
+  });
+}
+
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 /**
@@ -861,9 +887,7 @@ export default {
         return authError;
       }
 
-      return new Response(dashboardHTML, {
-        headers: { 'Content-Type': 'text/html' }
-      });
+      return serveHTML(dashboardHTML, HTML_ETAGS.dashboard, request);
     }
 
     if (url.pathname === '/admin/review') {
@@ -873,18 +897,14 @@ export default {
         return authError;
       }
 
-      return new Response(swipeReviewHTML, {
-        headers: { 'Content-Type': 'text/html' }
-      });
+      return serveHTML(swipeReviewHTML, HTML_ETAGS.review, request);
     }
 
     if (url.pathname === '/admin/messages') {
       const authError = await requireAuth(request, env);
       if (authError) return authError;
 
-      return new Response(messagesHTML, {
-        headers: { 'Content-Type': 'text/html' }
-      });
+      return serveHTML(messagesHTML, HTML_ETAGS.messages, request);
     }
 
     if (url.pathname === '/admin/api/videos') {
