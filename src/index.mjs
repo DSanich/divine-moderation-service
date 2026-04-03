@@ -2881,24 +2881,31 @@ async function runMigration() {
           });
         }
 
-        // Update or insert moderation result
+        // Update or insert moderation result.
+        // reviewed_by is set to the source because /api/v1/moderate is called by human
+        // operators (relay-manager UI, external tools) — not by the AI pipeline.
+        // Without this, relay-manager bans land in the AI Flagged human-review queue.
+        const reviewedBy = source || 'external-api';
+        const now = new Date().toISOString();
         await env.BLOSSOM_DB.prepare(`
-          INSERT INTO moderation_results (sha256, action, provider, scores, categories, moderated_at)
-          VALUES (?, ?, ?, ?, ?, ?)
+          INSERT INTO moderation_results (sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(sha256) DO UPDATE SET
             action = excluded.action,
             provider = excluded.provider,
             review_notes = ?,
-            reviewed_at = ?
+            reviewed_by = excluded.reviewed_by,
+            reviewed_at = excluded.reviewed_at
         `).bind(
           sha256,
           action.toUpperCase(),
-          source || 'external-api',
+          reviewedBy,
           JSON.stringify({}),
           JSON.stringify([reason || action.toLowerCase()]),
-          new Date().toISOString(),
-          reason || null,
-          new Date().toISOString()
+          now,
+          reviewedBy,
+          now,
+          reason || null
         ).run();
 
         console.log(`[API] Moderation updated: ${sha256} -> ${action} by ${source || 'external-api'} (auth: ${authSource})`);

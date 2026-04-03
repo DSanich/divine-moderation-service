@@ -1051,6 +1051,68 @@ describe('notifyBlossom integration via admin moderate endpoint', () => {
     }
   });
 
+  it('sets reviewed_by to source on /api/v1/moderate', async () => {
+    const kvStore = new Map();
+    let capturedSql = null;
+    let capturedBindings = null;
+    const env = {
+      ALLOW_DEV_ACCESS: 'true',
+      SERVICE_API_TOKEN: 'test-service-token',
+      BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/admin/moderate',
+      BLOSSOM_WEBHOOK_SECRET: 'test-webhook-secret',
+      BLOSSOM_DB: {
+        prepare(sql) {
+          let bindings = [];
+          return {
+            bind(...args) { bindings = args; return this; },
+            async run() {
+              capturedSql = sql;
+              capturedBindings = bindings;
+              return { success: true };
+            },
+            async first() { return null; },
+            async all() { return { results: [] }; },
+          };
+        },
+        async batch() { return []; },
+      },
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      },
+      MODERATION_QUEUE: { async send() {} },
+    };
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (url === 'https://mock-blossom.test/admin/moderate') {
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      return origFetch(url);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation-api.divine.video/api/v1/moderate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-service-token' },
+          body: JSON.stringify({ sha256: 'abc123', action: 'PERMANENT_BAN', source: 'relay-manager' }),
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      expect(capturedSql).toContain('reviewed_by');
+      // reviewed_by binding should be 'relay-manager' (same as source)
+      expect(capturedBindings).toContain('relay-manager');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
   it('returns 200 when Blossom webhook succeeds for /api/v1/moderate', async () => {
     const kvStore = new Map();
     const env = {
