@@ -2135,18 +2135,26 @@ export default {
         // Fall back to admin bypass endpoint which serves regardless of moderation status
         if (env.BLOSSOM_WEBHOOK_SECRET) {
           console.log(`[ADMIN] CDN returned ${cdnResponse.status}, trying admin bypass for ${sha256}`);
-          const bypassResponse = await fetch(adminBypassUrl, {
-            headers: { 'Authorization': `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}` }
-          });
-          if (bypassResponse.ok) {
+          const bypassHeaders = { 'Authorization': `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}` };
+          const rangeHeader = request.headers.get('Range');
+          if (rangeHeader) bypassHeaders['Range'] = rangeHeader;
+          const bypassResponse = await fetch(adminBypassUrl, { headers: bypassHeaders });
+          if (bypassResponse.ok || bypassResponse.status === 206) {
             console.log(`[ADMIN] Serving video from admin bypass: ${sha256}`);
             const moderationStatus = bypassResponse.headers.get('X-Moderation-Status');
+            const contentRange = bypassResponse.headers.get('Content-Range');
+            const acceptRanges = bypassResponse.headers.get('Accept-Ranges');
+            const contentLength = bypassResponse.headers.get('Content-Length');
             return new Response(bypassResponse.body, {
+              status: bypassResponse.status,
               headers: {
                 'Content-Type': bypassResponse.headers.get('Content-Type') || 'video/mp4',
                 'Cache-Control': 'private, no-store',
                 'X-Admin-Proxy': 'blossom-admin',
-                ...(moderationStatus && { 'X-Moderation-Status': moderationStatus })
+                ...(moderationStatus && { 'X-Moderation-Status': moderationStatus }),
+                ...(contentRange && { 'Content-Range': contentRange }),
+                ...(acceptRanges && { 'Accept-Ranges': acceptRanges }),
+                ...(contentLength && { 'Content-Length': contentLength }),
               }
             });
           }
