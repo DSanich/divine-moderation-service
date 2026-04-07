@@ -48,6 +48,44 @@ function createNostrLookupWebSocket(event) {
   };
 }
 
+function createEmptyNostrLookupWebSocket() {
+  return class FakeWebSocket {
+    constructor() {
+      this.listeners = {};
+      this.readyState = 0;
+      queueMicrotask(() => {
+        this.readyState = 1;
+        this.emit('open');
+      });
+    }
+
+    addEventListener(type, handler) {
+      if (!this.listeners[type]) {
+        this.listeners[type] = [];
+      }
+      this.listeners[type].push(handler);
+    }
+
+    send(message) {
+      const [, subscriptionId] = JSON.parse(message);
+      queueMicrotask(() => {
+        this.emit('message', { data: JSON.stringify(['EOSE', subscriptionId]) });
+      });
+    }
+
+    close() {
+      this.readyState = 3;
+      queueMicrotask(() => this.emit('close'));
+    }
+
+    emit(type, payload = {}) {
+      for (const handler of this.listeners[type] || []) {
+        handler(payload);
+      }
+    }
+  };
+}
+
 afterEach(() => {
   globalThis.WebSocket = OriginalWebSocket;
 });
@@ -301,6 +339,65 @@ describe('Moderation Pipeline', () => {
     expect(result.scores.ai_generated).toBe(0.96);
     expect(result.downstreamSignals?.scores?.ai_generated ?? 0).toBe(0);
     expect(result.downstreamSignals?.hasSignals).toBe(false);
+  });
+
+  it('skips Hive AI detection when legacy queue metadata already identifies an original Vine', async () => {
+    const sha256 = 'k'.repeat(64);
+    globalThis.WebSocket = createEmptyNostrLookupWebSocket();
+
+    const hiveAuthCalls = [];
+    const mockFetch = vi.fn(async (url, options = {}) => {
+      if (typeof url === 'string' && url.endsWith('.vtt')) {
+        return {
+          ok: false,
+          status: 404,
+          text: async () => ''
+        };
+      }
+
+      if (typeof url === 'string' && url.includes('api.thehive.ai')) {
+        hiveAuthCalls.push(options.headers?.authorization || null);
+        return {
+          ok: true,
+          json: async () => ({
+            status: [{
+              response: {
+                output: [{
+                  time: 0,
+                  classes: [
+                    { class: 'general_nsfw', score: 0.05 },
+                    { class: 'ai_generated', score: 0.96 }
+                  ]
+                }]
+              }
+            }]
+          })
+        };
+      }
+
+      throw new Error(`Unexpected fetch call: ${String(url)}`);
+    });
+
+    const env = {
+      CDN_DOMAIN: 'cdn.divine.video',
+      HIVE_MODERATION_API_KEY: 'mod-key',
+      HIVE_AI_DETECTION_API_KEY: 'ai-key'
+    };
+
+    const result = await moderateVideo({
+      sha256,
+      uploadedAt: Date.now(),
+      metadata: {
+        source: 'archive-export',
+        videoUrl: 'https://archive.example.com/original-vine.mp4',
+        platform: 'vine',
+        source_url: 'https://vine.co/v/abc123',
+        published_at: 1389756506
+      }
+    }, env, mockFetch);
+
+    expect(hiveAuthCalls).toEqual(['token mod-key']);
+    expect(result.policyContext?.originalVine).toBe(true);
   });
 
   it('keeps downstream moderation signals for original vines when non-AI scores are high', async () => {

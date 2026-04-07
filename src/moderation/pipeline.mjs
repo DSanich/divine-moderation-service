@@ -13,6 +13,63 @@ import { extractTopics } from '../classification/topic-extractor.mjs';
 
 const ORIGINAL_VINE_SUPPRESSED_CATEGORIES = new Set(['ai_generated', 'deepfake']);
 const DOWNSTREAM_SIGNAL_THRESHOLD = 0.5;
+const ARCHIVE_ORIGINAL_VINE_SOURCES = new Set(['archive-export', 'incident-backfill', 'sha-list']);
+
+function parseOptionalString(value) {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function parseOptionalInteger(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function buildQueueMetadataNostrContext(metadata) {
+  if (!metadata || typeof metadata !== 'object') {
+    return null;
+  }
+
+  const source = parseOptionalString(metadata.source);
+  const publishedAt = parseOptionalInteger(metadata.publishedAt ?? metadata.published_at);
+  const context = {
+    title: parseOptionalString(metadata.title),
+    author: parseOptionalString(metadata.author),
+    platform: parseOptionalString(metadata.platform),
+    client: parseOptionalString(metadata.client),
+    loops: parseOptionalInteger(metadata.loops),
+    likes: parseOptionalInteger(metadata.likes),
+    comments: parseOptionalInteger(metadata.comments),
+    url: parseOptionalString(metadata.videoUrl ?? metadata.url),
+    sourceUrl: parseOptionalString(metadata.sourceUrl ?? metadata.source_url ?? metadata.r),
+    publishedAt: ARCHIVE_ORIGINAL_VINE_SOURCES.has(source) ? publishedAt : null,
+    archivedAt: parseOptionalString(metadata.archivedAt ?? metadata.archived_at),
+    importedAt: parseOptionalInteger(metadata.importedAt ?? metadata.imported_at),
+    vineHashId: parseOptionalString(metadata.vineHashId ?? metadata.vine_hash_id ?? metadata.vine_id),
+    vineUserId: parseOptionalString(metadata.vineUserId ?? metadata.vine_user_id),
+    content: parseOptionalString(metadata.content),
+    eventId: parseOptionalString(metadata.eventId ?? metadata.event_id),
+    createdAt: parseOptionalInteger(metadata.createdAt ?? metadata.created_at)
+  };
+
+  if (
+    context.platform === 'vine'
+    || (context.client && /vine-(archive-importer|archaeologist)/.test(context.client))
+    || context.vineHashId
+    || (context.sourceUrl && context.sourceUrl.includes('vine.co'))
+  ) {
+    context.publishedAt = publishedAt;
+  }
+
+  return Object.values(context).some((value) => value !== null) ? context : null;
+}
 
 function applyOriginalVineEnforcementOverride(classification) {
   return {
@@ -166,16 +223,20 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
   }
 
   // Step 1: Determine video URL - prefer metadata.videoUrl if provided (e.g., from relay-poller)
-  let nostrContext = null;
-  let videoUrl = metadata?.videoUrl || `https://${env.CDN_DOMAIN}/${sha256}`; // Default: blossom content-addressed URL
-  let nostrEventId = metadata?.eventId || null;
+  const queueNostrContext = buildQueueMetadataNostrContext(metadata);
+  let nostrContext = queueNostrContext;
+  let videoUrl = metadata?.videoUrl || queueNostrContext?.url || `https://${env.CDN_DOMAIN}/${sha256}`; // Default: blossom content-addressed URL
+  let nostrEventId = queueNostrContext?.eventId || metadata?.eventId || metadata?.event_id || null;
 
   // Always attempt to resolve Nostr context so policy decisions can use archive metadata
   try {
     const relays = env.NOSTR_RELAY_URL ? [env.NOSTR_RELAY_URL] : ['wss://relay.divine.video'];
     const event = await fetchNostrEventBySha256(sha256, relays);
     if (event) {
-      nostrContext = parseVideoEventMetadata(event);
+      const relayNostrContext = parseVideoEventMetadata(event);
+      nostrContext = queueNostrContext
+        ? { ...queueNostrContext, ...relayNostrContext }
+        : relayNostrContext;
       nostrEventId = event.id;
       console.log(`[MODERATION] Found Nostr context for ${sha256}:`, nostrContext);
 
