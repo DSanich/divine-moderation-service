@@ -2364,9 +2364,8 @@
       const pubkey = video.uploaded_by || null;
       const eventId = video.eventId || video.nostrContext?.eventId || null;
       const enforcement = video.uploaderEnforcement || null;
-      const stats = video.uploaderStats || null;
 
-      if (!video.lookupId && !enforcement && !stats && !eventId) {
+      if (!video.lookupId && !enforcement && !eventId) {
         return '';
       }
 
@@ -2381,20 +2380,8 @@
       if (enforcement?.relay_banned) {
         badges.push('<span class="uploader-enforcement-badge relay-ban">Relay Banned</span>');
       }
-      if (stats?.risk_level === 'high') {
-        badges.push('<span class="uploader-enforcement-badge risk-high">Risk High</span>');
-      } else if (stats?.risk_level === 'elevated') {
-        badges.push('<span class="uploader-enforcement-badge risk-elevated">Risk Elevated</span>');
-      }
       if (badges.length === 0) {
         badges.push('<span class="uploader-enforcement-badge">No User Enforcement</span>');
-      }
-
-      const statBits = [];
-      if (stats) {
-        statBits.push(`flagged ${stats.flagged_count || 0}`);
-        statBits.push(`restricted ${stats.restricted_count || 0}`);
-        statBits.push(`banned ${stats.banned_count || 0}`);
       }
 
       const approvalButton = pubkey
@@ -2414,7 +2401,6 @@
             ${pubkey ? `<span class="uploader-enforcement-pubkey" title="${pubkey}">${truncateHex(pubkey)}</span>` : ''}
           </div>
           <div class="uploader-enforcement-badges">${badges.join('')}</div>
-          ${statBits.length > 0 ? `<div class="uploader-enforcement-stats">${statBits.join(' · ')}</div>` : ''}
           <div class="action-buttons compact">
             ${approvalButton}
             ${relayButton}
