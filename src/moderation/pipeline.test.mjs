@@ -85,19 +85,32 @@ describe('Moderation Pipeline', () => {
     expect(result.scores).toBeDefined();
   });
 
-  it('should detect high nudity and return AGE_RESTRICTED', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        status: 'success',
-        data: {
-          frames: [
-            { info: { position: 0 }, nudity: { raw: 0.95, partial: 0.9, safe: 0.05 }, violence: { prob: 0.1 } },
-            { info: { position: 3 }, nudity: { raw: 0.92, partial: 0.88, safe: 0.08 }, violence: { prob: 0.05 } },
-            { info: { position: 6 }, nudity: { raw: 0.88, partial: 0.85, safe: 0.12 }, violence: { prob: 0.08 } }
-          ]
-        }
-      })
+  it('skips transcript analysis while Blossom reports VTT generation is pending', async () => {
+    const mockFetch = vi.fn(async (url) => {
+      if (typeof url === 'string' && url.endsWith('.vtt')) {
+        return {
+          ok: true,
+          status: 202,
+          headers: {
+            get(name) {
+              return name === 'Retry-After' ? '12' : null;
+            }
+          },
+          text: async () => '{"status":"processing"}'
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'success',
+          data: {
+            frames: [
+              { info: { position: 0 }, nudity: { raw: 0.1, partial: 0.05, safe: 0.85 }, violence: { prob: 0.05 } }
+            ]
+          }
+        })
+      };
     });
 
     const env = {
@@ -107,26 +120,134 @@ describe('Moderation Pipeline', () => {
     };
 
     const result = await moderateVideo({
-      sha256: 'b'.repeat(64),
-      r2Key: 'videos/bad.mp4',
+      sha256: 'c'.repeat(64),
+      r2Key: 'videos/pending-transcript.mp4',
       uploadedAt: Date.now()
     }, env, mockFetch);
 
-    expect(result.action).toBe('AGE_RESTRICTED');
-    expect(result.severity).toBe('high');
-    expect(result.primaryConcern).toBe('nudity');
+    expect(result.action).toBe('SAFE');
+    expect(result.text_scores).toBeNull();
+    expect(result.topicProfile).toBeNull();
   });
 
-  it('should detect borderline content and return REVIEW', async () => {
+  it('keeps benign Hive nudity SAFE while retaining downstream nudity signals', async () => {
+    const mockFetch = vi.fn(async (url) => {
+      if (typeof url === 'string' && url.endsWith('.vtt')) {
+        return {
+          ok: false,
+          status: 404,
+          text: async () => ''
+        };
+      }
+
+      if (typeof url === 'string' && url.includes('api.thehive.ai')) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: [{
+              response: {
+                output: [
+                  {
+                    time: 0,
+                    classes: [
+                      { class: 'yes_male_nudity', score: 0.91 },
+                      { class: 'yes_male_swimwear', score: 0.88 },
+                      { class: 'yes_male_underwear', score: 0.83 }
+                    ]
+                  }
+                ]
+              }
+            }]
+          })
+        };
+      }
+
+      throw new Error(`Unexpected fetch call: ${String(url)}`);
+    });
+
+    const env = {
+      HIVE_MODERATION_API_KEY: 'mod-key',
+      CDN_DOMAIN: 'cdn.divine.video'
+    };
+
+    const result = await moderateVideo({
+      sha256: 'b'.repeat(64),
+      r2Key: 'videos/shirtless.mp4',
+      uploadedAt: Date.now()
+    }, env, mockFetch);
+
+    expect(result.provider).toBe('hiveai');
+    expect(result.action).toBe('SAFE');
+    expect(result.scores.nudity).toBe(0.91);
+    expect(result.scores.sexual).toBe(0);
+    expect(result.scores.porn).toBe(0);
+    expect(result.downstreamSignals?.hasSignals).toBe(true);
+    expect(result.downstreamSignals?.scores?.nudity).toBe(0.91);
+    expect(result.downstreamSignals?.primaryConcern).toBe('nudity');
+  });
+
+  it('should detect Hive sexual content and return AGE_RESTRICTED', async () => {
+    const mockFetch = vi.fn(async (url) => {
+      if (typeof url === 'string' && url.endsWith('.vtt')) {
+        return {
+          ok: false,
+          status: 404,
+          text: async () => ''
+        };
+      }
+
+      if (typeof url === 'string' && url.includes('api.thehive.ai')) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: [{
+              response: {
+                output: [
+                  {
+                    time: 0,
+                    classes: [
+                      { class: 'yes_sexual_display', score: 0.9 },
+                      { class: 'yes_sex_toy', score: 0.82 }
+                    ]
+                  }
+                ]
+              }
+            }]
+          })
+        };
+      }
+
+      throw new Error(`Unexpected fetch call: ${String(url)}`);
+    });
+
+    const env = {
+      HIVE_MODERATION_API_KEY: 'mod-key',
+      CDN_DOMAIN: 'cdn.divine.video'
+    };
+
+    const result = await moderateVideo({
+      sha256: 'n'.repeat(64),
+      r2Key: 'videos/sexual-display.mp4',
+      uploadedAt: Date.now()
+    }, env, mockFetch);
+
+    expect(result.provider).toBe('hiveai');
+    expect(result.action).toBe('AGE_RESTRICTED');
+    expect(result.category).toBe('sexual');
+    expect(result.scores.sexual).toBe(0.9);
+    expect(result.scores.porn).toBe(0);
+  });
+
+  it('should detect borderline violence and return REVIEW', async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
         status: 'success',
         data: {
           frames: [
-            { info: { position: 0 }, nudity: { raw: 0.65, partial: 0.6, safe: 0.35 }, violence: { prob: 0.2 } },
-            { info: { position: 3 }, nudity: { raw: 0.6, partial: 0.55, safe: 0.4 }, violence: { prob: 0.25 } },
-            { info: { position: 6 }, nudity: { raw: 0.55, partial: 0.5, safe: 0.45 }, violence: { prob: 0.15 } }
+            { info: { position: 0 }, nudity: { raw: 0.1, partial: 0.05, safe: 0.85 }, violence: { prob: 0.65 } },
+            { info: { position: 3 }, nudity: { raw: 0.15, partial: 0.1, safe: 0.75 }, violence: { prob: 0.55 } },
+            { info: { position: 6 }, nudity: { raw: 0.05, partial: 0.03, safe: 0.92 }, violence: { prob: 0.6 } }
           ]
         }
       })
@@ -146,6 +267,40 @@ describe('Moderation Pipeline', () => {
 
     expect(result.action).toBe('REVIEW');
     expect(result.severity).toBe('medium');
+    expect(result.primaryConcern).toBe('violence');
+  });
+
+  it('should detect high violence and return AGE_RESTRICTED', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: 'success',
+        data: {
+          frames: [
+            { info: { position: 0 }, nudity: { raw: 0.1, partial: 0.05, safe: 0.85 }, violence: { prob: 0.82 } },
+            { info: { position: 3 }, nudity: { raw: 0.15, partial: 0.1, safe: 0.75 }, violence: { prob: 0.75 } },
+            { info: { position: 6 }, nudity: { raw: 0.05, partial: 0.03, safe: 0.92 }, violence: { prob: 0.78 } }
+          ]
+        }
+      })
+    });
+
+    const env = {
+      SIGHTENGINE_API_USER: 'test-user',
+      SIGHTENGINE_API_SECRET: 'test-secret',
+      CDN_DOMAIN: 'cdn.divine.video'
+    };
+
+    const result = await moderateVideo({
+      sha256: 'v'.repeat(64),
+      r2Key: 'videos/violent.mp4',
+      uploadedAt: Date.now()
+    }, env, mockFetch);
+
+    expect(result.action).toBe('AGE_RESTRICTED');
+    expect(result.severity).toBe('high');
+    expect(result.primaryConcern).toBe('violence');
+    expect(result.category).toBe('violence');
   });
 
   it('should construct correct CDN URL from sha256', async () => {

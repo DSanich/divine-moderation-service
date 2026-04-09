@@ -555,6 +555,50 @@ This is a test`;
     }
   });
 
+  it('returns pending transcript state when Blossom is still generating VTT', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url) === `https://media.divine.video/${SHA256}.vtt`) {
+        return new Response(JSON.stringify({
+          status: 'processing',
+          message: 'Transcript generation started, please retry soon'
+        }), {
+          status: 202,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': '10'
+          }
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/api/transcript/${SHA256}`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        createEnv()
+      );
+
+      expect(response.status).toBe(202);
+      expect(response.headers.get('Retry-After')).toBe('10');
+      await expect(response.json()).resolves.toEqual({
+        sha256: SHA256,
+        found: false,
+        pending: true,
+        subtitleUrl: `/admin/transcript/${SHA256}.vtt`,
+        sourceUrl: `https://media.divine.video/${SHA256}.vtt`,
+        retryAfterSeconds: 10,
+        status: 'processing',
+        message: 'Transcript generation started, please retry soon'
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('proxies raw VTT content through the admin transcript route', async () => {
     const vttText = `WEBVTT
 
@@ -583,6 +627,51 @@ Hello world`;
       expect(response.status).toBe(200);
       expect(response.headers.get('Content-Type')).toBe('text/vtt; charset=utf-8');
       await expect(response.text()).resolves.toBe(vttText);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('does not proxy pending transcript JSON as a fake VTT file', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url) === `https://media.divine.video/${SHA256}.vtt`) {
+        return new Response(JSON.stringify({
+          status: 'cooling_down',
+          message: 'Transcript generation cooling down before retry'
+        }), {
+          status: 202,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': '30'
+          }
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/transcript/${SHA256}.vtt`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        createEnv()
+      );
+
+      expect(response.status).toBe(202);
+      expect(response.headers.get('Content-Type')).toBe('application/json');
+      expect(response.headers.get('Retry-After')).toBe('30');
+      await expect(response.json()).resolves.toEqual({
+        sha256: SHA256,
+        found: false,
+        pending: true,
+        subtitleUrl: `/admin/transcript/${SHA256}.vtt`,
+        sourceUrl: `https://media.divine.video/${SHA256}.vtt`,
+        retryAfterSeconds: 30,
+        status: 'cooling_down',
+        message: 'Transcript generation cooling down before retry'
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }

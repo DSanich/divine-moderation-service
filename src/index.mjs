@@ -250,18 +250,51 @@ function getAdminTranscriptProxyUrl(sha256) {
   return `/admin/transcript/${sha256}.vtt`;
 }
 
+function parseRetryAfterHeader(value) {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 async function fetchTranscriptAsset(sha256, env) {
   const sourceUrl = getTranscriptSourceUrl(sha256, env);
   const response = await fetch(sourceUrl);
+  const subtitleUrl = getAdminTranscriptProxyUrl(sha256);
 
   if (response.status === 404) {
     return {
       found: false,
+      pending: false,
       sha256,
       sourceUrl,
-      subtitleUrl: getAdminTranscriptProxyUrl(sha256),
+      subtitleUrl,
       vttContent: null,
       transcriptText: ''
+    };
+  }
+
+  if (response.status === 202) {
+    let pendingBody = null;
+    try {
+      pendingBody = await response.json();
+    } catch {
+      pendingBody = null;
+    }
+
+    return {
+      found: false,
+      pending: true,
+      sha256,
+      sourceUrl,
+      subtitleUrl,
+      vttContent: null,
+      transcriptText: '',
+      retryAfterSeconds: parseRetryAfterHeader(response.headers.get('Retry-After')),
+      pendingStatus: typeof pendingBody?.status === 'string' ? pendingBody.status : null,
+      pendingMessage: typeof pendingBody?.message === 'string' ? pendingBody.message : null
     };
   }
 
@@ -272,9 +305,10 @@ async function fetchTranscriptAsset(sha256, env) {
   const vttContent = await response.text();
   return {
     found: true,
+    pending: false,
     sha256,
     sourceUrl,
-    subtitleUrl: getAdminTranscriptProxyUrl(sha256),
+    subtitleUrl,
     vttContent,
     transcriptText: parseVttText(vttContent).trim()
   };
@@ -1808,6 +1842,27 @@ export default {
 
       try {
         const transcript = await fetchTranscriptAsset(sha256, env);
+        if (transcript.pending) {
+          const headers = { ...JSON_HEADERS };
+          if (transcript.retryAfterSeconds !== null) {
+            headers['Retry-After'] = String(transcript.retryAfterSeconds);
+          }
+
+          return new Response(JSON.stringify({
+            sha256,
+            found: false,
+            pending: true,
+            subtitleUrl: transcript.subtitleUrl,
+            sourceUrl: transcript.sourceUrl,
+            retryAfterSeconds: transcript.retryAfterSeconds,
+            status: transcript.pendingStatus,
+            message: transcript.pendingMessage
+          }), {
+            status: 202,
+            headers
+          });
+        }
+
         if (!transcript.found) {
           return new Response(JSON.stringify({
             sha256,
@@ -2111,6 +2166,29 @@ export default {
 
       try {
         const transcript = await fetchTranscriptAsset(sha256, env);
+        if (transcript.pending) {
+          const headers = {
+            ...JSON_HEADERS
+          };
+          if (transcript.retryAfterSeconds !== null) {
+            headers['Retry-After'] = String(transcript.retryAfterSeconds);
+          }
+
+          return new Response(JSON.stringify({
+            sha256,
+            found: false,
+            pending: true,
+            subtitleUrl: transcript.subtitleUrl,
+            sourceUrl: transcript.sourceUrl,
+            retryAfterSeconds: transcript.retryAfterSeconds,
+            status: transcript.pendingStatus,
+            message: transcript.pendingMessage
+          }), {
+            status: 202,
+            headers
+          });
+        }
+
         if (!transcript.found || !transcript.vttContent) {
           return new Response('Transcript not found', { status: 404 });
         }
