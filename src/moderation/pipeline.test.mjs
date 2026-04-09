@@ -130,7 +130,7 @@ describe('Moderation Pipeline', () => {
     expect(result.topicProfile).toBeNull();
   });
 
-  it('keeps benign Hive nudity SAFE while retaining downstream nudity signals', async () => {
+  it('retains downstream signals for Hive nudity classifications', async () => {
     const mockFetch = vi.fn(async (url) => {
       if (typeof url === 'string' && url.endsWith('.vtt')) {
         return {
@@ -177,16 +177,18 @@ describe('Moderation Pipeline', () => {
     }, env, mockFetch);
 
     expect(result.provider).toBe('hiveai');
-    expect(result.action).toBe('SAFE');
+    expect(result.action).toBe('AGE_RESTRICTED');
+    expect(result.category).toBe('nudity');
     expect(result.scores.nudity).toBe(0.91);
-    expect(result.scores.sexual).toBe(0);
-    expect(result.scores.porn).toBe(0);
     expect(result.downstreamSignals?.hasSignals).toBe(true);
     expect(result.downstreamSignals?.scores?.nudity).toBe(0.91);
     expect(result.downstreamSignals?.primaryConcern).toBe('nudity');
+    expect(result.rawClassifierData?.allClassMaxScores?.yes_male_nudity).toBe(0.91);
+    expect(result.rawClassifierData?.allClassMaxScores?.yes_male_swimwear).toBe(0.88);
+    expect(result.rawClassifierData?.allClassMaxScores?.yes_male_underwear).toBe(0.83);
   });
 
-  it('should detect Hive sexual content and return AGE_RESTRICTED', async () => {
+  it('maps Hive sexual display into the current nudity category', async () => {
     const mockFetch = vi.fn(async (url) => {
       if (typeof url === 'string' && url.endsWith('.vtt')) {
         return {
@@ -233,9 +235,10 @@ describe('Moderation Pipeline', () => {
 
     expect(result.provider).toBe('hiveai');
     expect(result.action).toBe('AGE_RESTRICTED');
-    expect(result.category).toBe('sexual');
-    expect(result.scores.sexual).toBe(0.9);
-    expect(result.scores.porn).toBe(0);
+    expect(result.category).toBe('nudity');
+    expect(result.scores.nudity).toBe(0.9);
+    expect(result.rawClassifierData?.allClassMaxScores?.yes_sexual_display).toBe(0.9);
+    expect(result.rawClassifierData?.allClassMaxScores?.yes_sex_toy).toBe(0.82);
   });
 
   it('should detect borderline violence and return REVIEW', async () => {
