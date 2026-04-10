@@ -278,8 +278,7 @@ On the main dashboard (`/admin`), add:
 Phase 1 (schema + plumbing)
   ├── 1.1 D1 migration
   ├── 1.2 Thread uploadedBy through pipeline
-  ├── 1.3 Wire updateUploaderStats
-  └── 1.4 dm-store.mjs
+  └── 1.3 dm-store.mjs
 
 Phase 2 (sender)
   ├── 2.1 dm-sender.mjs
