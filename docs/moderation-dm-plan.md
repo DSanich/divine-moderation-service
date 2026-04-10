@@ -67,16 +67,7 @@ Run via: `wrangler d1 execute blossom-webhook-events --file=migrations/003-dm-su
 2. Pass `uploadedBy` into `handleModerationResult(result, env)` — either add it to the `result` object from `moderateVideo()` return, or pass as third argument
 3. Update `moderateVideo()` in `src/moderation/pipeline.mjs` to include `uploadedBy` in its return value (it already receives it as `videoData.uploadedBy`)
 
-### 1.3 Wire Up `updateUploaderStats()` (Currently Dead Code)
-
-In the queue consumer, after storing the moderation result, call:
-```javascript
-if (uploadedBy) {
-  await updateUploaderStats(env.BLOSSOM_DB, uploadedBy, result.action);
-}
-```
-
-### 1.4 New File: `src/nostr/dm-store.mjs`
+### 1.3 New File: `src/nostr/dm-store.mjs`
 
 Functions:
 - `initDmLogTable(db)` — `CREATE TABLE IF NOT EXISTS` (safety net, main creation via migration)

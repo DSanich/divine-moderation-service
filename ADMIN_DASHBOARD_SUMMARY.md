@@ -110,7 +110,7 @@ Color-coded horizontal bars:
 ### View Highest Nudity Scores
 1. Log in
 2. Select "Nudity (High → Low)" from Sort dropdown
-3. View top offenders at the top
+3. View the highest-scoring videos at the top
 
 ### Find Quarantined Content
 1. Select "Quarantined" from Filter dropdown
