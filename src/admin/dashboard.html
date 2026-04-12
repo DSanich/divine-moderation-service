@@ -137,8 +137,199 @@
 
     .lookup-result-grid {
       display: grid;
-      grid-template-columns: minmax(300px, 420px);
+      grid-template-columns: minmax(420px, 1fr) minmax(400px, 1.2fr);
       gap: 20px;
+      align-items: start;
+    }
+
+    @media (max-width: 1100px) {
+      .lookup-result-grid {
+        grid-template-columns: minmax(320px, 1fr);
+      }
+    }
+
+    .lookup-detail-pane {
+      background: #141b27;
+      border: 1px solid #1f2a3a;
+      border-radius: 10px;
+      padding: 16px;
+      color: #cbd5e1;
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .lookup-detail-pane h3 {
+      margin: 0;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #94a3b8;
+    }
+
+    .lookup-detail-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .lookup-detail-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .lookup-detail-row .k {
+      color: #64748b;
+      min-width: 80px;
+    }
+
+    .lookup-detail-row .v {
+      color: #e2e8f0;
+      word-break: break-all;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .lookup-detail-row a {
+      color: #8b5cf6;
+      text-decoration: none;
+    }
+
+    .lookup-detail-row a:hover {
+      text-decoration: underline;
+    }
+
+    .nostr-event-json {
+      background: #0b1220;
+      border: 1px solid #1f2a3a;
+      border-radius: 8px;
+      padding: 10px;
+      color: #cbd5e1;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      max-height: 360px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+    }
+
+    .nostr-event-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .nostr-event-toolbar button {
+      background: #1f2a3a;
+      color: #cbd5e1;
+      border: 1px solid #334155;
+      border-radius: 5px;
+      padding: 4px 10px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .nostr-event-toolbar button:hover {
+      background: #27324a;
+    }
+
+    /* Uploader identity block shown at top of each card */
+    .event-meta {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 8px 10px;
+      background: #141b27;
+      border: 1px solid #1f2a3a;
+      border-radius: 8px;
+      margin-bottom: 10px;
+    }
+
+    .event-meta-avatar {
+      width: 34px;
+      height: 34px;
+      flex-shrink: 0;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #8b5cf6, #6366f1);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    .event-meta-body {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .event-meta-name {
+      color: #e2e8f0;
+      font-size: 13px;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .event-meta-pubkey-row {
+      font-size: 11px;
+      color: #94a3b8;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .event-meta-pubkey.empty {
+      color: #64748b;
+      font-style: italic;
+    }
+
+    .event-meta-event-id,
+    .event-meta-published {
+      font-size: 11px;
+      color: #94a3b8;
+    }
+
+    .event-meta-event-id code {
+      font-size: 10px;
+      color: #cbd5e1;
+    }
+
+    .event-meta-label {
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-size: 9px;
+      margin-right: 4px;
+    }
+
+    .event-meta-links {
+      display: flex;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .event-meta-link {
+      color: #8b5cf6;
+      font-size: 11px;
+      text-decoration: none;
+      border: 1px solid #334155;
+      border-radius: 4px;
+      padding: 2px 8px;
+      background: #0b1220;
+    }
+
+    .event-meta-link:hover {
+      background: #1f2a3a;
+      text-decoration: none;
     }
 
     .control-group {
@@ -2190,9 +2381,11 @@
         ? { ...video, showDirectActions: true, showTranscriptTools: true }
         : { ...video, showTranscriptTools: true };
 
-      result.innerHTML = video.status === 'UNTRIAGED'
+      const cardHtml = video.status === 'UNTRIAGED'
         ? createTriageCard(renderVideo)
         : createVideoCard(renderVideo);
+      const detailPaneHtml = createLookupDetailPaneHTML(renderVideo);
+      result.innerHTML = cardHtml + detailPaneHtml;
 
       section.style.display = 'block';
       meta.textContent = `${video.sha256.substring(0, 16)}...${video.status === 'UNTRIAGED' ? ' · needs triage' : ` · ${video.action}`}`;
@@ -2485,6 +2678,7 @@
           '</div>' +
         '</div>' +
         '<div class="video-info">' +
+          createEventMetaHTML(video) +
           '<div style="font-size: 11px; color: #666; margin-bottom: 6px; font-family: monospace;">' +
             '<span title="' + sha256 + '">' + sha256.substring(0, 16) + '...</span> ' +
             '<button onclick="copyToClipboard(\'' + copyVideoUrl + '\'); event.stopPropagation();" style="background: #333; color: #888; border: none; padding: 2px 6px; border-radius: 3px; cursor: pointer; font-size: 10px;" title="Copy video URL">📋 URL</button> ' +
@@ -3036,6 +3230,203 @@
       return div.innerHTML;
     }
 
+    // --- Uploader identity helpers (mirror of src/admin/event-meta.mjs) ---
+    // Unit-tested via event-meta.test.mjs; duplicated here because
+    // dashboard.html is a single served HTML file without a build step.
+    function eventMetaFirstPresent() {
+      for (let i = 0; i < arguments.length; i++) {
+        const v = arguments[i];
+        if (v === null || v === undefined) continue;
+        if (typeof v === 'string' && v.trim() === '') continue;
+        return v;
+      }
+      return null;
+    }
+
+    function buildDivineVideoUrl(video) {
+      if (!video) return null;
+      if (video.divineUrl) return video.divineUrl;
+      const eid = eventMetaFirstPresent(video.eventId, video.event_id, video.nostrContext && video.nostrContext.eventId);
+      return eid ? 'https://divine.video/video/' + eid : null;
+    }
+
+    function buildProfileUrl(pubkey) {
+      if (!pubkey) return null;
+      const str = String(pubkey).trim();
+      if (!str) return null;
+      return 'https://divine.video/profile/' + str;
+    }
+
+    function truncatePubkey(pubkey) {
+      if (!pubkey) return '';
+      const str = String(pubkey);
+      if (str.length <= 16) return str;
+      return str.slice(0, 8) + '...' + str.slice(-8);
+    }
+
+    function pickAuthorName(video) {
+      if (!video) return 'Unknown publisher';
+      const ctx = video.nostrContext || {};
+      return eventMetaFirstPresent(video.author, ctx.author, ctx.displayName) || 'Unknown publisher';
+    }
+
+    function pickUploaderPubkey(video) {
+      if (!video) return null;
+      const ctx = video.nostrContext || {};
+      const raw = eventMetaFirstPresent(video.uploaded_by, video.uploadedBy, ctx.pubkey);
+      return raw ? String(raw) : null;
+    }
+
+    function isFullHexPubkey(pubkey) {
+      return typeof pubkey === 'string' && /^[0-9a-f]{64}$/i.test(pubkey);
+    }
+
+    function formatEventMetaTimestamp(value) {
+      if (value === null || value === undefined || value === '') return null;
+      let date;
+      if (typeof value === 'number') {
+        date = new Date(value < 1e12 ? value * 1000 : value);
+      } else {
+        date = new Date(value);
+      }
+      if (Number.isNaN(date.getTime())) return null;
+      return date.toISOString().replace('T', ' ').replace(/:\d{2}\.\d{3}Z$/, 'Z');
+    }
+
+    /**
+     * Renders the uploader identity block shown at the top of every
+     * moderation card (avatar, author, pubkey, profile + Nostr event link).
+     */
+    function createEventMetaHTML(video) {
+      video = video || {};
+      const authorName = pickAuthorName(video);
+      const pubkey = pickUploaderPubkey(video);
+      const profileUrl = isFullHexPubkey(pubkey) ? buildProfileUrl(pubkey) : null;
+      const divineUrl = buildDivineVideoUrl(video);
+      const eventId = eventMetaFirstPresent(video.eventId, video.event_id, video.nostrContext && video.nostrContext.eventId);
+      const publishedAt = formatEventMetaTimestamp(
+        eventMetaFirstPresent(video.published_at, video.publishedAt, video.nostrContext && video.nostrContext.publishedAt)
+      );
+      const avatarChar = (authorName || '?').trim().charAt(0).toUpperCase() || '?';
+
+      const pubkeyLine = pubkey
+        ? '<span class="event-meta-pubkey" title="' + escapeHtml(pubkey) + '" onclick="copyToClipboard(\'' + escapeHtml(pubkey) + '\')" style="cursor:pointer">' + escapeHtml(truncatePubkey(pubkey)) + '</span>'
+        : '<span class="event-meta-pubkey empty">No pubkey</span>';
+
+      const links = [];
+      if (profileUrl) {
+        links.push('<a class="event-meta-link" href="' + escapeHtml(profileUrl) + '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">Profile</a>');
+      }
+      if (divineUrl) {
+        links.push('<a class="event-meta-link" href="' + escapeHtml(divineUrl) + '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">Nostr event</a>');
+      }
+
+      const linksHtml = links.length ? '<div class="event-meta-links">' + links.join('') + '</div>' : '';
+      const publishedHtml = publishedAt
+        ? '<div class="event-meta-published"><span class="event-meta-label">Published</span>' + escapeHtml(publishedAt) + '</div>'
+        : '';
+      const eventIdHtml = eventId
+        ? '<div class="event-meta-event-id"><span class="event-meta-label">Event</span><code>' + escapeHtml(truncatePubkey(eventId)) + '</code></div>'
+        : '';
+
+      return (
+        '<div class="event-meta">' +
+          '<div class="event-meta-avatar" aria-hidden="true">' + escapeHtml(avatarChar) + '</div>' +
+          '<div class="event-meta-body">' +
+            '<div class="event-meta-name">' + escapeHtml(authorName) + '</div>' +
+            '<div class="event-meta-pubkey-row">' + pubkeyLine + '</div>' +
+            eventIdHtml +
+            publishedHtml +
+            linksHtml +
+          '</div>' +
+        '</div>'
+      );
+    }
+
+    /**
+     * Renders the lookup detail pane shown to the right of the focused
+     * card: a pretty-printed, copyable Nostr event JSON view plus
+     * quick identity links.
+     */
+    function createLookupDetailPaneHTML(video) {
+      video = video || {};
+      const nostrContext = video.nostrContext || {};
+      const pubkey = pickUploaderPubkey(video);
+      const divineUrl = buildDivineVideoUrl(video);
+      const profileUrl = isFullHexPubkey(pubkey) ? buildProfileUrl(pubkey) : null;
+      const eventId = eventMetaFirstPresent(video.eventId, video.event_id, nostrContext.eventId);
+      const eventPayload = {
+        eventId: eventId || null,
+        pubkey: pubkey || null,
+        divineUrl: divineUrl || null,
+        profileUrl: profileUrl || null,
+        sha256: video.sha256 || null,
+        title: eventMetaFirstPresent(video.title, nostrContext.title),
+        author: pickAuthorName(video),
+        content: nostrContext.content || null,
+        url: eventMetaFirstPresent(video.content_url, nostrContext.url, video.cdnUrl),
+        sourceUrl: nostrContext.sourceUrl || null,
+        publishedAt: eventMetaFirstPresent(video.published_at, video.publishedAt, nostrContext.publishedAt),
+        platform: nostrContext.platform || null,
+        client: nostrContext.client || null,
+        loops: nostrContext.loops ?? null,
+        likes: nostrContext.likes ?? null,
+        comments: nostrContext.comments ?? null,
+        archivedAt: nostrContext.archivedAt || null,
+        importedAt: nostrContext.importedAt || null,
+        vineHashId: nostrContext.vineHashId || null,
+        vineUserId: nostrContext.vineUserId || null
+      };
+      const jsonText = JSON.stringify(eventPayload, null, 2);
+
+      const rows = [];
+      if (eventId) {
+        rows.push('<div class="lookup-detail-row"><span class="k">Event</span><span class="v">' + escapeHtml(eventId) + '</span></div>');
+      }
+      if (pubkey) {
+        rows.push('<div class="lookup-detail-row"><span class="k">Pubkey</span><span class="v">' + escapeHtml(pubkey) + '</span></div>');
+      }
+      const linkChips = [];
+      if (divineUrl) {
+        linkChips.push('<a class="event-meta-link" href="' + escapeHtml(divineUrl) + '" target="_blank" rel="noopener noreferrer">Open Nostr event</a>');
+      }
+      if (profileUrl) {
+        linkChips.push('<a class="event-meta-link" href="' + escapeHtml(profileUrl) + '" target="_blank" rel="noopener noreferrer">Open profile</a>');
+      }
+      const linksRow = linkChips.length
+        ? '<div class="lookup-detail-row">' + linkChips.join('') + '</div>'
+        : '';
+
+      return (
+        '<aside class="lookup-detail-pane" data-sha256="' + escapeHtml(video.sha256 || '') + '">' +
+          '<div class="lookup-detail-section">' +
+            '<h3>Uploader Identity</h3>' +
+            createEventMetaHTML(video) +
+            rows.join('') +
+            linksRow +
+          '</div>' +
+          '<div class="lookup-detail-section">' +
+            '<div class="nostr-event-toolbar">' +
+              '<h3>Nostr Event</h3>' +
+              '<button type="button" onclick="copyNostrEventJson(this)" data-json=\'' + escapeHtml(jsonText) + '\'>Copy JSON</button>' +
+            '</div>' +
+            '<details open>' +
+              '<summary style="cursor:pointer;color:#94a3b8;font-size:11px;">Toggle raw event JSON</summary>' +
+              '<pre class="nostr-event-json">' + escapeHtml(jsonText) + '</pre>' +
+            '</details>' +
+          '</div>' +
+        '</aside>'
+      );
+    }
+
+    function copyNostrEventJson(button) {
+      const json = button.getAttribute('data-json') || '';
+      copyToClipboard(json);
+      const orig = button.textContent;
+      button.textContent = 'Copied!';
+      setTimeout(() => { button.textContent = orig; }, 1200);
+    }
+
     function createVideoCard(video) {
       const { sha256, cdnUrl, action, scores, reason, processedAt, detailedCategories, provider, manualOverride, overriddenAt, previousAction, showTranscriptTools } = video;
 
@@ -3147,6 +3538,7 @@
             </div>
           </div>
           <div class="video-info">
+            ${createEventMetaHTML(video)}
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
               <div style="display: flex; align-items: center; gap: 4px;">
                 <div class="video-hash" title="Click to copy full hash" onclick="copyToClipboard('${sha256}')" style="margin-bottom: 0;">${sha256.substring(0, 16)}...</div>

@@ -577,6 +577,45 @@ describe('Admin video lookup', () => {
     });
   });
 
+  it('includes uploader identity keys (nostrContext, eventId, uploaded_by, divineUrl) for moderated rows', async () => {
+    const env = createEnv({
+      BLOSSOM_DB: createDbMock({
+        moderationResults: new Map([[SHA256, {
+          sha256: SHA256,
+          action: 'REVIEW',
+          provider: 'hiveai',
+          scores: JSON.stringify({ nudity: 0.2 }),
+          categories: JSON.stringify([]),
+          moderated_at: '2026-04-01T00:00:00.000Z',
+          uploaded_by: 'c'.repeat(64),
+          title: 'Clip title',
+          author: 'Alice',
+          event_id: '2'.repeat(64),
+          content_url: 'https://media.divine.video/clip.mp4',
+          published_at: '2026-04-01T00:00:00.000Z'
+        }]])
+      })
+    });
+
+    const response = await worker.fetch(
+      new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
+        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.video).toHaveProperty('nostrContext');
+    expect(body.video).toHaveProperty('eventId');
+    expect(body.video).toHaveProperty('uploaded_by');
+    expect(body.video).toHaveProperty('divineUrl');
+    expect(body.video.uploaded_by).toBe('c'.repeat(64));
+    expect(body.video.eventId).toBe('2'.repeat(64));
+    expect(body.video.divineUrl).toBe(`https://divine.video/video/${'2'.repeat(64)}`);
+    expect(body.video.nostrContext).toMatchObject({ title: 'Clip title', author: 'Alice' });
+  });
+
   it('returns 404 when the lookup identifier is unknown', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => new Response('not found', { status: 404 });
