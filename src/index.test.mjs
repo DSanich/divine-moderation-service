@@ -851,6 +851,155 @@ describe('admin video proxy format fallback', () => {
   });
 });
 
+describe('admin video proxy range forwarding', () => {
+  it('forwards Range header to CDN and returns 206 with Content-Range', async () => {
+    const originalFetch = globalThis.fetch;
+    let receivedInit = null;
+    globalThis.fetch = async (url, init) => {
+      if (String(url) === `https://media.divine.video/${SHA256}`) {
+        receivedInit = init;
+        return new Response('partial-bytes', {
+          status: 206,
+          headers: {
+            'Content-Type': 'video/mp4',
+            'Content-Range': 'bytes 0-1023/5000000',
+            'Accept-Ranges': 'bytes',
+            'Content-Length': '1024'
+          }
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
+          headers: {
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video',
+            'Range': 'bytes=0-1023'
+          }
+        }),
+        createEnv()
+      );
+
+      expect(response.status).toBe(206);
+      expect(response.headers.get('Content-Range')).toBe('bytes 0-1023/5000000');
+      expect(response.headers.get('Accept-Ranges')).toBe('bytes');
+      expect(response.headers.get('Content-Length')).toBe('1024');
+      expect(response.headers.get('X-Admin-Proxy')).toBe('cdn');
+
+      const upstreamHeaders = new Headers(receivedInit?.headers || {});
+      expect(upstreamHeaders.get('Range')).toBe('bytes=0-1023');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('forwards Range header to admin bypass branch and returns 206', async () => {
+    const originalFetch = globalThis.fetch;
+    let bypassInit = null;
+    globalThis.fetch = async (url, init) => {
+      if (String(url) === `https://media.divine.video/${SHA256}`) {
+        return new Response('nope', { status: 404 });
+      }
+      if (String(url) === `https://media.divine.video/admin/api/blob/${SHA256}/content`) {
+        bypassInit = init;
+        return new Response('partial-bytes', {
+          status: 206,
+          headers: {
+            'Content-Type': 'video/mp4',
+            'Content-Range': 'bytes 0-1023/5000000',
+            'Accept-Ranges': 'bytes',
+            'Content-Length': '1024'
+          }
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
+          headers: {
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video',
+            'Range': 'bytes=0-1023'
+          }
+        }),
+        createEnv({ BLOSSOM_WEBHOOK_SECRET: 'test-secret' })
+      );
+
+      expect(response.status).toBe(206);
+      expect(response.headers.get('Content-Range')).toBe('bytes 0-1023/5000000');
+      expect(response.headers.get('Accept-Ranges')).toBe('bytes');
+      expect(response.headers.get('Content-Length')).toBe('1024');
+      expect(response.headers.get('X-Admin-Proxy')).toBe('blossom-admin');
+
+      const upstreamHeaders = new Headers(bypassInit?.headers || {});
+      expect(upstreamHeaders.get('Range')).toBe('bytes=0-1023');
+      expect(upstreamHeaders.get('Authorization')).toBe('Bearer test-secret');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('serves 200 from CDN when no Range header is present', async () => {
+    const originalFetch = globalThis.fetch;
+    let receivedInit = null;
+    globalThis.fetch = async (url, init) => {
+      if (String(url) === `https://media.divine.video/${SHA256}`) {
+        receivedInit = init;
+        return new Response('full-bytes', {
+          status: 200,
+          headers: { 'Content-Type': 'video/mp4' }
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        createEnv()
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('X-Admin-Proxy')).toBe('cdn');
+      const upstreamHeaders = new Headers(receivedInit?.headers || {});
+      expect(upstreamHeaders.get('Range')).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('returns 404 when CDN and admin bypass both miss', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url) === `https://media.divine.video/${SHA256}`) {
+        return new Response('nope', { status: 404 });
+      }
+      if (String(url) === `https://media.divine.video/admin/api/blob/${SHA256}/content`) {
+        return new Response('nope', { status: 404 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        createEnv({ BLOSSOM_WEBHOOK_SECRET: 'test-secret' })
+      );
+
+      expect(response.status).toBe(404);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe('notifyBlossom integration via admin moderate endpoint', () => {
   // Exercises the real notifyBlossom() code path through the admin API.
   // A mock fetch interceptor captures the webhook payload Blossom would receive.
