@@ -631,6 +631,69 @@
       border-radius: 6px;
     }
 
+    .uploader-history {
+      margin-top: 6px;
+      padding: 8px 10px;
+      background: #0a0f1a;
+      border: 1px solid #1f2937;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #cbd5e1;
+    }
+    .uploader-history .uh-header {
+      font-size: 10px;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 4px;
+    }
+    .uploader-history .uh-badges { display: flex; gap: 4px; flex-wrap: wrap; }
+    .uploader-history .uh-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 600;
+      border: 1px solid #334155;
+      background: #111827;
+      color: #cbd5e1;
+    }
+    .uploader-history .uh-badge.uh-review { border-color: #b45309; color: #fdba74; }
+    .uploader-history .uh-badge.uh-quar { border-color: #7c3aed; color: #d8b4fe; }
+    .uploader-history .uh-badge.uh-age { border-color: #1d4ed8; color: #93c5fd; }
+    .uploader-history .uh-badge.uh-ban { border-color: #991b1b; color: #fca5a5; background: #2b0d0d; }
+    .uploader-history .uh-badge.uh-ai { border-color: #be185d; color: #fbcfe8; }
+    .uploader-history .uh-chips { display: flex; gap: 4px; margin-top: 4px; }
+    .uploader-history .uh-chip {
+      display: inline-block;
+      padding: 2px 6px;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      border-radius: 3px;
+    }
+    .uploader-history .uh-chip-approval { background: #1e1033; color: #d8b4fe; border: 1px solid #7c3aed; }
+    .uploader-history .uh-chip-banned { background: #2b0d0d; color: #fca5a5; border: 1px solid #991b1b; }
+    .uploader-history .uh-recent-wrap { margin-top: 6px; }
+    .uploader-history .uh-recent-toggle {
+      background: transparent;
+      border: 1px dashed #334155;
+      color: #94a3b8;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      cursor: pointer;
+    }
+    .uploader-history .uh-recent-list {
+      list-style: none;
+      padding: 4px 0 0 0;
+      margin: 4px 0 0 0;
+      font-size: 10px;
+      color: #94a3b8;
+    }
+    .uploader-history .uh-recent-list li { padding: 2px 0; }
+    .uploader-history .uh-recent-list code { color: #cbd5e1; }
+
     .uploader-enforcement-header {
       display: flex;
       justify-content: space-between;
@@ -2424,6 +2487,80 @@
       `;
     }
 
+    // Lazy per-uploader history panel — fetches /admin/api/uploader/:pubkey
+    // on card render and populates an inline container. Session-scoped in-memory
+    // cache keyed by pubkey prevents duplicate fetches within a page load.
+    window.__uploaderHistoryCache = window.__uploaderHistoryCache || new Map();
+
+    function createUploaderHistoryPanel(video) {
+      const pubkey = video.uploaded_by || null;
+      if (!pubkey) return '';
+      const containerId = 'uploader-history-' + pubkey.slice(0, 12) + '-' + Math.random().toString(36).slice(2, 8);
+      // Schedule lazy fetch after DOM insertion
+      setTimeout(() => hydrateUploaderHistory(containerId, pubkey), 0);
+      return '<div class="uploader-history" id="' + containerId + '" data-pubkey="' + pubkey + '"><div class="uploader-history-loading" style="font-size: 11px; color: #666; padding: 4px 0;">Loading uploader history…</div></div>';
+    }
+
+    async function hydrateUploaderHistory(containerId, pubkey) {
+      const el = document.getElementById(containerId);
+      if (!el) return;
+      let data;
+      try {
+        if (window.__uploaderHistoryCache.has(pubkey)) {
+          data = await window.__uploaderHistoryCache.get(pubkey);
+        } else {
+          const promise = fetch('/admin/api/uploader/' + encodeURIComponent(pubkey))
+            .then(r => r.ok ? r.json() : null)
+            .catch(() => null);
+          window.__uploaderHistoryCache.set(pubkey, promise);
+          data = await promise;
+        }
+      } catch { data = null; }
+
+      if (!data || !el.isConnected) {
+        if (el) el.innerHTML = '';
+        return;
+      }
+
+      const ab = data.actionBreakdown || {};
+      const totals = data.totals || {};
+      const badges = [];
+      badges.push('<span class="uh-badge uh-uploads">' + (totals.videos || 0) + ' uploads</span>');
+      if (ab.REVIEW) badges.push('<span class="uh-badge uh-review">' + ab.REVIEW + ' REVIEW</span>');
+      if (ab.QUARANTINE) badges.push('<span class="uh-badge uh-quar">' + ab.QUARANTINE + ' QUAR</span>');
+      if (ab.AGE_RESTRICTED) badges.push('<span class="uh-badge uh-age">' + ab.AGE_RESTRICTED + ' AGE</span>');
+      if (ab.PERMANENT_BAN) badges.push('<span class="uh-badge uh-ban">' + ab.PERMANENT_BAN + ' BAN</span>');
+      if (data.dmCount) badges.push('<span class="uh-badge uh-dm">' + data.dmCount + ' DMs</span>');
+      if (data.aiFlaggedCount) badges.push('<span class="uh-badge uh-ai">' + data.aiFlaggedCount + ' AI-flag</span>');
+
+      const chips = [];
+      if (data.enforcement?.approval_required) chips.push('<span class="uh-chip uh-chip-approval">APPROVAL REQUIRED</span>');
+      if (data.enforcement?.relay_banned) chips.push('<span class="uh-chip uh-chip-banned">RELAY BANNED</span>');
+
+      const recent = Array.isArray(data.recentFlagged) ? data.recentFlagged : [];
+      const recentListId = containerId + '-recent';
+      const recentToggleId = containerId + '-toggle';
+      const recentItems = recent.map(r => {
+        const shortSha = (r.sha256 || '').slice(0, 10);
+        const when = r.processedAt ? new Date(r.processedAt).toLocaleDateString() : '';
+        const reason = r.reason ? ' — ' + String(r.reason).slice(0, 80) : '';
+        return '<li><span class="uh-recent-action uh-recent-' + (r.action || '') + '">' + (r.action || '') + '</span> <code>' + shortSha + '</code> ' + when + reason + '</li>';
+      }).join('');
+
+      const recentBlock = recent.length > 0
+        ? '<div class="uh-recent-wrap">'
+          + '<button type="button" class="uh-recent-toggle" id="' + recentToggleId + '" onclick="document.getElementById(\'' + recentListId + '\').style.display = document.getElementById(\'' + recentListId + '\').style.display === \'none\' ? \'block\' : \'none\';">Recent flagged (' + recent.length + ')</button>'
+          + '<ul class="uh-recent-list" id="' + recentListId + '" style="display:none;">' + recentItems + '</ul>'
+          + '</div>'
+        : '';
+
+      el.innerHTML = ''
+        + '<div class="uh-header">Uploader history</div>'
+        + '<div class="uh-badges">' + badges.join(' ') + '</div>'
+        + (chips.length ? '<div class="uh-chips">' + chips.join(' ') + '</div>' : '')
+        + recentBlock;
+    }
+
     function createTriageCard(video) {
       const { sha256, cdnUrl, thumbnailUrl, receivedAt, nostrContext, showDirectActions, showTranscriptTools } = video;
 
@@ -2476,6 +2613,7 @@
         ? '<div id="transcript-detail-' + sha256 + '"></div>'
         : '';
       const uploaderEnforcementPanel = createUploaderEnforcementPanel(video);
+      const uploaderHistoryPanel = createUploaderHistoryPanel(video);
 
       return '<div class="video-card triage" data-sha256="' + sha256 + '" style="border-color: #8b5cf6;">' +
         '<div class="video-thumbnail">' +
@@ -2505,6 +2643,7 @@
             '</button>' +
           '</div>' +
           uploaderEnforcementPanel +
+          uploaderHistoryPanel +
           directActions +
           transcriptTools +
         '</div>' +
@@ -3136,6 +3275,7 @@
       // Generate moderation history
       const historyHTML = createModerationHistory(video);
       const uploaderEnforcementPanel = createUploaderEnforcementPanel(video);
+      const uploaderHistoryPanel = createUploaderHistoryPanel(video);
 
       return `
         <div class="video-card ${actionClass}" data-sha256="${sha256}">
@@ -3196,6 +3336,7 @@
             ` : ''}
 
             ${uploaderEnforcementPanel}
+            ${uploaderHistoryPanel}
 
             <div style="font-size: 12px; margin-bottom: 8px;">
               ${video.eventId || video.uploaded_by
