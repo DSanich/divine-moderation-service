@@ -181,10 +181,65 @@ function buildFunnelcakeVideoLookup(eventResponse, identifier) {
       content: metadata.content || event.content || null,
       pubkey: event.pubkey ? `${event.pubkey.substring(0, 16)}...` : null,
       eventId: event.id,
-      platform: metadata.platform || null
+      platform: metadata.platform || null,
+      loops: metadata.loops ?? null,
+      likes: metadata.likes ?? null,
+      comments: metadata.comments ?? null,
+      url: metadata.url || videoUrl || null,
+      sourceUrl: metadata.sourceUrl || null,
+      publishedAt: metadata.publishedAt ?? null,
+      archivedAt: metadata.archivedAt ?? null,
+      importedAt: metadata.importedAt ?? null,
+      vineHashId: metadata.vineHashId || null,
+      vineUserId: metadata.vineUserId || null,
+      createdAt: metadata.createdAt || event.created_at || null
     },
     divineUrl: `https://divine.video/video/${encodeURIComponent(stableId)}`
   };
+}
+
+function parseOptionalInteger(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function buildStoredNostrContext(row, uploadedBy = null, options = {}) {
+  const { includePubkey = true } = options;
+  if (!row) {
+    return null;
+  }
+
+  const metadata = {
+    title: row.title || null,
+    author: row.author || null,
+    platform: null,
+    client: null,
+    loops: null,
+    likes: null,
+    comments: null,
+    url: row.content_url || null,
+    sourceUrl: null,
+    publishedAt: parseOptionalInteger(row.published_at),
+    archivedAt: null,
+    importedAt: null,
+    vineHashId: null,
+    vineUserId: null,
+    content: null,
+    eventId: row.event_id || null,
+    createdAt: null
+  };
+
+  const hasStoredMetadata = Object.values(metadata).some((value) => value !== null);
+
+  if (includePubkey && uploadedBy) {
+    metadata.pubkey = `${uploadedBy.substring(0, 16)}...`;
+  }
+
+  return hasStoredMetadata ? metadata : null;
 }
 
 async function fetchFunnelcakeLookupVideo(identifier) {
@@ -381,28 +436,16 @@ async function deleteEventFromRelayBySha256(sha256, env, source = 'unknown', rea
 
 async function fetchLookupNostrContext(hash, env) {
   try {
-    const event = await fetchNostrEventBySha256(hash, ['wss://relay.divine.video'], env);
-    if (!event) {
+    const video = await fetchFunnelcakeLookupVideo(hash);
+    if (!video) {
       return null;
     }
 
-    const metadata = parseVideoEventMetadata(event) || {};
-    const tags = event.tags || [];
-    const stableId = getEventTagValue(tags, 'd') || event.id || hash;
-
     return {
-      eventId: event.id,
-      uploadedBy: event.pubkey || null,
-      divineUrl: `https://divine.video/video/${encodeURIComponent(stableId)}`,
-      nostrContext: {
-        title: metadata.title || null,
-        author: metadata.author || null,
-        client: metadata.client || null,
-        content: metadata.content || event.content || null,
-        pubkey: event.pubkey ? `${event.pubkey.substring(0, 16)}...` : null,
-        eventId: event.id,
-        platform: metadata.platform || null
-      }
+      eventId: video.eventId || null,
+      uploadedBy: video.uploaded_by || video.uploadedBy || null,
+      divineUrl: video.divineUrl || null,
+      nostrContext: video.nostrContext || null
     };
   } catch (error) {
     console.error(`[ADMIN] Failed to fetch Nostr context for ${hash}:`, error.message);
@@ -459,7 +502,8 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
   const cdnUrl = `https://${env.CDN_DOMAIN || 'media.divine.video'}/${hash}`;
   if (hash) {
     const moderatedRow = await env.BLOSSOM_DB.prepare(`
-      SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by
+      SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by,
+             title, author, event_id, content_url, published_at
       FROM moderation_results
       WHERE sha256 = ?
     `).bind(hash).first();
@@ -469,6 +513,9 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
 
     if (moderatedRow || kvModeration) {
       const moderatedAt = kvModeration?.moderated_at || moderatedRow?.moderated_at || null;
+      const uploadedBy = moderatedRow?.uploaded_by || kvModeration?.uploadedBy || null;
+      const storedNostrContext = buildStoredNostrContext(moderatedRow, uploadedBy, { includePubkey: true });
+      const storedEventId = moderatedRow?.event_id || null;
       return enrichAdminLookupVideo({
         sha256: hash,
         action: kvModeration?.action || moderatedRow?.action || 'REVIEW',
@@ -479,14 +526,17 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
         moderated_at: moderatedAt,
         reviewed_by: moderatedRow?.reviewed_by || kvModeration?.reviewedBy || kvModeration?.overriddenBy || null,
         reviewed_at: moderatedRow?.reviewed_at || null,
-        uploaded_by: moderatedRow?.uploaded_by || kvModeration?.uploadedBy || null,
+        uploaded_by: uploadedBy,
         reason: kvModeration?.reason || moderatedRow?.review_notes || null,
         manualOverride: Boolean(kvModeration?.manualOverride),
         overriddenAt: kvModeration?.overriddenAt || moderatedRow?.reviewed_at || null,
         previousAction: kvModeration?.previousAction || null,
         detailedCategories: parseMaybeJson(kvModeration?.detailedCategories, null),
         categoryVerifications: parseMaybeJson(kvModeration?.categoryVerifications, {}) || {},
-        cdnUrl: kvModeration?.cdnUrl || cdnUrl
+        cdnUrl: kvModeration?.cdnUrl || moderatedRow?.content_url || cdnUrl,
+        nostrContext: storedNostrContext,
+        eventId: storedEventId,
+        divineUrl: storedEventId ? `https://divine.video/video/${encodeURIComponent(storedEventId)}` : null
       }, env);
     }
 
@@ -506,21 +556,12 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
       let divineUrl = null;
       let uploaderPubkey = null;
       try {
-        const event = await fetchNostrEventBySha256(hash, ['wss://relay.divine.video'], env);
-        if (event) {
-          const metadata = parseVideoEventMetadata(event);
-          const stableId = getEventTagValue(event.tags || [], 'd') || event.id || hash;
-          eventId = event.id;
-          divineUrl = `https://divine.video/video/${encodeURIComponent(stableId)}`;
-          uploaderPubkey = event.pubkey || null;
-          nostrContext = {
-            title: metadata?.title || null,
-            author: metadata?.author || null,
-            client: metadata?.client || null,
-            content: metadata?.content || event.content || null,
-            pubkey: event.pubkey ? `${event.pubkey.substring(0, 16)}...` : null,
-            eventId
-          };
+        const video = await fetchFunnelcakeLookupVideo(hash);
+        if (video) {
+          eventId = video.eventId || null;
+          divineUrl = video.divineUrl || null;
+          uploaderPubkey = video.uploaded_by || video.uploadedBy || null;
+          nostrContext = video.nostrContext || null;
         }
       } catch (error) {
         console.error(`[ADMIN] Failed to fetch Nostr context for ${hash}:`, error.message);
@@ -1066,17 +1107,16 @@ export default {
         // Fetch Nostr context in parallel for all unmoderated videos
         const nostrPromises = unmoderatedRows.map(async (row) => {
           try {
-            const event = await fetchNostrEventBySha256(row.sha256, ['wss://relay.divine.video'], env);
-            if (event) {
-              const metadata = parseVideoEventMetadata(event);
+            const video = await fetchFunnelcakeLookupVideo(row.sha256);
+            if (video) {
               return {
                 sha256: row.sha256,
-                eventId: event.id,
-                title: metadata?.title || null,
-                author: metadata?.author || null,
-                client: metadata?.client || null,
-                content: metadata?.content || event.content || null,
-                pubkey: event.pubkey || null
+                eventId: video.eventId || null,
+                title: video.nostrContext?.title || null,
+                author: video.nostrContext?.author || null,
+                client: video.nostrContext?.client || null,
+                content: video.nostrContext?.content || null,
+                pubkey: video.uploaded_by || video.uploadedBy || null
               };
             }
           } catch (e) {
@@ -1734,16 +1774,27 @@ export default {
       const sha256 = url.pathname.split('/')[4];
 
       try {
-        const event = await fetchNostrEventBySha256(sha256, ['wss://relay.divine.video'], env);
+        const storedRow = await env.BLOSSOM_DB.prepare(`
+          SELECT uploaded_by, title, author, event_id, content_url, published_at
+          FROM moderation_results
+          WHERE sha256 = ?
+        `).bind(sha256).first();
+        const storedMetadata = buildStoredNostrContext(storedRow, storedRow?.uploaded_by || null, { includePubkey: false });
 
-        if (!event) {
+        if (storedMetadata) {
+          return new Response(JSON.stringify({ found: true, metadata: storedMetadata }), {
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        const video = await fetchFunnelcakeLookupVideo(sha256);
+        if (!video?.nostrContext) {
           return new Response(JSON.stringify({ found: false }), {
             headers: { 'Content-Type': 'application/json' }
           });
         }
 
-        const metadata = parseVideoEventMetadata(event);
-
+        const { pubkey: _ignoredPubkey, ...metadata } = video.nostrContext;
         return new Response(JSON.stringify({ found: true, metadata }), {
           headers: { 'Content-Type': 'application/json' }
         });
