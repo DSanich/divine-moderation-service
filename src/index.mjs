@@ -24,6 +24,7 @@ import { formatForStorage, formatForGorse, formatForFunnelcake } from './classif
 import { topicsToLabels, topicsToWeightedFeatures } from './classification/topic-extractor.mjs';
 import { getKVThresholds, setKVThresholds, DEFAULT_THRESHOLDS } from './moderation/classifier.mjs';
 import { isValidSha256, isValidLookupIdentifier, isValidPubkey, parseMaybeJson, getEventTagValue, parseImetaParams, extractShaFromUrl, extractMediaShaFromEvent } from './validation.mjs';
+import { parseRetryAfterSeconds } from './http-utils.mjs';
 import { parseVttText } from './moderation/text-classifier.mjs';
 import { notifyAtprotoLabeler } from './atproto/label-webhook.mjs';
 import { buildDownstreamPublishContext } from './moderation/downstream-publishing.mjs';
@@ -250,15 +251,6 @@ function getAdminTranscriptProxyUrl(sha256) {
   return `/admin/transcript/${sha256}.vtt`;
 }
 
-function parseRetryAfterHeader(value) {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    return null;
-  }
-
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 async function fetchTranscriptAsset(sha256, env) {
   const sourceUrl = getTranscriptSourceUrl(sha256, env);
   const response = await fetch(sourceUrl);
@@ -292,7 +284,7 @@ async function fetchTranscriptAsset(sha256, env) {
       subtitleUrl,
       vttContent: null,
       transcriptText: '',
-      retryAfterSeconds: parseRetryAfterHeader(response.headers.get('Retry-After')),
+      retryAfterSeconds: parseRetryAfterSeconds(response.headers.get('Retry-After')),
       pendingStatus: typeof pendingBody?.status === 'string' ? pendingBody.status : null,
       pendingMessage: typeof pendingBody?.message === 'string' ? pendingBody.message : null
     };
