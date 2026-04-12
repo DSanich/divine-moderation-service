@@ -228,8 +228,16 @@ function parseOptionalInteger(value) {
     return null;
   }
 
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === 'string' && /^\d+$/.test(value)) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return value;
 }
 
 function buildStoredNostrContext(row, uploadedBy = null, options = {}) {
