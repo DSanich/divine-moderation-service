@@ -2089,36 +2089,61 @@ export default {
 
       const BROWSER_PLAYABLE_TYPES = new Set(['video/mp4', 'video/webm', 'video/ogg']);
 
+      // Forward range-related request headers to upstream so that <video>
+      // byte-range playback works end-to-end. Upstream 206 responses must be
+      // preserved along with Content-Range / Accept-Ranges / Content-Length
+      // so the browser player accepts the partial content.
+      const FORWARDED_RANGE_REQUEST_HEADERS = ['Range', 'If-Range', 'If-None-Match', 'If-Modified-Since'];
+      const buildUpstreamHeaders = (extraHeaders = {}) => {
+        const headers = { ...extraHeaders };
+        for (const name of FORWARDED_RANGE_REQUEST_HEADERS) {
+          const value = request.headers.get(name);
+          if (value) headers[name] = value;
+        }
+        return headers;
+      };
+      const passthroughResponseHeaders = (upstream, baseHeaders) => {
+        const headers = { ...baseHeaders };
+        const passthrough = ['Content-Range', 'Accept-Ranges', 'Content-Length', 'ETag', 'Last-Modified'];
+        for (const name of passthrough) {
+          const value = upstream.headers.get(name);
+          if (value) headers[name] = value;
+        }
+        return headers;
+      };
+
       try {
         // CDN fetch (unauthenticated) — works for SAFE/unmoderated content
-        const cdnResponse = await fetch(cdnUrl);
-        if (cdnResponse.ok) {
+        const cdnResponse = await fetch(cdnUrl, { headers: buildUpstreamHeaders() });
+        if (cdnResponse.ok || cdnResponse.status === 206) {
           const contentType = cdnResponse.headers.get('Content-Type') || 'video/mp4';
 
           // If the format is browser-playable, serve directly
           if (BROWSER_PLAYABLE_TYPES.has(contentType)) {
             console.log(`[ADMIN] Serving video from CDN: ${sha256}`);
             return new Response(cdnResponse.body, {
-              headers: {
+              status: cdnResponse.status,
+              headers: passthroughResponseHeaders(cdnResponse, {
                 'Content-Type': contentType,
                 'Cache-Control': 'private, no-store',
                 'X-Admin-Proxy': 'cdn'
-              }
+              })
             });
           }
 
           // Non-browser format (e.g. video/3gpp, video/x-matroska) — try transcoded 720p MP4 from Blossom
           console.log(`[ADMIN] CDN returned non-playable ${contentType}, trying transcoded 720p for ${sha256}`);
           const transcodeUrl = `https://${env.CDN_DOMAIN}/${sha256}/720p.mp4`;
-          const transcodeResponse = await fetch(transcodeUrl);
-          if (transcodeResponse.ok) {
+          const transcodeResponse = await fetch(transcodeUrl, { headers: buildUpstreamHeaders() });
+          if (transcodeResponse.ok || transcodeResponse.status === 206) {
             console.log(`[ADMIN] Serving transcoded 720p MP4 for ${sha256}`);
             return new Response(transcodeResponse.body, {
-              headers: {
+              status: transcodeResponse.status,
+              headers: passthroughResponseHeaders(transcodeResponse, {
                 'Content-Type': transcodeResponse.headers.get('Content-Type') || 'video/mp4',
                 'Cache-Control': 'private, no-store',
                 'X-Admin-Proxy': 'cdn-transcode'
-              }
+              })
             });
           }
           console.warn(`[ADMIN] Transcoded 720p not available (${transcodeResponse.status}) for ${sha256}`);
@@ -2128,27 +2153,21 @@ export default {
         // Fall back to admin bypass endpoint which serves regardless of moderation status
         if (env.BLOSSOM_WEBHOOK_SECRET) {
           console.log(`[ADMIN] CDN returned ${cdnResponse.status}, trying admin bypass for ${sha256}`);
-          const bypassHeaders = { 'Authorization': `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}` };
-          const rangeHeader = request.headers.get('Range');
-          if (rangeHeader) bypassHeaders['Range'] = rangeHeader;
+          const bypassHeaders = buildUpstreamHeaders({
+            'Authorization': `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}`
+          });
           const bypassResponse = await fetch(adminBypassUrl, { headers: bypassHeaders });
           if (bypassResponse.ok || bypassResponse.status === 206) {
             console.log(`[ADMIN] Serving video from admin bypass: ${sha256}`);
             const moderationStatus = bypassResponse.headers.get('X-Moderation-Status');
-            const contentRange = bypassResponse.headers.get('Content-Range');
-            const acceptRanges = bypassResponse.headers.get('Accept-Ranges');
-            const contentLength = bypassResponse.headers.get('Content-Length');
             return new Response(bypassResponse.body, {
               status: bypassResponse.status,
-              headers: {
+              headers: passthroughResponseHeaders(bypassResponse, {
                 'Content-Type': bypassResponse.headers.get('Content-Type') || 'video/mp4',
                 'Cache-Control': 'private, no-store',
                 'X-Admin-Proxy': 'blossom-admin',
                 ...(moderationStatus && { 'X-Moderation-Status': moderationStatus }),
-                ...(contentRange && { 'Content-Range': contentRange }),
-                ...(acceptRanges && { 'Accept-Ranges': acceptRanges }),
-                ...(contentLength && { 'Content-Length': contentLength }),
-              }
+              })
             });
           }
           console.error(`[ADMIN] Admin bypass returned ${bypassResponse.status} for ${sha256}`);
