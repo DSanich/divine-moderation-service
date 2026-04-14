@@ -1085,6 +1085,10 @@ describe('Admin nostr context lookup', () => {
 
     globalThis.fetch = async (url) => {
       restCalls.push(String(url));
+      if (String(url) === `https://api.divine.video/api/videos/${SHA256}`) {
+        return new Response('not found', { status: 404 });
+      }
+
       if (String(url) === `https://relay.divine.video/api/videos/${SHA256}`) {
         return new Response(JSON.stringify({
           event: {
@@ -1144,7 +1148,10 @@ describe('Admin nostr context lookup', () => {
           createdAt: 1700000000
         }
       });
-      expect(restCalls).toEqual([`https://relay.divine.video/api/videos/${SHA256}`]);
+      expect(restCalls).toEqual([
+        `https://api.divine.video/api/videos/${SHA256}`,
+        `https://relay.divine.video/api/videos/${SHA256}`
+      ]);
     } finally {
       globalThis.fetch = originalFetch;
       globalThis.WebSocket = originalWebSocket;
