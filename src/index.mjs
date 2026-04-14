@@ -51,6 +51,8 @@ const CATEGORY_TO_LABEL = {
 const ADMIN_HOSTNAME = 'moderation.admin.divine.video';
 const API_HOSTNAME = 'moderation-api.divine.video';
 const DEFAULT_RELAY_ADMIN_URL = 'https://relay.admin.divine.video';
+const DEFAULT_DIVINE_API_BASE_URL = 'https://api.divine.video';
+const DEFAULT_LEGACY_FUNNELCAKE_BASE_URL = 'https://relay.divine.video';
 const JSON_HEADERS = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 
 // ETags for admin HTML pages — computed once at module load, change only on deploy.
@@ -176,6 +178,37 @@ function hostMismatchResponse(requestId, hostname, pathname, expectedHost) {
   return jsonError(`Not found on ${hostname}. Use https://${expectedHost}${pathname}`, 404);
 }
 
+function isPresentValue(value) {
+  return value !== null && value !== undefined && value !== '';
+}
+
+function pickFirstPresentValue(...values) {
+  for (const value of values) {
+    if (isPresentValue(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function mergePresentFields(primary = {}, fallback = {}) {
+  const merged = { ...(fallback || {}) };
+  for (const [key, value] of Object.entries(primary || {})) {
+    if (isPresentValue(value)) {
+      merged[key] = value;
+    }
+  }
+  return Object.keys(merged).length > 0 ? merged : null;
+}
+
+function getDivineApiBaseUrl(env) {
+  return env.DIVINE_API_BASE_URL || DEFAULT_DIVINE_API_BASE_URL;
+}
+
+function getLegacyFunnelcakeBaseUrl(env) {
+  return env.FUNNELCAKE_API_BASE_URL || DEFAULT_LEGACY_FUNNELCAKE_BASE_URL;
+}
+
 function buildFunnelcakeVideoLookup(eventResponse, identifier) {
   if (!eventResponse?.event) {
     return null;
@@ -193,12 +226,17 @@ function buildFunnelcakeVideoLookup(eventResponse, identifier) {
 
   return {
     eventId: event.id,
+    event_id: event.id,
     stableId,
     lookupId: identifier,
     mediaSha,
     videoUrl,
+    content_url: videoUrl,
     thumbnailUrl,
     uploadedBy: event.pubkey || null,
+    author: metadata.author || stats.author_name || null,
+    title: metadata.title || null,
+    published_at: metadata.publishedAt || null,
     createdAt: event.created_at ? new Date(event.created_at * 1000).toISOString() : null,
     nostrContext: {
       title: metadata.title || null,
@@ -219,6 +257,10 @@ function buildFunnelcakeVideoLookup(eventResponse, identifier) {
       vineHashId: metadata.vineHashId || null,
       vineUserId: metadata.vineUserId || null,
       createdAt: metadata.createdAt || event.created_at || null
+    },
+    publisherProfile: {
+      display_name: stats.author_name || null,
+      picture: stats.author_avatar || null
     },
     divineUrl: `https://divine.video/video/${encodeURIComponent(stableId)}`
   };
@@ -276,22 +318,38 @@ function buildStoredNostrContext(row, uploadedBy = null, options = {}) {
   return hasStoredMetadata ? metadata : null;
 }
 
-async function fetchFunnelcakeLookupVideo(identifier) {
-  const response = await fetch(`https://relay.divine.video/api/videos/${encodeURIComponent(identifier)}`, {
-    headers: {
-      'Accept': 'application/json'
+async function fetchFunnelcakeLookupVideo(identifier, env) {
+  const bases = [getDivineApiBaseUrl(env), getLegacyFunnelcakeBaseUrl(env)];
+  let lastError = null;
+
+  for (const baseUrl of [...new Set(bases.filter(Boolean))]) {
+    try {
+      const response = await fetch(`${baseUrl}/api/videos/${encodeURIComponent(identifier)}`, {
+        headers: {
+          'Accept': 'application/json'
+        }
+      });
+
+      if (response.status === 404) {
+        continue;
+      }
+
+      if (!response.ok) {
+        lastError = new Error(`Funnelcake lookup failed with HTTP ${response.status}`);
+        continue;
+      }
+
+      return buildFunnelcakeVideoLookup(await response.json(), identifier);
+    } catch (error) {
+      lastError = error;
     }
-  });
-
-  if (response.status === 404) {
-    return null;
   }
 
-  if (!response.ok) {
-    throw new Error(`Funnelcake lookup failed with HTTP ${response.status}`);
+  if (lastError) {
+    throw lastError;
   }
 
-  return buildFunnelcakeVideoLookup(await response.json(), identifier);
+  return null;
 }
 
 function mergeLookupMetadata(baseVideo, funnelcakeVideo) {
@@ -301,16 +359,50 @@ function mergeLookupMetadata(baseVideo, funnelcakeVideo) {
 
   return {
     ...baseVideo,
-    cdnUrl: funnelcakeVideo.videoUrl || baseVideo.cdnUrl || null,
-    thumbnailUrl: baseVideo.thumbnailUrl || funnelcakeVideo.thumbnailUrl || null,
-    uploaded_by: baseVideo.uploaded_by || funnelcakeVideo.uploadedBy || null,
-    divineUrl: funnelcakeVideo.divineUrl || baseVideo.divineUrl,
-    lookupId: funnelcakeVideo.lookupId || baseVideo.lookupId,
-    nostrContext: {
-      ...(funnelcakeVideo.nostrContext || {}),
-      ...(baseVideo.nostrContext || {})
-    }
+    eventId: pickFirstPresentValue(funnelcakeVideo.eventId, funnelcakeVideo.event_id, baseVideo.eventId, baseVideo.event_id),
+    event_id: pickFirstPresentValue(funnelcakeVideo.event_id, funnelcakeVideo.eventId, baseVideo.event_id, baseVideo.eventId),
+    cdnUrl: pickFirstPresentValue(funnelcakeVideo.videoUrl, funnelcakeVideo.content_url, baseVideo.cdnUrl, baseVideo.content_url),
+    content_url: pickFirstPresentValue(funnelcakeVideo.content_url, funnelcakeVideo.videoUrl, baseVideo.content_url, baseVideo.cdnUrl),
+    thumbnailUrl: pickFirstPresentValue(funnelcakeVideo.thumbnailUrl, baseVideo.thumbnailUrl),
+    uploaded_by: pickFirstPresentValue(funnelcakeVideo.uploadedBy, funnelcakeVideo.uploaded_by, baseVideo.uploaded_by),
+    divineUrl: pickFirstPresentValue(funnelcakeVideo.divineUrl, baseVideo.divineUrl),
+    lookupId: pickFirstPresentValue(funnelcakeVideo.lookupId, baseVideo.lookupId),
+    title: pickFirstPresentValue(funnelcakeVideo.title, baseVideo.title, baseVideo.nostrContext?.title),
+    author: pickFirstPresentValue(funnelcakeVideo.author, baseVideo.author, baseVideo.nostrContext?.author),
+    published_at: pickFirstPresentValue(
+      funnelcakeVideo.published_at,
+      funnelcakeVideo.publishedAt,
+      funnelcakeVideo.nostrContext?.publishedAt,
+      baseVideo.published_at,
+      baseVideo.nostrContext?.publishedAt
+    ),
+    publisherProfile: mergePresentFields(funnelcakeVideo.publisherProfile, baseVideo.publisherProfile),
+    nostrContext: mergePresentFields(funnelcakeVideo.nostrContext || {}, baseVideo.nostrContext || {})
   };
+}
+
+async function fetchDivineApiUserProfiles(pubkeys, env) {
+  const uniquePubkeys = [...new Set((pubkeys || []).filter((pubkey) => typeof pubkey === 'string' && pubkey.length === 64))];
+  if (uniquePubkeys.length === 0) {
+    return {};
+  }
+
+  const response = await fetch(`${getDivineApiBaseUrl(env)}/api/users/bulk`, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ pubkeys: uniquePubkeys })
+  });
+
+  if (!response.ok) {
+    throw new Error(`User bulk lookup failed with HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  const users = Array.isArray(data?.users) ? data.users : [];
+  return Object.fromEntries(users.map((user) => [user.pubkey, user.profile || null]));
 }
 
 function getRelayAdminUrl(env) {
@@ -495,7 +587,7 @@ async function deleteEventFromRelayBySha256(sha256, env, source = 'unknown', rea
 
 async function fetchLookupNostrContext(hash, env) {
   try {
-    const video = await fetchFunnelcakeLookupVideo(hash);
+    const video = await fetchFunnelcakeLookupVideo(hash, env);
     if (!video) {
       return null;
     }
@@ -512,13 +604,72 @@ async function fetchLookupNostrContext(hash, env) {
   }
 }
 
-async function enrichAdminLookupVideo(video, env) {
+function buildLookupCandidates(identifier, video) {
+  const candidates = [];
+  const seen = new Set();
+  const append = (value) => {
+    if (!isPresentValue(value)) {
+      return;
+    }
+    const normalized = String(value);
+    if (seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    candidates.push(normalized);
+  };
+
+  append(video?.eventId);
+  append(video?.event_id);
+  append(video?.lookupId);
+  append(identifier);
+  append(video?.sha256);
+
+  return candidates;
+}
+
+async function fetchRelayFirstAdminContext(identifier, video, env) {
+  const candidates = buildLookupCandidates(identifier, video);
+  for (const candidate of candidates) {
+    try {
+      const relayVideo = await fetchFunnelcakeLookupVideo(candidate, env);
+      if (!relayVideo) {
+        continue;
+      }
+
+      if (relayVideo.uploadedBy) {
+        try {
+          const profiles = await fetchDivineApiUserProfiles([relayVideo.uploadedBy], env);
+          relayVideo.publisherProfile = mergePresentFields(
+            profiles[relayVideo.uploadedBy] || {},
+            relayVideo.publisherProfile || {}
+          );
+        } catch (error) {
+          console.warn(`[ADMIN] Failed to fetch relay user profile for ${relayVideo.uploadedBy}: ${error.message}`);
+        }
+      }
+
+      return relayVideo;
+    } catch (error) {
+      console.warn(`[ADMIN] Relay-first lookup failed for ${candidate}: ${error.message}`);
+    }
+  }
+
+  return null;
+}
+
+async function enrichAdminLookupVideo(video, env, identifier = null) {
   if (!video) {
     return null;
   }
 
   let enriched = { ...video };
-  const needsNostrEnrichment = enriched.sha256 && (
+  const relayFirstContext = await fetchRelayFirstAdminContext(identifier, enriched, env);
+  if (relayFirstContext) {
+    enriched = mergeLookupMetadata(enriched, relayFirstContext);
+  }
+
+  const needsNostrEnrichment = !relayFirstContext && enriched.sha256 && (
     !enriched.eventId
     || !enriched.divineUrl
     || !enriched.nostrContext
@@ -536,14 +687,27 @@ async function enrichAdminLookupVideo(video, env) {
         ...enriched,
         eventId: enriched.eventId || nostrContext.eventId,
         divineUrl: enriched.divineUrl || nostrContext.divineUrl,
-        nostrContext: {
-          ...(nostrContext.nostrContext || {}),
-          ...(enriched.nostrContext || {})
-        },
+        nostrContext: mergePresentFields(enriched.nostrContext || {}, nostrContext.nostrContext || {}),
         uploaded_by: enriched.uploaded_by || nostrContext.uploadedBy || null
       };
     }
   }
+
+  enriched.title = pickFirstPresentValue(enriched.title, enriched.nostrContext?.title);
+  enriched.author = pickFirstPresentValue(enriched.author, enriched.nostrContext?.author);
+  enriched.content_url = pickFirstPresentValue(enriched.content_url, enriched.cdnUrl, enriched.nostrContext?.url);
+  enriched.published_at = pickFirstPresentValue(enriched.published_at, enriched.nostrContext?.publishedAt);
+  enriched.event_id = pickFirstPresentValue(enriched.event_id, enriched.eventId, enriched.nostrContext?.eventId);
+  enriched.eventId = pickFirstPresentValue(enriched.eventId, enriched.event_id, enriched.nostrContext?.eventId);
+  enriched.divineUrl = pickFirstPresentValue(enriched.divineUrl, enriched.eventId ? `https://divine.video/video/${encodeURIComponent(enriched.eventId)}` : null);
+
+  enriched.nostrContext = mergePresentFields(enriched.nostrContext || {}, {
+    title: enriched.title,
+    author: enriched.author,
+    url: enriched.content_url,
+    publishedAt: enriched.published_at,
+    eventId: enriched.eventId
+  });
 
   if (enriched.uploaded_by) {
     const uploaderEnforcement = await getUploaderEnforcement(env.BLOSSOM_DB, enriched.uploaded_by).catch(() => null);
@@ -667,8 +831,10 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
     if (moderatedRow || kvModeration) {
       const moderatedAt = kvModeration?.moderated_at || moderatedRow?.moderated_at || null;
       const uploadedBy = moderatedRow?.uploaded_by || kvModeration?.uploadedBy || null;
-      const storedNostrContext = buildStoredNostrContext(moderatedRow, uploadedBy, { includePubkey: true });
-      const storedEventId = moderatedRow?.event_id || null;
+      const persistedNostrContext = buildStoredNostrContext(moderatedRow, uploadedBy, { includePubkey: true });
+      const eventId = moderatedRow?.event_id || null;
+      const persistedContentUrl = moderatedRow?.content_url || null;
+      const persistedPublishedAt = moderatedRow?.published_at || null;
       return enrichAdminLookupVideo({
         sha256: hash,
         action: kvModeration?.action || moderatedRow?.action || 'REVIEW',
@@ -686,11 +852,16 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
         previousAction: kvModeration?.previousAction || null,
         detailedCategories: parseMaybeJson(kvModeration?.detailedCategories, null),
         categoryVerifications: parseMaybeJson(kvModeration?.categoryVerifications, {}) || {},
-        cdnUrl: kvModeration?.cdnUrl || moderatedRow?.content_url || cdnUrl,
-        nostrContext: storedNostrContext,
-        eventId: storedEventId,
-        divineUrl: storedEventId ? `https://divine.video/video/${encodeURIComponent(storedEventId)}` : null
-      }, env);
+        cdnUrl: kvModeration?.cdnUrl || persistedContentUrl || cdnUrl,
+        title: moderatedRow?.title || null,
+        author: moderatedRow?.author || null,
+        content_url: persistedContentUrl,
+        published_at: persistedPublishedAt,
+        event_id: eventId,
+        eventId,
+        divineUrl: eventId ? `https://divine.video/video/${encodeURIComponent(eventId)}` : null,
+        nostrContext: persistedNostrContext
+      }, env, identifier);
     }
 
     const untriagedRow = await env.BLOSSOM_DB.prepare(`
@@ -709,7 +880,7 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
       let divineUrl = null;
       let uploaderPubkey = null;
       try {
-        const video = await fetchFunnelcakeLookupVideo(hash);
+        const video = await fetchFunnelcakeLookupVideo(hash, env);
         if (video) {
           eventId = video.eventId || null;
           divineUrl = video.divineUrl || null;
@@ -733,7 +904,7 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
         eventId,
         divineUrl,
         uploaded_by: uploaderPubkey
-      }, env);
+      }, env, identifier);
     }
   }
 
@@ -741,7 +912,7 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
     return null;
   }
 
-  const funnelcakeVideo = await fetchFunnelcakeLookupVideo(identifier);
+  const funnelcakeVideo = await fetchFunnelcakeLookupVideo(identifier, env);
   if (!funnelcakeVideo) {
     return null;
   }
@@ -751,7 +922,7 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
       allowFunnelcakeFallback: false
     });
     if (resolvedByMediaSha) {
-      return enrichAdminLookupVideo(mergeLookupMetadata(resolvedByMediaSha, funnelcakeVideo), env);
+      return enrichAdminLookupVideo(mergeLookupMetadata(resolvedByMediaSha, funnelcakeVideo), env, identifier);
     }
   }
 
@@ -770,7 +941,7 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
     divineUrl: funnelcakeVideo.divineUrl,
     lookupId: funnelcakeVideo.lookupId,
     eventId: funnelcakeVideo.eventId
-  }, env);
+  }, env, identifier);
 }
 
 async function handleLegacyScan(request, env) {
@@ -1257,7 +1428,7 @@ export default {
         // Fetch Nostr context in parallel for all unmoderated videos
         const nostrPromises = unmoderatedRows.map(async (row) => {
           try {
-            const video = await fetchFunnelcakeLookupVideo(row.sha256);
+            const video = await fetchFunnelcakeLookupVideo(row.sha256, env);
             if (video) {
               return {
                 sha256: row.sha256,
@@ -1937,7 +2108,7 @@ export default {
           });
         }
 
-        const video = await fetchFunnelcakeLookupVideo(sha256);
+        const video = await fetchFunnelcakeLookupVideo(sha256, env);
         if (!video?.nostrContext) {
           return new Response(JSON.stringify({ found: false }), {
             headers: { 'Content-Type': 'application/json' }
