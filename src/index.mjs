@@ -687,6 +687,50 @@ async function handleLegacyBatchScan(request, env) {
   });
 }
 
+function buildAdminVideoProxyRequestInit(request, extraHeaders = {}) {
+  const headers = new Headers(extraHeaders);
+  for (const headerName of ['Range', 'If-Range']) {
+    const value = request.headers.get(headerName);
+    if (value) {
+      headers.set(headerName, value);
+    }
+  }
+
+  return {
+    method: request.method === 'HEAD' ? 'HEAD' : 'GET',
+    headers
+  };
+}
+
+function createAdminVideoProxyResponse(upstreamResponse, proxySource, extraHeaders = {}) {
+  const headers = new Headers({
+    'Cache-Control': 'private, no-store',
+    'X-Admin-Proxy': proxySource
+  });
+
+  for (const headerName of ['Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges', 'ETag', 'Last-Modified']) {
+    const value = upstreamResponse.headers.get(headerName);
+    if (value) {
+      headers.set(headerName, value);
+    }
+  }
+
+  if (!headers.has('Content-Type')) {
+    headers.set('Content-Type', 'video/mp4');
+  }
+
+  for (const [headerName, value] of Object.entries(extraHeaders)) {
+    if (value) {
+      headers.set(headerName, value);
+    }
+  }
+
+  return new Response(upstreamResponse.body, {
+    status: upstreamResponse.status,
+    headers
+  });
+}
+
 async function handleLegacyStatus(sha256, env) {
   if (!sha256 || !/^[0-9a-f]{64}$/i.test(sha256)) {
     return jsonResponse(400, { error: 'Invalid sha256' });
@@ -2015,43 +2059,34 @@ export default {
         return new Response('Unauthorized', { status: 401 });
       }
 
-      const sha256 = url.pathname.split('/')[3].replace('.mp4', '');
-      const cdnUrl = `https://${env.CDN_DOMAIN}/${sha256}`;
-      const adminBypassUrl = `https://${env.CDN_DOMAIN}/admin/api/blob/${sha256}/content`;
+      const sha256 = url.pathname.split('/')[3].replace(/\.mp4$/i, '').toLowerCase();
+      const cdnDomain = env.CDN_DOMAIN || 'media.divine.video';
+      const cdnUrl = `https://${cdnDomain}/${sha256}`;
+      const adminBypassUrl = `https://${cdnDomain}/admin/api/blob/${sha256}/content`;
 
       const BROWSER_PLAYABLE_TYPES = new Set(['video/mp4', 'video/webm', 'video/ogg']);
 
       try {
+        const upstreamRequestInit = buildAdminVideoProxyRequestInit(request);
+
         // CDN fetch (unauthenticated) — works for SAFE/unmoderated content
-        const cdnResponse = await fetch(cdnUrl);
+        const cdnResponse = await fetch(cdnUrl, upstreamRequestInit);
         if (cdnResponse.ok) {
           const contentType = cdnResponse.headers.get('Content-Type') || 'video/mp4';
 
           // If the format is browser-playable, serve directly
           if (BROWSER_PLAYABLE_TYPES.has(contentType)) {
             console.log(`[ADMIN] Serving video from CDN: ${sha256}`);
-            return new Response(cdnResponse.body, {
-              headers: {
-                'Content-Type': contentType,
-                'Cache-Control': 'private, no-store',
-                'X-Admin-Proxy': 'cdn'
-              }
-            });
+            return createAdminVideoProxyResponse(cdnResponse, 'cdn');
           }
 
           // Non-browser format (e.g. video/3gpp, video/x-matroska) — try transcoded 720p MP4 from Blossom
           console.log(`[ADMIN] CDN returned non-playable ${contentType}, trying transcoded 720p for ${sha256}`);
-          const transcodeUrl = `https://${env.CDN_DOMAIN}/${sha256}/720p.mp4`;
-          const transcodeResponse = await fetch(transcodeUrl);
+          const transcodeUrl = `https://${cdnDomain}/${sha256}/720p.mp4`;
+          const transcodeResponse = await fetch(transcodeUrl, upstreamRequestInit);
           if (transcodeResponse.ok) {
             console.log(`[ADMIN] Serving transcoded 720p MP4 for ${sha256}`);
-            return new Response(transcodeResponse.body, {
-              headers: {
-                'Content-Type': transcodeResponse.headers.get('Content-Type') || 'video/mp4',
-                'Cache-Control': 'private, no-store',
-                'X-Admin-Proxy': 'cdn-transcode'
-              }
-            });
+            return createAdminVideoProxyResponse(transcodeResponse, 'cdn-transcode');
           }
           console.warn(`[ADMIN] Transcoded 720p not available (${transcodeResponse.status}) for ${sha256}`);
         }
@@ -2060,19 +2095,17 @@ export default {
         // Fall back to admin bypass endpoint which serves regardless of moderation status
         if (env.BLOSSOM_WEBHOOK_SECRET) {
           console.log(`[ADMIN] CDN returned ${cdnResponse.status}, trying admin bypass for ${sha256}`);
-          const bypassResponse = await fetch(adminBypassUrl, {
-            headers: { 'Authorization': `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}` }
-          });
+          const bypassResponse = await fetch(
+            adminBypassUrl,
+            buildAdminVideoProxyRequestInit(request, {
+              'Authorization': `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}`
+            })
+          );
           if (bypassResponse.ok) {
             console.log(`[ADMIN] Serving video from admin bypass: ${sha256}`);
             const moderationStatus = bypassResponse.headers.get('X-Moderation-Status');
-            return new Response(bypassResponse.body, {
-              headers: {
-                'Content-Type': bypassResponse.headers.get('Content-Type') || 'video/mp4',
-                'Cache-Control': 'private, no-store',
-                'X-Admin-Proxy': 'blossom-admin',
-                ...(moderationStatus && { 'X-Moderation-Status': moderationStatus })
-              }
+            return createAdminVideoProxyResponse(bypassResponse, 'blossom-admin', {
+              'X-Moderation-Status': moderationStatus
             });
           }
           console.error(`[ADMIN] Admin bypass returned ${bypassResponse.status} for ${sha256}`);

@@ -618,6 +618,49 @@ describe('admin video proxy format fallback', () => {
     }
   });
 
+  it('preserves byte-range streaming headers for browser playback', async () => {
+    const originalFetch = globalThis.fetch;
+    let receivedRange = null;
+
+    globalThis.fetch = async (url, init = {}) => {
+      if (String(url) === `https://media.divine.video/${SHA256}`) {
+        receivedRange = init.headers?.get?.('Range') || init.headers?.Range || null;
+        return new Response('partial-mp4-bytes', {
+          status: 206,
+          headers: {
+            'Content-Type': 'video/mp4',
+            'Content-Range': 'bytes 0-1023/4096',
+            'Accept-Ranges': 'bytes',
+            'Content-Length': '1024'
+          }
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
+          headers: {
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video',
+            'Range': 'bytes=0-1023'
+          }
+        }),
+        createEnv()
+      );
+
+      expect(receivedRange).toBe('bytes=0-1023');
+      expect(response.status).toBe(206);
+      expect(response.headers.get('Content-Type')).toBe('video/mp4');
+      expect(response.headers.get('Content-Range')).toBe('bytes 0-1023/4096');
+      expect(response.headers.get('Accept-Ranges')).toBe('bytes');
+      expect(response.headers.get('Content-Length')).toBe('1024');
+      expect(response.headers.get('X-Admin-Proxy')).toBe('cdn');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('falls back to transcoded 720p MP4 when CDN returns video/3gpp', async () => {
     const originalFetch = globalThis.fetch;
     const fetchedUrls = [];
