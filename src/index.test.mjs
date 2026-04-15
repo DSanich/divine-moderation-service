@@ -732,6 +732,193 @@ describe('Admin video lookup', () => {
     }
   });
 
+  it('uses stored stable post id from raw_response snapshot when event_id is missing', async () => {
+    const stableId = 'relay-stable-id';
+    const uploaderPubkey = '9'.repeat(64);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url) === `https://api.divine.video/api/videos/${stableId}`) {
+        return new Response(JSON.stringify({
+          event: {
+            id: '3'.repeat(64),
+            pubkey: uploaderPubkey,
+            created_at: 1773503656,
+            kind: 34236,
+            tags: [
+              ['d', stableId],
+              ['title', 'Stable relay title'],
+              ['published_at', '1773503656'],
+              ['imeta', `url https://cdn.divine.video/${SHA256}.mp4`, `x ${SHA256}`]
+            ],
+            content: 'Stable relay description',
+            sig: 'd'.repeat(128)
+          },
+          stats: {
+            author_name: 'Stable Relay Author',
+            author_avatar: 'https://cdn.divine.video/avatar.jpg'
+          }
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (String(url) === 'https://api.divine.video/api/users/bulk') {
+        return new Response(JSON.stringify({
+          users: [{
+            pubkey: uploaderPubkey,
+            profile: {
+              display_name: 'Stable Relay Display Name',
+              picture: 'https://cdn.divine.video/avatar.jpg'
+            }
+          }],
+          missing: []
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        createEnv({
+          BLOSSOM_DB: createDbMock({
+            moderationResults: new Map([[SHA256, {
+              sha256: SHA256,
+              action: 'REVIEW',
+              provider: 'hiveai',
+              scores: JSON.stringify({ nudity: 0.82 }),
+              categories: JSON.stringify(['nudity']),
+              raw_response: JSON.stringify({
+                nostrSnapshot: {
+                  stableId,
+                  content: 'Stored snapshot body'
+                }
+              }),
+              moderated_at: '2026-03-07T00:00:00.000Z',
+              reviewed_by: null,
+              reviewed_at: null,
+              uploaded_by: 'f'.repeat(64),
+              title: null,
+              author: null,
+              event_id: null,
+              content_url: 'https://media.divine.video/stored.mp4',
+              published_at: null
+            }]])
+          })
+        })
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        video: {
+          sha256: SHA256,
+          uploaded_by: uploaderPubkey,
+          divineUrl: 'https://divine.video/video/relay-stable-id',
+          title: 'Stable relay title',
+          author: 'Stable Relay Author',
+          content_url: `https://cdn.divine.video/${SHA256}.mp4`,
+          nostrContext: {
+            title: 'Stable relay title',
+            author: 'Stable Relay Author',
+            content: 'Stable relay description',
+            url: `https://cdn.divine.video/${SHA256}.mp4`
+          }
+        }
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('falls back to summary tag when relay event content is empty', async () => {
+    const eventId = '4'.repeat(64);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url) === `https://api.divine.video/api/videos/${eventId}`) {
+        return new Response(JSON.stringify({
+          event: {
+            id: eventId,
+            pubkey: '6'.repeat(64),
+            created_at: 1773503656,
+            kind: 34236,
+            tags: [
+              ['d', 'summary-stable-id'],
+              ['title', 'Summary title'],
+              ['summary', 'Summary body text'],
+              ['published_at', '1773503656'],
+              ['imeta', `url https://cdn.divine.video/${SHA256}.mp4`, `x ${SHA256}`]
+            ],
+            content: '',
+            sig: 'd'.repeat(128)
+          },
+          stats: {
+            author_name: 'Summary Author'
+          }
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (String(url) === 'https://api.divine.video/api/users/bulk') {
+        return new Response(JSON.stringify({ users: [], missing: ['6'.repeat(64)] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        createEnv({
+          BLOSSOM_DB: createDbMock({
+            moderationResults: new Map([[SHA256, {
+              sha256: SHA256,
+              action: 'REVIEW',
+              provider: 'hiveai',
+              scores: JSON.stringify({ nudity: 0.82 }),
+              categories: JSON.stringify(['nudity']),
+              moderated_at: '2026-03-07T00:00:00.000Z',
+              reviewed_by: null,
+              reviewed_at: null,
+              uploaded_by: 'f'.repeat(64),
+              title: null,
+              author: null,
+              event_id: eventId,
+              content_url: null,
+              published_at: null
+            }]])
+          })
+        })
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        video: {
+          title: 'Summary title',
+          author: 'Summary Author',
+          nostrContext: {
+            content: 'Summary body text'
+          }
+        }
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('returns an untriaged video by sha lookup', async () => {
     const env = createEnv({
       CDN_DOMAIN: 'media.divine.video',
@@ -1008,6 +1195,20 @@ describe('Quick review HTML', () => {
     expect(html).toContain('content_url');
     expect(html).toContain('event_id');
   });
+
+  it('includes publisher profile wiring for quick review metadata rendering', async () => {
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/review', {
+        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+      }),
+      createEnv()
+    );
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('publisherProfile');
+    expect(html).toContain('display_name');
+  });
 });
 
 describe('Admin nostr context lookup', () => {
@@ -1064,6 +1265,7 @@ describe('Admin nostr context lookup', () => {
           vineUserId: null,
           content: null,
           eventId: 'c'.repeat(64),
+          stableId: null,
           createdAt: null
         }
       });
@@ -1145,6 +1347,7 @@ describe('Admin nostr context lookup', () => {
           vineUserId: null,
           content: 'REST description',
           eventId: 'd'.repeat(64),
+          stableId: SHA256,
           createdAt: 1700000000
         }
       });
