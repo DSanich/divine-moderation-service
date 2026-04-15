@@ -26,6 +26,20 @@ function createDbMock({
           return this;
         },
         async run() {
+          if (sql.includes('UPDATE moderation_results') && sql.includes('WHERE sha256 = ?')) {
+            const [uploaded_by, title, author, event_id, content_url, published_at, raw_response, sha256] = bindings;
+            const existing = moderationResults.get(sha256) || { sha256 };
+            moderationResults.set(sha256, {
+              ...existing,
+              uploaded_by,
+              title,
+              author,
+              event_id,
+              content_url,
+              published_at,
+              raw_response
+            });
+          }
           return { success: true };
         },
         async first() {
@@ -1468,6 +1482,94 @@ describe('Admin video lookup', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('caches relay-resolved admin context into moderation_results during lookup', async () => {
+    const eventId = 'f'.repeat(64);
+    const uploaderPubkey = 'b'.repeat(64);
+    const moderationResults = new Map([[SHA256, {
+      sha256: SHA256,
+      action: 'REVIEW',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.91 }),
+      categories: JSON.stringify(['nudity']),
+      raw_response: '{}',
+      moderated_at: '2026-02-17T20:32:58.616Z',
+      reviewed_by: null,
+      reviewed_at: null,
+      uploaded_by: null,
+      title: null,
+      author: null,
+      event_id: null,
+      content_url: null,
+      published_at: null
+    }]]);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url) === `https://api.divine.video/api/videos/${SHA256}`) {
+        return new Response(JSON.stringify({
+          event: {
+            id: eventId,
+            pubkey: uploaderPubkey,
+            created_at: 1700000000,
+            kind: 34236,
+            tags: [
+              ['d', 'cacheable-stable-id'],
+              ['title', 'Cached title'],
+              ['published_at', '1389756506'],
+              ['imeta', 'url https://media.divine.video/cached-content.mp4', `x ${SHA256}`]
+            ],
+            content: 'Cached body text',
+            sig: 'e'.repeat(128)
+          },
+          stats: {
+            author_name: 'Cached author',
+            author_avatar: 'https://cdn.divine.video/avatar.jpg'
+          }
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const env = createEnv({
+        BLOSSOM_DB: createDbMock({ moderationResults })
+      });
+
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        video: {
+          sha256: SHA256,
+          uploaded_by: uploaderPubkey,
+          title: 'Cached title',
+          author: 'Cached author',
+          eventId,
+          content_url: 'https://media.divine.video/cached-content.mp4'
+        }
+      });
+
+      expect(moderationResults.get(SHA256)).toMatchObject({
+        uploaded_by: uploaderPubkey,
+        title: 'Cached title',
+        author: 'Cached author',
+        event_id: eventId,
+        content_url: 'https://media.divine.video/cached-content.mp4',
+        published_at: 1389756506
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 describe('Quick review HTML', () => {
@@ -1521,7 +1623,7 @@ describe('Quick review HTML', () => {
     expect(html).toContain('display_name');
   });
 
-  it('includes explicit orphaned-row copy for unrecoverable legacy context', async () => {
+  it('uses neutral empty-state copy instead of internal fallback labels', async () => {
     const response = await worker.fetch(
       new Request('https://moderation.admin.divine.video/admin/review', {
         headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
@@ -1531,9 +1633,102 @@ describe('Quick review HTML', () => {
 
     expect(response.status).toBe(200);
     const html = await response.text();
-    expect(html).toContain('legacy_moderation_row_without_context');
-    expect(html).toContain('Legacy moderation row');
-    expect(html).toContain('No publisher or post metadata was persisted for this moderation record');
+    expect(html).not.toContain('legacy_moderation_row_without_context');
+    expect(html).not.toContain('Legacy moderation row');
+    expect(html).not.toContain('Unknown provenance');
+    expect(html).not.toContain('Unknown Creator');
+    expect(html).toContain('Post details unavailable');
+    expect(html).toContain('Creator details unavailable');
+  });
+});
+
+describe('Admin context backfill', () => {
+  it('repairs sparse review rows via admin context backfill endpoint', async () => {
+    const sparseSha = '1'.repeat(64);
+    const repairedEventId = '2'.repeat(64);
+    const repairedPubkey = '3'.repeat(64);
+    const moderationResults = new Map([[sparseSha, {
+      sha256: sparseSha,
+      action: 'REVIEW',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.84 }),
+      categories: JSON.stringify(['nudity']),
+      raw_response: '{}',
+      moderated_at: '2026-02-17T20:32:58.616Z',
+      reviewed_by: null,
+      reviewed_at: null,
+      uploaded_by: null,
+      title: null,
+      author: null,
+      event_id: null,
+      content_url: null,
+      published_at: null
+    }]]);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url) === `https://api.divine.video/api/videos/${sparseSha}`) {
+        return new Response(JSON.stringify({
+          event: {
+            id: repairedEventId,
+            pubkey: repairedPubkey,
+            created_at: 1700000100,
+            kind: 34236,
+            tags: [
+              ['d', 'repaired-stable-id'],
+              ['title', 'Repaired title'],
+              ['published_at', '1389756507'],
+              ['imeta', `url https://media.divine.video/${sparseSha}.mp4`, `x ${sparseSha}`]
+            ],
+            content: 'Recovered by backfill',
+            sig: 'e'.repeat(128)
+          },
+          stats: {
+            author_name: 'Repaired author'
+          }
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const env = createEnv({
+        BLOSSOM_DB: createDbMock({ moderationResults })
+      });
+
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/backfill-review-context?limit=10', {
+          method: 'POST',
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        scanned: 1,
+        repaired: 1,
+        skipped: 0,
+        repairs: [{
+          sha256: sparseSha,
+          status: 'repaired'
+        }]
+      });
+
+      expect(moderationResults.get(sparseSha)).toMatchObject({
+        uploaded_by: repairedPubkey,
+        title: 'Repaired title',
+        author: 'Repaired author',
+        event_id: repairedEventId,
+        content_url: `https://media.divine.video/${sparseSha}.mp4`,
+        published_at: 1389756507
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

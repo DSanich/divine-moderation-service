@@ -1215,10 +1215,12 @@
       const publisherProfile = video.publisherProfile || {};
       const contextStatus = video.contextStatus || {};
       const isOrphanedContext = contextStatus.state === 'orphaned';
-      const isLegacyContextHole = contextStatus.reason === 'legacy_moderation_row_without_context';
-      const authorName = isOrphanedContext
-        ? 'Legacy moderation row'
-        : pickFirstPresent(publisherProfile.display_name, video.author, nostrContext.author, 'Unknown publisher');
+      const authorName = pickFirstPresent(
+        publisherProfile.display_name,
+        video.author,
+        nostrContext.author,
+        isOrphanedContext ? 'Publisher unavailable' : 'Unknown publisher'
+      );
       const avatarUrl = pickFirstPresent(publisherProfile.picture);
       const pubkey = pickFirstPresent(video.uploaded_by, nostrContext.pubkey);
       const profileUrl = buildProfileUrl(pubkey);
@@ -1229,12 +1231,12 @@
       const title = pickFirstPresent(video.title, nostrContext.title);
       const postBody = pickFirstPresent(nostrContext.content, video.content_text);
       const publishedAt = pickFirstPresent(video.published_at, nostrContext.publishedAt);
-      const publisherSubtitle = isLegacyContextHole
-        ? 'No publisher metadata survived for this item'
+      const publisherSubtitle = isOrphanedContext
+        ? 'Publisher details could not be recovered for this item'
         : 'Who published this';
-      const postTitle = title || (isOrphanedContext ? 'Legacy moderation row' : 'Untitled post');
-      const emptyPostBody = isLegacyContextHole
-        ? 'No publisher or post metadata was persisted for this moderation record, and no current relay post could be found.'
+      const postTitle = title || (isOrphanedContext ? 'Post details unavailable' : 'Untitled post');
+      const emptyPostBody = isOrphanedContext
+        ? 'No current post details could be recovered for this item.'
         : 'No post text available from stored metadata or relay lookup.';
 
       const publisherSection = createMetadataSection('Publisher', `
@@ -1271,8 +1273,6 @@
       `);
 
       const technicalFields = [
-        createMetadataField('Context', isOrphanedContext ? 'Legacy moderation row without stored publisher/post metadata' : null),
-        createMetadataField('Context Reason', contextStatus.reason),
         createMetadataField('Event ID', eventId, { monospace: true }),
         createMetadataField('SHA256', video.sha256, { monospace: true }),
         createMetadataField('Provider', video.provider, { fallback: 'Not available' }),
@@ -1917,12 +1917,12 @@
           ? { bg: '#78350f', border: '#f59e0b', text: '#fffbeb' }
           : { bg: '#1f2937', border: '#4b5563', text: '#e5e7eb' };
 
-      return `<div style="display:inline-flex;align-items:center;gap:6px;background:${palette.bg};border:1px solid ${palette.border};color:${palette.text};padding:4px 8px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:0.02em;text-transform:uppercase;">${escapeHtml(provenance.label || 'Unknown Provenance')}</div>`;
+      return `<div style="display:inline-flex;align-items:center;gap:6px;background:${palette.bg};border:1px solid ${palette.border};color:${palette.text};padding:4px 8px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:0.02em;text-transform:uppercase;">${escapeHtml(provenance.label || 'Source Unavailable')}</div>`;
     }
 
     function formatProvenanceSupportLine(provenance) {
       if (!provenance || !provenance.date || provenance.dateSource === 'none') {
-        return 'Unknown provenance';
+        return 'Source details unavailable';
       }
 
       const dateLabel = new Date(provenance.date).toLocaleDateString('en-US', {
@@ -1989,7 +1989,7 @@
             ${Array.isArray(provenance?.reasons) && provenance.reasons.length > 0 ? `<div style="font-size:12px;color:#94a3b8;margin-top:6px;">Evidence: ${escapeHtml(provenance.reasons.join(' · '))}</div>` : ''}
           </div>
           <div>
-            <div style="font-size:16px;font-weight:700;color:#f8fafc;">${escapeHtml(creator?.name || 'Unknown Creator')}</div>
+            <div style="font-size:16px;font-weight:700;color:#f8fafc;">${escapeHtml(creator?.name || 'Creator details unavailable')}</div>
             <div style="font-size:12px;color:#94a3b8;margin-top:4px;word-break:break-all;">${escapeHtml(creator?.pubkey || video.uploaded_by || 'No pubkey')}</div>
             ${creator?.profileUrl ? `<div style="margin-top:8px;"><a href="${escapeHtml(creator.profileUrl)}" target="_blank" style="color:#8b5cf6;text-decoration:none;">View Divine profile →</a></div>` : ''}
           </div>
