@@ -1141,20 +1141,31 @@
 
       const merged = { ...video };
       merged.nostrContext = mergeFields(video.nostrContext || {}, context.nostrContext || {});
+      merged.publisherProfile = mergeFields(video.publisherProfile || {}, context.publisherProfile || {});
+      merged.contextStatus = context.contextStatus || video.contextStatus || null;
       merged.uploaded_by = pickFirstPresent(video.uploaded_by, context.uploaded_by, context.uploadedBy);
       merged.eventId = pickFirstPresent(video.eventId, video.event_id, context.eventId, context.event_id, merged.nostrContext?.eventId);
       merged.event_id = pickFirstPresent(video.event_id, video.eventId, context.event_id, context.eventId, merged.nostrContext?.eventId);
-      merged.divineUrl = pickFirstPresent(video.divineUrl, context.divineUrl, merged.eventId ? `https://divine.video/video/${merged.eventId}` : null);
+      merged.stableId = pickFirstPresent(video.stableId, context.stableId, merged.nostrContext?.stableId);
+      merged.divineUrl = pickFirstPresent(
+        video.divineUrl,
+        context.divineUrl,
+        merged.stableId ? `https://divine.video/video/${merged.stableId}` : null,
+        merged.eventId ? `https://divine.video/video/${merged.eventId}` : null
+      );
       merged.title = pickFirstPresent(video.title, context.title, merged.nostrContext?.title);
       merged.author = pickFirstPresent(video.author, context.author, merged.nostrContext?.author);
+      merged.content_text = pickFirstPresent(video.content_text, context.content_text);
       merged.content_url = pickFirstPresent(video.content_url, context.content_url, context.contentUrl, merged.nostrContext?.url, video.cdnUrl);
       merged.published_at = pickFirstPresent(video.published_at, context.published_at, context.publishedAt, merged.nostrContext?.publishedAt);
 
       merged.nostrContext = mergeFields(merged.nostrContext || {}, {
         title: merged.title,
         author: merged.author,
+        content: pickFirstPresent(merged.nostrContext?.content, merged.content_text),
         url: merged.content_url,
-        publishedAt: merged.published_at
+        publishedAt: merged.published_at,
+        stableId: merged.stableId
       });
 
       return Object.assign(video, merged);
@@ -1163,6 +1174,7 @@
     function buildDivineVideoUrl(video) {
       return pickFirstPresent(
         video.divineUrl,
+        video.stableId ? `https://divine.video/video/${video.stableId}` : null,
         video.eventId ? `https://divine.video/video/${video.eventId}` : null,
         video.event_id ? `https://divine.video/video/${video.event_id}` : null
       );
@@ -1200,7 +1212,14 @@
 
     function createMetadataColumnHTML(video) {
       const nostrContext = video.nostrContext || {};
-      const authorName = pickFirstPresent(video.author, nostrContext.author, 'Unknown publisher');
+      const publisherProfile = video.publisherProfile || {};
+      const contextStatus = video.contextStatus || {};
+      const isOrphanedContext = contextStatus.state === 'orphaned';
+      const isLegacyContextHole = contextStatus.reason === 'legacy_moderation_row_without_context';
+      const authorName = isOrphanedContext
+        ? 'Legacy moderation row'
+        : pickFirstPresent(publisherProfile.display_name, video.author, nostrContext.author, 'Unknown publisher');
+      const avatarUrl = pickFirstPresent(publisherProfile.picture);
       const pubkey = pickFirstPresent(video.uploaded_by, nostrContext.pubkey);
       const profileUrl = buildProfileUrl(pubkey);
       const eventId = pickFirstPresent(video.eventId, video.event_id, nostrContext.eventId);
@@ -1208,15 +1227,22 @@
       const contentUrl = pickFirstPresent(video.content_url, nostrContext.url, video.cdnUrl);
       const sourceUrl = pickFirstPresent(nostrContext.sourceUrl);
       const title = pickFirstPresent(video.title, nostrContext.title);
-      const postBody = pickFirstPresent(nostrContext.content);
+      const postBody = pickFirstPresent(nostrContext.content, video.content_text);
       const publishedAt = pickFirstPresent(video.published_at, nostrContext.publishedAt);
+      const publisherSubtitle = isLegacyContextHole
+        ? 'No publisher metadata survived for this item'
+        : 'Who published this';
+      const postTitle = title || (isOrphanedContext ? 'Legacy moderation row' : 'Untitled post');
+      const emptyPostBody = isLegacyContextHole
+        ? 'No publisher or post metadata was persisted for this moderation record, and no current relay post could be found.'
+        : 'No post text available from stored metadata or relay lookup.';
 
       const publisherSection = createMetadataSection('Publisher', `
         <div class="publisher-card">
-          <div class="publisher-avatar">${escapeHtml((authorName || '?').charAt(0).toUpperCase())}</div>
+          <div class="publisher-avatar">${avatarUrl ? `<img src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(authorName)}" style="width: 100%; height: 100%; object-fit: cover; border-radius: 999px;">` : escapeHtml((authorName || '?').charAt(0).toUpperCase())}</div>
           <div class="section-stack" style="min-width: 0;">
             <div class="publisher-name">${profileUrl ? `<a class="metadata-link" href="${escapeHtml(profileUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(authorName)}</a>` : escapeHtml(authorName)}</div>
-            <div class="publisher-subtitle">Who published this</div>
+            <div class="publisher-subtitle">${escapeHtml(publisherSubtitle)}</div>
           </div>
         </div>
         <div class="metadata-grid" style="margin-top: 12px;">
@@ -1226,8 +1252,8 @@
       `);
 
       const postSection = createMetadataSection('Post Context', `
-        ${title ? `<div class="post-title">${escapeHtml(title)}</div>` : '<div class="post-title">Untitled post</div>'}
-        <div class="post-body ${postBody ? '' : 'empty'}">${postBody ? escapeHtml(postBody) : 'No post text available from stored metadata or relay lookup.'}</div>
+        <div class="post-title">${escapeHtml(postTitle)}</div>
+        <div class="post-body ${postBody ? '' : 'empty'}">${postBody ? escapeHtml(postBody) : escapeHtml(emptyPostBody)}</div>
         <div class="metadata-link-list">
           ${divineVideoUrl ? `<a class="metadata-link-chip" href="${escapeHtml(divineVideoUrl)}" target="_blank" rel="noopener noreferrer">Open Divine Post</a>` : ''}
           ${contentUrl ? `<a class="metadata-link-chip" href="${escapeHtml(contentUrl)}" target="_blank" rel="noopener noreferrer">Open Content URL</a>` : ''}
@@ -1245,6 +1271,8 @@
       `);
 
       const technicalFields = [
+        createMetadataField('Context', isOrphanedContext ? 'Legacy moderation row without stored publisher/post metadata' : null),
+        createMetadataField('Context Reason', contextStatus.reason),
         createMetadataField('Event ID', eventId, { monospace: true }),
         createMetadataField('SHA256', video.sha256, { monospace: true }),
         createMetadataField('Provider', video.provider, { fallback: 'Not available' }),

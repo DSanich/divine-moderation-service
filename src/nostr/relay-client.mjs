@@ -192,6 +192,7 @@ export function parseVideoEventMetadata(event) {
   const metadata = {
     title: null,
     author: null,
+    summary: null,
     platform: null,
     client: null,
     loops: null,
@@ -204,7 +205,8 @@ export function parseVideoEventMetadata(event) {
     importedAt: null,
     vineHashId: null,
     vineUserId: null,
-    proofmode: null
+    proofmode: null,
+    stableId: null
   };
 
   for (const tag of event.tags) {
@@ -216,6 +218,9 @@ export function parseVideoEventMetadata(event) {
         break;
       case 'author':
         metadata.author = value;
+        break;
+      case 'summary':
+        metadata.summary = value;
         break;
       case 'platform':
         metadata.platform = value;
@@ -282,6 +287,9 @@ export function parseVideoEventMetadata(event) {
         metadata.proofmode = proofmode;
         break;
       }
+      case 'd':
+        metadata.stableId = value;
+        break;
       case 'imeta':
         // Extract URL from imeta tag - format: "url https://..."
         // Blossom URLs use content-addressed hashes without file extensions
@@ -296,7 +304,7 @@ export function parseVideoEventMetadata(event) {
     }
   }
 
-  metadata.content = event.content;
+  metadata.content = event.content || metadata.summary;
   metadata.eventId = event.id;
   metadata.createdAt = event.created_at;
 

@@ -74,6 +74,17 @@ describe('parseVideoEventMetadata', () => {
     expect(result.content).toBe('This is a video description');
   });
 
+  it('falls back to summary tag when event.content is empty', () => {
+    const event = {
+      id: 'evt1',
+      content: '',
+      created_at: 1700000000,
+      tags: [['summary', 'Summary body text']],
+    };
+    const result = parseVideoEventMetadata(event);
+    expect(result.content).toBe('Summary body text');
+  });
+
   it('extracts eventId and createdAt from event', () => {
     const event = {
       id: 'evt999',
@@ -84,6 +95,17 @@ describe('parseVideoEventMetadata', () => {
     const result = parseVideoEventMetadata(event);
     expect(result.eventId).toBe('evt999');
     expect(result.createdAt).toBe(1700000000);
+  });
+
+  it('extracts stableId from d tag', () => {
+    const event = {
+      id: 'evt999',
+      content: '',
+      created_at: 1700000000,
+      tags: [['d', 'stable-video-id']],
+    };
+    const result = parseVideoEventMetadata(event);
+    expect(result.stableId).toBe('stable-video-id');
   });
 
   it('extracts platform tag', () => {
