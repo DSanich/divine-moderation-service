@@ -17,6 +17,7 @@ import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import dashboardHTML from './admin/dashboard.html';
 import swipeReviewHTML from './admin/swipe-review.html';
 import messagesHTML from './admin/messages.html';
+import { buildCreatorContext } from './admin/creator-context.mjs';
 import { initReportsTable, addReport } from './reports.mjs';
 import { initOffenderTable, updateUploaderStats, getUploaderStats } from './offender-tracker.mjs';
 import { initUploaderEnforcementTable, getUploaderEnforcement, setUploaderEnforcement, applyUploaderEnforcementToResult } from './uploader-enforcement.mjs';
@@ -446,7 +447,12 @@ async function enrichAdminLookupVideo(video, env) {
         pubkey: enriched.uploaded_by,
         approval_required: false,
         relay_banned: false
-      }
+      },
+      creatorContext: await buildCreatorContext({
+        pubkey: enriched.uploaded_by,
+        uploaderStats,
+        uploaderEnforcement
+      })
     };
   }
 

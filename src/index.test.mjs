@@ -9,7 +9,12 @@ import worker from './index.mjs';
 
 const SHA256 = 'a'.repeat(64);
 
-function createDbMock({ moderationResults = new Map(), webhookEvents = new Map() } = {}) {
+function createDbMock({
+  moderationResults = new Map(),
+  webhookEvents = new Map(),
+  uploaderEnforcements = new Map(),
+  uploaderStats = new Map(),
+} = {}) {
   return {
     prepare(sql) {
       let bindings = [];
@@ -28,6 +33,12 @@ function createDbMock({ moderationResults = new Map(), webhookEvents = new Map()
           }
           if (sql.includes('FROM bunny_webhook_events')) {
             return webhookEvents.get(bindings[0]) ?? null;
+          }
+          if (sql.includes('FROM uploader_enforcement')) {
+            return uploaderEnforcements.get(bindings[0]) ?? null;
+          }
+          if (sql.includes('FROM uploader_stats')) {
+            return uploaderStats.get(bindings[0]) ?? null;
           }
           return null;
         },
@@ -253,6 +264,46 @@ describe('HTTP hostname routing', () => {
 
 describe('Admin video lookup', () => {
   it('returns a moderated video and merges KV override fields', async () => {
+    const pubkey = 'f'.repeat(64);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url) === `https://api.divine.video/api/users/${pubkey}`) {
+        return new Response(JSON.stringify({
+          pubkey,
+          profile: {
+            display_name: 'Alice',
+            name: 'alice',
+            picture: 'https://cdn.example.com/alice.png',
+          },
+          social: {
+            follower_count: 100,
+            following_count: 20,
+          },
+          stats: {
+            video_count: 12,
+            total_events: 88,
+            first_activity: '2019-01-01T00:00:00.000Z',
+            last_activity: '2026-04-14T00:00:00.000Z',
+          },
+          engagement: {}
+        }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (String(url) === `https://api.divine.video/api/users/${pubkey}/social`) {
+        return new Response(JSON.stringify({
+          follower_count: 100,
+          following_count: 20,
+        }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
     const env = createEnv({
       BLOSSOM_DB: createDbMock({
         moderationResults: new Map([[SHA256, {
@@ -265,7 +316,22 @@ describe('Admin video lookup', () => {
           reviewed_by: 'admin',
           reviewed_at: '2026-03-07T01:00:00.000Z',
           review_notes: 'legacy note',
-          uploaded_by: 'npub123'
+          uploaded_by: pubkey
+        }]]),
+        uploaderStats: new Map([[pubkey, {
+          pubkey,
+          total_scanned: 5,
+          flagged_count: 2,
+          banned_count: 0,
+          restricted_count: 1,
+          review_count: 1,
+          last_flagged_at: '2026-03-10T00:00:00.000Z',
+          risk_level: 'elevated'
+        }]]),
+        uploaderEnforcements: new Map([[pubkey, {
+          pubkey,
+          approval_required: 0,
+          relay_banned: 1
         }]])
       }),
       MODERATION_KV: {
@@ -307,9 +373,24 @@ describe('Admin video lookup', () => {
         reason: 'Manual override',
         scores: {
           nudity: 0.91
+        },
+        creatorContext: {
+          name: 'Alice',
+          stats: {
+            totalScanned: 5
+          },
+          social: {
+            followerCount: 100
+          },
+          enforcement: {
+            relayBanned: true
+          }
         }
       }
     });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('returns an untriaged video by sha lookup', async () => {
