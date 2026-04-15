@@ -216,10 +216,12 @@ function buildAdminNostrContext({
   metadata = null,
   authorFallback = null,
   pubkey = null,
-  eventId = null
+  eventId = null,
+  stableId = null
 } = {}) {
   const resolvedPubkey = pickFirstPresentValue(pubkey, event?.pubkey);
   const resolvedEventId = pickFirstPresentValue(eventId, event?.id, metadata?.eventId);
+  const resolvedStableId = pickFirstPresentValue(stableId, metadata?.stableId);
 
   return {
     title: pickFirstPresentValue(metadata?.title),
@@ -240,7 +242,8 @@ function buildAdminNostrContext({
     vineHashId: pickFirstPresentValue(metadata?.vineHashId),
     vineUserId: pickFirstPresentValue(metadata?.vineUserId),
     proofmode: metadata?.proofmode ?? null,
-    createdAt: metadata?.createdAt ?? event?.created_at ?? null
+    createdAt: metadata?.createdAt ?? event?.created_at ?? null,
+    stableId: resolvedStableId
   };
 }
 
@@ -276,7 +279,8 @@ function buildFunnelcakeVideoLookup(eventResponse, identifier) {
     nostrContext: buildAdminNostrContext({
       event,
       metadata,
-      authorFallback: stats.author_name || null
+      authorFallback: stats.author_name || null,
+      stableId
     }),
     publisherProfile: {
       display_name: stats.author_name || null,
@@ -303,8 +307,46 @@ function parseOptionalInteger(value) {
   return value;
 }
 
+function parseOptionalString(value) {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function parseStoredAdminSnapshot(rawResponse) {
+  const parsed = parseMaybeJson(rawResponse, null);
+  const snapshot = parsed?.nostrSnapshot && typeof parsed.nostrSnapshot === 'object'
+    ? parsed.nostrSnapshot
+    : (parsed && typeof parsed === 'object' ? parsed : null);
+
+  if (!snapshot) {
+    return null;
+  }
+
+  return {
+    stableId: parseOptionalString(snapshot.stableId ?? snapshot.stable_id ?? snapshot.dTag ?? snapshot.d_tag),
+    content: parseOptionalString(snapshot.content ?? snapshot.summary ?? snapshot.contentText ?? snapshot.content_text)
+  };
+}
+
+function extractStableIdFromDivineUrl(divineUrl) {
+  if (!isPresentValue(divineUrl) || typeof divineUrl !== 'string') {
+    return null;
+  }
+
+  try {
+    const url = new URL(divineUrl);
+    const segments = url.pathname.split('/').filter(Boolean);
+    if (segments.length >= 2 && segments[0] === 'video') {
+      return decodeURIComponent(segments[1]) || null;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 function buildStoredNostrContext(row, uploadedBy = null, options = {}) {
-  const { includePubkey = true } = options;
+  const { includePubkey = true, stableId = null, content = null } = options;
   if (!row) {
     return null;
   }
@@ -324,9 +366,10 @@ function buildStoredNostrContext(row, uploadedBy = null, options = {}) {
     importedAt: null,
     vineHashId: null,
     vineUserId: null,
-    content: null,
+    content: parseOptionalString(content),
     eventId: row.event_id || null,
-    createdAt: null
+    createdAt: null,
+    stableId: parseOptionalString(stableId)
   };
 
   const hasStoredMetadata = Object.values(metadata).some((value) => value !== null);
@@ -381,6 +424,7 @@ function mergeLookupMetadata(baseVideo, funnelcakeVideo) {
     ...baseVideo,
     eventId: pickFirstPresentValue(funnelcakeVideo.eventId, funnelcakeVideo.event_id, baseVideo.eventId, baseVideo.event_id),
     event_id: pickFirstPresentValue(funnelcakeVideo.event_id, funnelcakeVideo.eventId, baseVideo.event_id, baseVideo.eventId),
+    stableId: pickFirstPresentValue(funnelcakeVideo.stableId, baseVideo.stableId, extractStableIdFromDivineUrl(baseVideo.divineUrl)),
     cdnUrl: pickFirstPresentValue(funnelcakeVideo.videoUrl, funnelcakeVideo.content_url, baseVideo.cdnUrl, baseVideo.content_url),
     content_url: pickFirstPresentValue(funnelcakeVideo.content_url, funnelcakeVideo.videoUrl, baseVideo.content_url, baseVideo.cdnUrl),
     thumbnailUrl: pickFirstPresentValue(funnelcakeVideo.thumbnailUrl, baseVideo.thumbnailUrl),
@@ -616,6 +660,8 @@ async function fetchLookupNostrContext(hash, env) {
       eventId: video.eventId || null,
       uploadedBy: video.uploaded_by || video.uploadedBy || null,
       divineUrl: video.divineUrl || null,
+      stableId: video.stableId || null,
+      publisherProfile: video.publisherProfile || null,
       nostrContext: video.nostrContext || null
     };
   } catch (error) {
@@ -641,6 +687,9 @@ function buildLookupCandidates(identifier, video) {
 
   append(video?.eventId);
   append(video?.event_id);
+  append(video?.stableId);
+  append(video?.stable_id);
+  append(extractStableIdFromDivineUrl(video?.divineUrl));
   append(video?.lookupId);
   append(identifier);
   append(video?.sha256);
@@ -730,7 +779,9 @@ async function enrichAdminLookupVideo(video, env, identifierOrOptions = null, ma
       enriched = {
         ...enriched,
         eventId: enriched.eventId || nostrContext.eventId,
+        stableId: enriched.stableId || nostrContext.stableId || extractStableIdFromDivineUrl(enriched.divineUrl),
         divineUrl: enriched.divineUrl || nostrContext.divineUrl,
+        publisherProfile: mergePresentFields(enriched.publisherProfile || {}, nostrContext.publisherProfile || {}),
         nostrContext: mergePresentFields(enriched.nostrContext || {}, nostrContext.nostrContext || {}),
         uploaded_by: enriched.uploaded_by || nostrContext.uploadedBy || null
       };
@@ -743,14 +794,21 @@ async function enrichAdminLookupVideo(video, env, identifierOrOptions = null, ma
   enriched.published_at = pickFirstPresentValue(enriched.published_at, enriched.nostrContext?.publishedAt);
   enriched.event_id = pickFirstPresentValue(enriched.event_id, enriched.eventId, enriched.nostrContext?.eventId);
   enriched.eventId = pickFirstPresentValue(enriched.eventId, enriched.event_id, enriched.nostrContext?.eventId);
-  enriched.divineUrl = pickFirstPresentValue(enriched.divineUrl, enriched.eventId ? `https://divine.video/video/${encodeURIComponent(enriched.eventId)}` : null);
+  enriched.stableId = pickFirstPresentValue(enriched.stableId, enriched.nostrContext?.stableId, extractStableIdFromDivineUrl(enriched.divineUrl));
+  enriched.divineUrl = pickFirstPresentValue(
+    enriched.divineUrl,
+    enriched.stableId ? `https://divine.video/video/${encodeURIComponent(enriched.stableId)}` : null,
+    enriched.eventId ? `https://divine.video/video/${encodeURIComponent(enriched.eventId)}` : null
+  );
 
   enriched.nostrContext = mergePresentFields(enriched.nostrContext || {}, {
     title: enriched.title,
     author: enriched.author,
+    content: pickFirstPresentValue(enriched.nostrContext?.content, enriched.content_text),
     url: enriched.content_url,
     publishedAt: enriched.published_at,
-    eventId: enriched.eventId
+    eventId: enriched.eventId,
+    stableId: enriched.stableId
   });
 
   if (enriched.uploaded_by) {
@@ -879,7 +937,7 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
   const cdnUrl = `https://${env.CDN_DOMAIN || 'media.divine.video'}/${hash}`;
   if (hash) {
     const moderatedRow = await env.BLOSSOM_DB.prepare(`
-      SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by,
+      SELECT sha256, action, provider, scores, categories, raw_response, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by,
              title, author, event_id, content_url, published_at
       FROM moderation_results
       WHERE sha256 = ?
@@ -891,7 +949,12 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
     if (moderatedRow || kvModeration) {
       const moderatedAt = kvModeration?.moderated_at || moderatedRow?.moderated_at || null;
       const uploadedBy = moderatedRow?.uploaded_by || kvModeration?.uploadedBy || null;
-      const persistedNostrContext = buildStoredNostrContext(moderatedRow, uploadedBy, { includePubkey: true });
+      const storedSnapshot = parseStoredAdminSnapshot(moderatedRow?.raw_response);
+      const persistedNostrContext = buildStoredNostrContext(moderatedRow, uploadedBy, {
+        includePubkey: true,
+        stableId: storedSnapshot?.stableId || null,
+        content: storedSnapshot?.content || null
+      });
       const eventId = moderatedRow?.event_id || null;
       const persistedContentUrl = moderatedRow?.content_url || null;
       const persistedPublishedAt = moderatedRow?.published_at || null;
@@ -916,10 +979,14 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
         title: moderatedRow?.title || null,
         author: moderatedRow?.author || null,
         content_url: persistedContentUrl,
+        content_text: storedSnapshot?.content || null,
         published_at: persistedPublishedAt,
+        stableId: storedSnapshot?.stableId || null,
         event_id: eventId,
         eventId,
-        divineUrl: eventId ? `https://divine.video/video/${encodeURIComponent(eventId)}` : null,
+        divineUrl: storedSnapshot?.stableId
+          ? `https://divine.video/video/${encodeURIComponent(storedSnapshot.stableId)}`
+          : (eventId ? `https://divine.video/video/${encodeURIComponent(eventId)}` : null),
         nostrContext: persistedNostrContext
       }, env, identifier);
     }
@@ -3935,7 +4002,13 @@ async function runMigration() {
           result.provider || 'unknown',
           JSON.stringify(result.scores || {}),
           JSON.stringify(result.categories || []),
-          JSON.stringify(result.rawResponse || {}),
+          JSON.stringify({
+            ...(result.rawResponse || {}),
+            nostrSnapshot: {
+              stableId: result.nostrContext?.stableId || null,
+              content: result.nostrContext?.content || null
+            }
+          }),
           new Date().toISOString(),
           result.uploadedBy || null,
           result.nostrContext?.title || null,
