@@ -2424,6 +2424,100 @@
       `;
     }
 
+    function renderProvenanceBadge(provenance) {
+      if (!provenance) {
+        return '';
+      }
+
+      const palette = provenance.status === 'original_vine'
+        ? { bg: '#4c1d95', border: '#8b5cf6', text: '#f5f3ff' }
+        : provenance.status === 'pre_2022_legacy'
+          ? { bg: '#78350f', border: '#f59e0b', text: '#fffbeb' }
+          : { bg: '#1f2937', border: '#4b5563', text: '#e5e7eb' };
+
+      return `<div class="provenance-badge" style="display:inline-flex;align-items:center;gap:6px;background:${palette.bg};border:1px solid ${palette.border};color:${palette.text};padding:4px 8px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:0.02em;text-transform:uppercase;">${escapeHtml(provenance.label || 'Unknown Provenance')}</div>`;
+    }
+
+    function formatProvenanceSupportLine(provenance) {
+      if (!provenance || !provenance.date || provenance.dateSource === 'none') {
+        return 'Unknown provenance';
+      }
+
+      const dateLabel = new Date(provenance.date).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      });
+
+      const sourceLabel = provenance.dateSource === 'published_at'
+        ? 'published_at'
+        : provenance.dateSource === 'nostr_created_at'
+          ? 'Nostr'
+          : provenance.dateSource;
+
+      return `${dateLabel} via ${sourceLabel}`;
+    }
+
+    function renderProvenanceSummary(provenance) {
+      return `
+        <div class="provenance-summary" style="margin-bottom: 10px;">
+          ${renderProvenanceBadge(provenance)}
+          <div style="font-size: 12px; color: #9ca3af; margin-top: 6px;">${escapeHtml(formatProvenanceSupportLine(provenance))}</div>
+        </div>
+      `;
+    }
+
+    async function openCreatorInfo(sha256) {
+      const modal = document.getElementById('creator-info-modal');
+      const body = document.getElementById('creator-info-body');
+      modal.classList.add('show');
+      body.innerHTML = '<div style="color:#9ca3af;">Loading creator info…</div>';
+
+      try {
+        const response = await fetch(`/admin/api/video/${encodeURIComponent(sha256)}`);
+        const data = response.ok ? await response.json() : null;
+        const video = data?.video || getVideoBySha(sha256);
+        if (!video) {
+          body.innerHTML = '<div style="color:#fca5a5;">Creator info unavailable.</div>';
+          return;
+        }
+
+        body.innerHTML = renderCreatorInfoModal(video);
+      } catch (error) {
+        body.innerHTML = `<div style="color:#fca5a5;">Failed to load creator info: ${escapeHtml(error.message || 'unknown error')}</div>`;
+      }
+    }
+
+    function closeCreatorInfo() {
+      document.getElementById('creator-info-modal').classList.remove('show');
+    }
+
+    function renderCreatorInfoModal(video) {
+      const provenance = video.provenance || null;
+      const creator = video.creatorContext || null;
+      const stats = creator?.stats || null;
+      const social = creator?.social || null;
+      const enforcement = creator?.enforcement || null;
+
+      return `
+        <div style="display:flex;flex-direction:column;gap:14px;">
+          <div>
+            ${renderProvenanceBadge(provenance)}
+            <div style="font-size:13px;color:#cbd5e1;margin-top:8px;">${escapeHtml(formatProvenanceSupportLine(provenance))}</div>
+            ${Array.isArray(provenance?.reasons) && provenance.reasons.length > 0 ? `<div style="font-size:12px;color:#94a3b8;margin-top:6px;">Evidence: ${escapeHtml(provenance.reasons.join(' · '))}</div>` : ''}
+          </div>
+          <div>
+            <div style="font-size:16px;font-weight:700;color:#f8fafc;">${escapeHtml(creator?.name || 'Unknown Creator')}</div>
+            <div style="font-size:12px;color:#94a3b8;margin-top:4px;word-break:break-all;">${escapeHtml(creator?.pubkey || video.uploaded_by || 'No pubkey')}</div>
+            ${creator?.profileUrl ? `<div style="margin-top:8px;"><a href="${escapeHtml(creator.profileUrl)}" target="_blank" style="color:#8b5cf6;text-decoration:none;">View Divine profile →</a></div>` : ''}
+          </div>
+          ${stats ? `<div style="font-size:13px;color:#e5e7eb;">Moderation history: ${stats.totalScanned ?? 0} scanned · ${stats.flagged ?? 0} flagged · ${stats.restricted ?? 0} restricted · ${stats.banned ?? 0} banned · risk ${escapeHtml(stats.riskLevel || 'normal')}</div>` : '<div style="font-size:13px;color:#94a3b8;">No local moderation history yet.</div>'}
+          ${social ? `<div style="font-size:13px;color:#e5e7eb;">Divine activity: ${social.videoCount ?? '—'} videos · ${social.totalEvents ?? '—'} events · ${social.followerCount ?? '—'} followers · ${social.followingCount ?? '—'} following</div>` : '<div style="font-size:13px;color:#94a3b8;">No public creator activity available.</div>'}
+          ${enforcement ? `<div style="font-size:13px;color:#e5e7eb;">Enforcement: approval ${enforcement.approvalRequired ? 'required' : 'off'} · relay ${enforcement.relayBanned ? 'banned' : 'allowed'}</div>` : ''}
+        </div>
+      `;
+    }
+
     function createTriageCard(video) {
       const { sha256, cdnUrl, thumbnailUrl, receivedAt, nostrContext, showDirectActions, showTranscriptTools } = video;
 
@@ -2476,6 +2570,8 @@
         ? '<div id="transcript-detail-' + sha256 + '"></div>'
         : '';
       const uploaderEnforcementPanel = createUploaderEnforcementPanel(video);
+      const provenanceHTML = renderProvenanceSummary(video.provenance);
+      const creatorInfoButton = '<button class="action-btn secondary" onclick="openCreatorInfo(\'' + sha256 + '\')">Creator Info</button>';
 
       return '<div class="video-card triage" data-sha256="' + sha256 + '" style="border-color: #8b5cf6;">' +
         '<div class="video-thumbnail">' +
@@ -2492,6 +2588,7 @@
           '</div>' +
           (metaLine ? '<div style="font-size: 12px; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + metaLine + '</div>' : '') +
           (description ? '<div style="font-size: 13px; color: #ccc; margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + description + '</div>' : '') +
+          provenanceHTML +
           '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">' +
             '<span style="font-size: 12px; color: #666;">' + (timeAgo ? '📅 ' + timeAgo : '') + '</span>' +
             '<a href="' + divineUrl + '" target="_blank" style="color: #8b5cf6; font-size: 12px; text-decoration: none;">View →</a>' +
@@ -2504,6 +2601,7 @@
               '✅ Safe' +
             '</button>' +
           '</div>' +
+          '<div class="action-buttons compact">' + creatorInfoButton + '</div>' +
           uploaderEnforcementPanel +
           directActions +
           transcriptTools +
@@ -3038,6 +3136,8 @@
 
     function createVideoCard(video) {
       const { sha256, cdnUrl, action, scores, reason, processedAt, detailedCategories, provider, manualOverride, overriddenAt, previousAction, showTranscriptTools } = video;
+      const provenanceHTML = renderProvenanceSummary(video.provenance);
+      const creatorInfoButton = `<button class="action-btn secondary" onclick="openCreatorInfo('${sha256}')">Creator Info</button>`;
 
       const timestamp = processedAt
         ? new Date(processedAt).toLocaleString()
@@ -3182,6 +3282,8 @@
               <div class="nostr-loading">Loading context...</div>
             </div>
 
+            ${provenanceHTML}
+
             <div class="divine-link">
               <a id="divine-link-${sha256}" href="https://divine.video/video/${sha256}?source=discovery&index=0" target="_blank" rel="noopener noreferrer">
                 View on divine.video →
@@ -3196,6 +3298,10 @@
             ` : ''}
 
             ${uploaderEnforcementPanel}
+
+            <div class="action-buttons compact">
+              ${creatorInfoButton}
+            </div>
 
             <div style="font-size: 12px; margin-bottom: 8px;">
               ${video.eventId || video.uploaded_by
@@ -4346,9 +4452,13 @@
 
     // Close modal when clicking outside
     document.addEventListener('click', (e) => {
-      const modal = document.getElementById('edit-modal');
-      if (e.target === modal) {
+      const editModal = document.getElementById('edit-modal');
+      const creatorModal = document.getElementById('creator-info-modal');
+      if (e.target === editModal) {
         closeEditModal();
+      }
+      if (e.target === creatorModal) {
+        closeCreatorInfo();
       }
     });
 
@@ -4442,6 +4552,19 @@
   </script>
 
   <!-- Edit Scores Modal -->
+  <div class="modal" id="creator-info-modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Creator Info</h2>
+        <button class="modal-close" onclick="closeCreatorInfo()">&times;</button>
+      </div>
+      <div class="modal-body" id="creator-info-body"></div>
+      <div class="modal-footer">
+        <button class="btn-cancel" onclick="closeCreatorInfo()">Close</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal" id="edit-modal">
     <div class="modal-content">
       <div class="modal-header">
