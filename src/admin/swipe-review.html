@@ -632,6 +632,19 @@
     <span id="progress-text">0 reviewed</span>
   </div>
 
+  <div id="creator-info-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:1000;align-items:center;justify-content:center;padding:20px;">
+    <div style="background:#111827;border:1px solid #374151;border-radius:12px;max-width:640px;width:100%;max-height:80vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,0.4);">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid #374151;">
+        <h2 style="font-size:18px;color:#f8fafc;">Creator Info</h2>
+        <button onclick="closeCreatorInfo()" style="background:none;border:none;color:#94a3b8;font-size:28px;cursor:pointer;line-height:1;">&times;</button>
+      </div>
+      <div id="creator-info-body" style="padding:18px;"></div>
+      <div style="padding:16px 18px;border-top:1px solid #374151;display:flex;justify-content:flex-end;">
+        <button class="btn" onclick="closeCreatorInfo()">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let reviewQueue = [];
     let loadedFlaggedVideos = [];
@@ -1074,6 +1087,7 @@
     function createVideoCard(video) {
       const { sha256, scores, nostrContext, provider, detailedCategories, isUntriaged, classifierSummary, uploaded_by, moderated_at, receivedAt, eventId } = video;
       const videoUrl = '/admin/video/' + sha256 + '.mp4';
+      const provenanceHTML = renderProvenanceSummary(video.provenance);
 
       // Get top scores (empty for untriaged)
       const scoreEntries = Object.entries(scores || {})
@@ -1189,6 +1203,8 @@
 
             ${title ? `<div class="nostr-title" style="margin-bottom: 10px;">${escapeHtml(title)}</div>` : ''}
 
+            ${provenanceHTML}
+
             <div class="video-hash" style="display: flex; align-items: center; gap: 8px;">
               ${sha256}
               <button onclick="copyPermalink('${sha256}', this)" style="background: none; border: 1px solid #555; color: #aaa; padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">📋 Link</button>
@@ -1220,6 +1236,12 @@
               </button>
               <button class="action-btn skip" onclick="skipVideo()">
                 Skip
+              </button>
+            </div>
+
+            <div class="action-buttons">
+              <button class="action-btn skip" onclick="openCreatorInfo('${sha256}')">
+                Creator Info
               </button>
             </div>
 
@@ -1563,6 +1585,98 @@
         btn.textContent = '✗ Error';
         setTimeout(() => { btn.textContent = '📋 Copy'; }, 1500);
       }
+    }
+
+    function renderProvenanceBadge(provenance) {
+      if (!provenance) return '';
+
+      const palette = provenance.status === 'original_vine'
+        ? { bg: '#4c1d95', border: '#8b5cf6', text: '#f5f3ff' }
+        : provenance.status === 'pre_2022_legacy'
+          ? { bg: '#78350f', border: '#f59e0b', text: '#fffbeb' }
+          : { bg: '#1f2937', border: '#4b5563', text: '#e5e7eb' };
+
+      return `<div style="display:inline-flex;align-items:center;gap:6px;background:${palette.bg};border:1px solid ${palette.border};color:${palette.text};padding:4px 8px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:0.02em;text-transform:uppercase;">${escapeHtml(provenance.label || 'Unknown Provenance')}</div>`;
+    }
+
+    function formatProvenanceSupportLine(provenance) {
+      if (!provenance || !provenance.date || provenance.dateSource === 'none') {
+        return 'Unknown provenance';
+      }
+
+      const dateLabel = new Date(provenance.date).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      });
+
+      const sourceLabel = provenance.dateSource === 'published_at'
+        ? 'published_at'
+        : provenance.dateSource === 'nostr_created_at'
+          ? 'Nostr'
+          : provenance.dateSource;
+
+      return `${dateLabel} via ${sourceLabel}`;
+    }
+
+    function renderProvenanceSummary(provenance) {
+      return `
+        <div style="margin-bottom: 12px;">
+          ${renderProvenanceBadge(provenance)}
+          <div style="font-size: 12px; color: #9ca3af; margin-top: 6px;">${escapeHtml(formatProvenanceSupportLine(provenance))}</div>
+        </div>
+      `;
+    }
+
+    async function openCreatorInfo(sha256) {
+      const modal = document.getElementById('creator-info-modal');
+      const body = document.getElementById('creator-info-body');
+      modal.style.display = 'flex';
+      body.innerHTML = '<div style="color:#9ca3af;">Loading creator info…</div>';
+
+      try {
+        const response = await fetch(`/admin/api/video/${encodeURIComponent(sha256)}`);
+        const data = response.ok ? await response.json() : null;
+        const video = data?.video || reviewQueue.find(v => v.sha256 === sha256) || null;
+        if (!video) {
+          body.innerHTML = '<div style="color:#fca5a5;">Creator info unavailable.</div>';
+          return;
+        }
+
+        body.innerHTML = renderCreatorInfoModal(video);
+      } catch (error) {
+        body.innerHTML = `<div style="color:#fca5a5;">Failed to load creator info: ${escapeHtml(error.message || 'unknown error')}</div>`;
+      }
+    }
+
+    function closeCreatorInfo() {
+      document.getElementById('creator-info-modal').style.display = 'none';
+    }
+
+    function renderCreatorInfoModal(video) {
+      const provenance = video.provenance || null;
+      const creator = video.creatorContext || null;
+      const stats = creator?.stats || null;
+      const social = creator?.social || null;
+      const enforcement = creator?.enforcement || null;
+
+      return `
+        <div style="display:flex;flex-direction:column;gap:14px;">
+          <div>
+            ${renderProvenanceBadge(provenance)}
+            <div style="font-size:13px;color:#cbd5e1;margin-top:8px;">${escapeHtml(formatProvenanceSupportLine(provenance))}</div>
+            ${Array.isArray(provenance?.reasons) && provenance.reasons.length > 0 ? `<div style="font-size:12px;color:#94a3b8;margin-top:6px;">Evidence: ${escapeHtml(provenance.reasons.join(' · '))}</div>` : ''}
+          </div>
+          <div>
+            <div style="font-size:16px;font-weight:700;color:#f8fafc;">${escapeHtml(creator?.name || 'Unknown Creator')}</div>
+            <div style="font-size:12px;color:#94a3b8;margin-top:4px;word-break:break-all;">${escapeHtml(creator?.pubkey || video.uploaded_by || 'No pubkey')}</div>
+            ${creator?.profileUrl ? `<div style="margin-top:8px;"><a href="${escapeHtml(creator.profileUrl)}" target="_blank" style="color:#8b5cf6;text-decoration:none;">View Divine profile →</a></div>` : ''}
+          </div>
+          ${stats ? `<div style="font-size:13px;color:#e5e7eb;">Moderation history: ${stats.totalScanned ?? 0} scanned · ${stats.flagged ?? 0} flagged · ${stats.restricted ?? 0} restricted · ${stats.banned ?? 0} banned · risk ${escapeHtml(stats.riskLevel || 'normal')}</div>` : '<div style="font-size:13px;color:#94a3b8;">No local moderation history yet.</div>'}
+          ${social ? `<div style="font-size:13px;color:#e5e7eb;">Divine activity: ${social.videoCount ?? '—'} videos · ${social.totalEvents ?? '—'} events · ${social.followerCount ?? '—'} followers · ${social.followingCount ?? '—'} following</div>` : '<div style="font-size:13px;color:#94a3b8;">No public creator activity available.</div>'}
+          ${enforcement ? `<div style="font-size:13px;color:#e5e7eb;">Enforcement: approval ${enforcement.approvalRequired ? 'required' : 'off'} · relay ${enforcement.relayBanned ? 'banned' : 'allowed'}</div>` : ''}
+        </div>
+      `;
     }
 
     function logout() {
