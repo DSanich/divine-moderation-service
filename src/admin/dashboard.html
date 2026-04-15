@@ -137,8 +137,199 @@
 
     .lookup-result-grid {
       display: grid;
-      grid-template-columns: minmax(300px, 420px);
+      grid-template-columns: minmax(420px, 1fr) minmax(400px, 1.2fr);
       gap: 20px;
+      align-items: start;
+    }
+
+    @media (max-width: 1100px) {
+      .lookup-result-grid {
+        grid-template-columns: minmax(320px, 1fr);
+      }
+    }
+
+    .lookup-detail-pane {
+      background: #141b27;
+      border: 1px solid #1f2a3a;
+      border-radius: 10px;
+      padding: 16px;
+      color: #cbd5e1;
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .lookup-detail-pane h3 {
+      margin: 0;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #94a3b8;
+    }
+
+    .lookup-detail-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .lookup-detail-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .lookup-detail-row .k {
+      color: #64748b;
+      min-width: 80px;
+    }
+
+    .lookup-detail-row .v {
+      color: #e2e8f0;
+      word-break: break-all;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .lookup-detail-row a {
+      color: #8b5cf6;
+      text-decoration: none;
+    }
+
+    .lookup-detail-row a:hover {
+      text-decoration: underline;
+    }
+
+    .nostr-event-json {
+      background: #0b1220;
+      border: 1px solid #1f2a3a;
+      border-radius: 8px;
+      padding: 10px;
+      color: #cbd5e1;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      max-height: 360px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+    }
+
+    .nostr-event-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .nostr-event-toolbar button {
+      background: #1f2a3a;
+      color: #cbd5e1;
+      border: 1px solid #334155;
+      border-radius: 5px;
+      padding: 4px 10px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .nostr-event-toolbar button:hover {
+      background: #27324a;
+    }
+
+    /* Uploader identity block shown at top of each card */
+    .event-meta {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 8px 10px;
+      background: #141b27;
+      border: 1px solid #1f2a3a;
+      border-radius: 8px;
+      margin-bottom: 10px;
+    }
+
+    .event-meta-avatar {
+      width: 34px;
+      height: 34px;
+      flex-shrink: 0;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #8b5cf6, #6366f1);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    .event-meta-body {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .event-meta-name {
+      color: #e2e8f0;
+      font-size: 13px;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .event-meta-pubkey-row {
+      font-size: 11px;
+      color: #94a3b8;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .event-meta-pubkey.empty {
+      color: #64748b;
+      font-style: italic;
+    }
+
+    .event-meta-event-id,
+    .event-meta-published {
+      font-size: 11px;
+      color: #94a3b8;
+    }
+
+    .event-meta-event-id code {
+      font-size: 10px;
+      color: #cbd5e1;
+    }
+
+    .event-meta-label {
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-size: 9px;
+      margin-right: 4px;
+    }
+
+    .event-meta-links {
+      display: flex;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .event-meta-link {
+      color: #8b5cf6;
+      font-size: 11px;
+      text-decoration: none;
+      border: 1px solid #334155;
+      border-radius: 4px;
+      padding: 2px 8px;
+      background: #0b1220;
+    }
+
+    .event-meta-link:hover {
+      background: #1f2a3a;
+      text-decoration: none;
     }
 
     .control-group {
@@ -631,6 +822,69 @@
       border-radius: 6px;
     }
 
+    .uploader-history {
+      margin-top: 6px;
+      padding: 8px 10px;
+      background: #0a0f1a;
+      border: 1px solid #1f2937;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #cbd5e1;
+    }
+    .uploader-history .uh-header {
+      font-size: 10px;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 4px;
+    }
+    .uploader-history .uh-badges { display: flex; gap: 4px; flex-wrap: wrap; }
+    .uploader-history .uh-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 600;
+      border: 1px solid #334155;
+      background: #111827;
+      color: #cbd5e1;
+    }
+    .uploader-history .uh-badge.uh-review { border-color: #b45309; color: #fdba74; }
+    .uploader-history .uh-badge.uh-quar { border-color: #7c3aed; color: #d8b4fe; }
+    .uploader-history .uh-badge.uh-age { border-color: #1d4ed8; color: #93c5fd; }
+    .uploader-history .uh-badge.uh-ban { border-color: #991b1b; color: #fca5a5; background: #2b0d0d; }
+    .uploader-history .uh-badge.uh-ai { border-color: #be185d; color: #fbcfe8; }
+    .uploader-history .uh-chips { display: flex; gap: 4px; margin-top: 4px; }
+    .uploader-history .uh-chip {
+      display: inline-block;
+      padding: 2px 6px;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      border-radius: 3px;
+    }
+    .uploader-history .uh-chip-approval { background: #1e1033; color: #d8b4fe; border: 1px solid #7c3aed; }
+    .uploader-history .uh-chip-banned { background: #2b0d0d; color: #fca5a5; border: 1px solid #991b1b; }
+    .uploader-history .uh-recent-wrap { margin-top: 6px; }
+    .uploader-history .uh-recent-toggle {
+      background: transparent;
+      border: 1px dashed #334155;
+      color: #94a3b8;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      cursor: pointer;
+    }
+    .uploader-history .uh-recent-list {
+      list-style: none;
+      padding: 4px 0 0 0;
+      margin: 4px 0 0 0;
+      font-size: 10px;
+      color: #94a3b8;
+    }
+    .uploader-history .uh-recent-list li { padding: 2px 0; }
+    .uploader-history .uh-recent-list code { color: #cbd5e1; }
+
     .uploader-enforcement-header {
       display: flex;
       justify-content: space-between;
@@ -682,18 +936,6 @@
       border-color: #991b1b;
       color: #fca5a5;
       background: #2b0d0d;
-    }
-
-    .uploader-enforcement-badge.risk-high {
-      border-color: #b45309;
-      color: #fdba74;
-      background: #2c1403;
-    }
-
-    .uploader-enforcement-badge.risk-elevated {
-      border-color: #1d4ed8;
-      color: #93c5fd;
-      background: #0f1d38;
     }
 
     .uploader-enforcement-stats {
@@ -2190,9 +2432,11 @@
         ? { ...video, showDirectActions: true, showTranscriptTools: true }
         : { ...video, showTranscriptTools: true };
 
-      result.innerHTML = video.status === 'UNTRIAGED'
+      const cardHtml = video.status === 'UNTRIAGED'
         ? createTriageCard(renderVideo)
         : createVideoCard(renderVideo);
+      const detailPaneHtml = createLookupDetailPaneHTML(renderVideo);
+      result.innerHTML = cardHtml + detailPaneHtml;
 
       section.style.display = 'block';
       meta.textContent = `${video.sha256.substring(0, 16)}...${video.status === 'UNTRIAGED' ? ' · needs triage' : ` · ${video.action}`}`;
@@ -2364,9 +2608,8 @@
       const pubkey = video.uploaded_by || null;
       const eventId = video.eventId || video.nostrContext?.eventId || null;
       const enforcement = video.uploaderEnforcement || null;
-      const stats = video.uploaderStats || null;
 
-      if (!video.lookupId && !enforcement && !stats && !eventId) {
+      if (!video.lookupId && !enforcement && !eventId) {
         return '';
       }
 
@@ -2381,20 +2624,8 @@
       if (enforcement?.relay_banned) {
         badges.push('<span class="uploader-enforcement-badge relay-ban">Relay Banned</span>');
       }
-      if (stats?.risk_level === 'high') {
-        badges.push('<span class="uploader-enforcement-badge risk-high">Risk High</span>');
-      } else if (stats?.risk_level === 'elevated') {
-        badges.push('<span class="uploader-enforcement-badge risk-elevated">Risk Elevated</span>');
-      }
       if (badges.length === 0) {
         badges.push('<span class="uploader-enforcement-badge">No User Enforcement</span>');
-      }
-
-      const statBits = [];
-      if (stats) {
-        statBits.push(`flagged ${stats.flagged_count || 0}`);
-        statBits.push(`restricted ${stats.restricted_count || 0}`);
-        statBits.push(`banned ${stats.banned_count || 0}`);
       }
 
       const approvalButton = pubkey
@@ -2414,7 +2645,6 @@
             ${pubkey ? `<span class="uploader-enforcement-pubkey" title="${pubkey}">${truncateHex(pubkey)}</span>` : ''}
           </div>
           <div class="uploader-enforcement-badges">${badges.join('')}</div>
-          ${statBits.length > 0 ? `<div class="uploader-enforcement-stats">${statBits.join(' · ')}</div>` : ''}
           <div class="action-buttons compact">
             ${approvalButton}
             ${relayButton}
@@ -2518,6 +2748,80 @@
       `;
     }
 
+    // Lazy per-uploader history panel — fetches /admin/api/uploader/:pubkey
+    // on card render and populates an inline container. Session-scoped in-memory
+    // cache keyed by pubkey prevents duplicate fetches within a page load.
+    window.__uploaderHistoryCache = window.__uploaderHistoryCache || new Map();
+
+    function createUploaderHistoryPanel(video) {
+      const pubkey = video.uploaded_by || null;
+      if (!pubkey) return '';
+      const containerId = 'uploader-history-' + pubkey.slice(0, 12) + '-' + Math.random().toString(36).slice(2, 8);
+      // Schedule lazy fetch after DOM insertion
+      setTimeout(() => hydrateUploaderHistory(containerId, pubkey), 0);
+      return '<div class="uploader-history" id="' + containerId + '" data-pubkey="' + pubkey + '"><div class="uploader-history-loading" style="font-size: 11px; color: #666; padding: 4px 0;">Loading uploader history…</div></div>';
+    }
+
+    async function hydrateUploaderHistory(containerId, pubkey) {
+      const el = document.getElementById(containerId);
+      if (!el) return;
+      let data;
+      try {
+        if (window.__uploaderHistoryCache.has(pubkey)) {
+          data = await window.__uploaderHistoryCache.get(pubkey);
+        } else {
+          const promise = fetch('/admin/api/uploader/' + encodeURIComponent(pubkey))
+            .then(r => r.ok ? r.json() : null)
+            .catch(() => null);
+          window.__uploaderHistoryCache.set(pubkey, promise);
+          data = await promise;
+        }
+      } catch { data = null; }
+
+      if (!data || !el.isConnected) {
+        if (el) el.innerHTML = '';
+        return;
+      }
+
+      const ab = data.actionBreakdown || {};
+      const totals = data.totals || {};
+      const badges = [];
+      badges.push('<span class="uh-badge uh-uploads">' + (totals.videos || 0) + ' uploads</span>');
+      if (ab.REVIEW) badges.push('<span class="uh-badge uh-review">' + ab.REVIEW + ' REVIEW</span>');
+      if (ab.QUARANTINE) badges.push('<span class="uh-badge uh-quar">' + ab.QUARANTINE + ' QUAR</span>');
+      if (ab.AGE_RESTRICTED) badges.push('<span class="uh-badge uh-age">' + ab.AGE_RESTRICTED + ' AGE</span>');
+      if (ab.PERMANENT_BAN) badges.push('<span class="uh-badge uh-ban">' + ab.PERMANENT_BAN + ' BAN</span>');
+      if (data.dmCount) badges.push('<span class="uh-badge uh-dm">' + data.dmCount + ' DMs</span>');
+      if (data.aiFlaggedCount) badges.push('<span class="uh-badge uh-ai">' + data.aiFlaggedCount + ' AI-flag</span>');
+
+      const chips = [];
+      if (data.enforcement?.approval_required) chips.push('<span class="uh-chip uh-chip-approval">APPROVAL REQUIRED</span>');
+      if (data.enforcement?.relay_banned) chips.push('<span class="uh-chip uh-chip-banned">RELAY BANNED</span>');
+
+      const recent = Array.isArray(data.recentFlagged) ? data.recentFlagged : [];
+      const recentListId = containerId + '-recent';
+      const recentToggleId = containerId + '-toggle';
+      const recentItems = recent.map(r => {
+        const shortSha = (r.sha256 || '').slice(0, 10);
+        const when = r.processedAt ? new Date(r.processedAt).toLocaleDateString() : '';
+        const reason = r.reason ? ' — ' + String(r.reason).slice(0, 80) : '';
+        return '<li><span class="uh-recent-action uh-recent-' + (r.action || '') + '">' + (r.action || '') + '</span> <code>' + shortSha + '</code> ' + when + reason + '</li>';
+      }).join('');
+
+      const recentBlock = recent.length > 0
+        ? '<div class="uh-recent-wrap">'
+          + '<button type="button" class="uh-recent-toggle" id="' + recentToggleId + '" onclick="document.getElementById(\'' + recentListId + '\').style.display = document.getElementById(\'' + recentListId + '\').style.display === \'none\' ? \'block\' : \'none\';">Recent flagged (' + recent.length + ')</button>'
+          + '<ul class="uh-recent-list" id="' + recentListId + '" style="display:none;">' + recentItems + '</ul>'
+          + '</div>'
+        : '';
+
+      el.innerHTML = ''
+        + '<div class="uh-header">Uploader history</div>'
+        + '<div class="uh-badges">' + badges.join(' ') + '</div>'
+        + (chips.length ? '<div class="uh-chips">' + chips.join(' ') + '</div>' : '')
+        + recentBlock;
+    }
+
     function createTriageCard(video) {
       const { sha256, cdnUrl, thumbnailUrl, receivedAt, nostrContext, showDirectActions, showTranscriptTools } = video;
 
@@ -2572,6 +2876,7 @@
       const uploaderEnforcementPanel = createUploaderEnforcementPanel(video);
       const provenanceHTML = renderProvenanceSummary(video.provenance);
       const creatorInfoButton = '<button class="action-btn secondary" onclick="openCreatorInfo(\'' + sha256 + '\')">Creator Info</button>';
+      const uploaderHistoryPanel = createUploaderHistoryPanel(video);
 
       return '<div class="video-card triage" data-sha256="' + sha256 + '" style="border-color: #8b5cf6;">' +
         '<div class="video-thumbnail">' +
@@ -2581,6 +2886,7 @@
           '</div>' +
         '</div>' +
         '<div class="video-info">' +
+          createEventMetaHTML(video) +
           '<div style="font-size: 11px; color: #666; margin-bottom: 6px; font-family: monospace;">' +
             '<span title="' + sha256 + '">' + sha256.substring(0, 16) + '...</span> ' +
             '<button onclick="copyToClipboard(\'' + copyVideoUrl + '\'); event.stopPropagation();" style="background: #333; color: #888; border: none; padding: 2px 6px; border-radius: 3px; cursor: pointer; font-size: 10px;" title="Copy video URL">📋 URL</button> ' +
@@ -2603,6 +2909,7 @@
           '</div>' +
           '<div class="action-buttons compact">' + creatorInfoButton + '</div>' +
           uploaderEnforcementPanel +
+          uploaderHistoryPanel +
           directActions +
           transcriptTools +
         '</div>' +
@@ -3134,6 +3441,203 @@
       return div.innerHTML;
     }
 
+    // --- Uploader identity helpers (mirror of src/admin/event-meta.mjs) ---
+    // Unit-tested via event-meta.test.mjs; duplicated here because
+    // dashboard.html is a single served HTML file without a build step.
+    function eventMetaFirstPresent() {
+      for (let i = 0; i < arguments.length; i++) {
+        const v = arguments[i];
+        if (v === null || v === undefined) continue;
+        if (typeof v === 'string' && v.trim() === '') continue;
+        return v;
+      }
+      return null;
+    }
+
+    function buildDivineVideoUrl(video) {
+      if (!video) return null;
+      if (video.divineUrl) return video.divineUrl;
+      const eid = eventMetaFirstPresent(video.eventId, video.event_id, video.nostrContext && video.nostrContext.eventId);
+      return eid ? 'https://divine.video/video/' + eid : null;
+    }
+
+    function buildProfileUrl(pubkey) {
+      if (!pubkey) return null;
+      const str = String(pubkey).trim();
+      if (!str) return null;
+      return 'https://divine.video/profile/' + str;
+    }
+
+    function truncatePubkey(pubkey) {
+      if (!pubkey) return '';
+      const str = String(pubkey);
+      if (str.length <= 16) return str;
+      return str.slice(0, 8) + '...' + str.slice(-8);
+    }
+
+    function pickAuthorName(video) {
+      if (!video) return 'Unknown publisher';
+      const ctx = video.nostrContext || {};
+      return eventMetaFirstPresent(video.author, ctx.author, ctx.displayName) || 'Unknown publisher';
+    }
+
+    function pickUploaderPubkey(video) {
+      if (!video) return null;
+      const ctx = video.nostrContext || {};
+      const raw = eventMetaFirstPresent(video.uploaded_by, video.uploadedBy, ctx.pubkey);
+      return raw ? String(raw) : null;
+    }
+
+    function isFullHexPubkey(pubkey) {
+      return typeof pubkey === 'string' && /^[0-9a-f]{64}$/i.test(pubkey);
+    }
+
+    function formatEventMetaTimestamp(value) {
+      if (value === null || value === undefined || value === '') return null;
+      let date;
+      if (typeof value === 'number') {
+        date = new Date(value < 1e12 ? value * 1000 : value);
+      } else {
+        date = new Date(value);
+      }
+      if (Number.isNaN(date.getTime())) return null;
+      return date.toISOString().replace('T', ' ').replace(/:\d{2}\.\d{3}Z$/, 'Z');
+    }
+
+    /**
+     * Renders the uploader identity block shown at the top of every
+     * moderation card (avatar, author, pubkey, profile + Nostr event link).
+     */
+    function createEventMetaHTML(video) {
+      video = video || {};
+      const authorName = pickAuthorName(video);
+      const pubkey = pickUploaderPubkey(video);
+      const profileUrl = isFullHexPubkey(pubkey) ? buildProfileUrl(pubkey) : null;
+      const divineUrl = buildDivineVideoUrl(video);
+      const eventId = eventMetaFirstPresent(video.eventId, video.event_id, video.nostrContext && video.nostrContext.eventId);
+      const publishedAt = formatEventMetaTimestamp(
+        eventMetaFirstPresent(video.published_at, video.publishedAt, video.nostrContext && video.nostrContext.publishedAt)
+      );
+      const avatarChar = (authorName || '?').trim().charAt(0).toUpperCase() || '?';
+
+      const pubkeyLine = pubkey
+        ? '<span class="event-meta-pubkey" title="' + escapeHtml(pubkey) + '" onclick="copyToClipboard(\'' + escapeHtml(pubkey) + '\')" style="cursor:pointer">' + escapeHtml(truncatePubkey(pubkey)) + '</span>'
+        : '<span class="event-meta-pubkey empty">No pubkey</span>';
+
+      const links = [];
+      if (profileUrl) {
+        links.push('<a class="event-meta-link" href="' + escapeHtml(profileUrl) + '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">Profile</a>');
+      }
+      if (divineUrl) {
+        links.push('<a class="event-meta-link" href="' + escapeHtml(divineUrl) + '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">Nostr event</a>');
+      }
+
+      const linksHtml = links.length ? '<div class="event-meta-links">' + links.join('') + '</div>' : '';
+      const publishedHtml = publishedAt
+        ? '<div class="event-meta-published"><span class="event-meta-label">Published</span>' + escapeHtml(publishedAt) + '</div>'
+        : '';
+      const eventIdHtml = eventId
+        ? '<div class="event-meta-event-id"><span class="event-meta-label">Event</span><code>' + escapeHtml(truncatePubkey(eventId)) + '</code></div>'
+        : '';
+
+      return (
+        '<div class="event-meta">' +
+          '<div class="event-meta-avatar" aria-hidden="true">' + escapeHtml(avatarChar) + '</div>' +
+          '<div class="event-meta-body">' +
+            '<div class="event-meta-name">' + escapeHtml(authorName) + '</div>' +
+            '<div class="event-meta-pubkey-row">' + pubkeyLine + '</div>' +
+            eventIdHtml +
+            publishedHtml +
+            linksHtml +
+          '</div>' +
+        '</div>'
+      );
+    }
+
+    /**
+     * Renders the lookup detail pane shown to the right of the focused
+     * card: a pretty-printed, copyable Nostr event JSON view plus
+     * quick identity links.
+     */
+    function createLookupDetailPaneHTML(video) {
+      video = video || {};
+      const nostrContext = video.nostrContext || {};
+      const pubkey = pickUploaderPubkey(video);
+      const divineUrl = buildDivineVideoUrl(video);
+      const profileUrl = isFullHexPubkey(pubkey) ? buildProfileUrl(pubkey) : null;
+      const eventId = eventMetaFirstPresent(video.eventId, video.event_id, nostrContext.eventId);
+      const eventPayload = {
+        eventId: eventId || null,
+        pubkey: pubkey || null,
+        divineUrl: divineUrl || null,
+        profileUrl: profileUrl || null,
+        sha256: video.sha256 || null,
+        title: eventMetaFirstPresent(video.title, nostrContext.title),
+        author: pickAuthorName(video),
+        content: nostrContext.content || null,
+        url: eventMetaFirstPresent(video.content_url, nostrContext.url, video.cdnUrl),
+        sourceUrl: nostrContext.sourceUrl || null,
+        publishedAt: eventMetaFirstPresent(video.published_at, video.publishedAt, nostrContext.publishedAt),
+        platform: nostrContext.platform || null,
+        client: nostrContext.client || null,
+        loops: nostrContext.loops ?? null,
+        likes: nostrContext.likes ?? null,
+        comments: nostrContext.comments ?? null,
+        archivedAt: nostrContext.archivedAt || null,
+        importedAt: nostrContext.importedAt || null,
+        vineHashId: nostrContext.vineHashId || null,
+        vineUserId: nostrContext.vineUserId || null
+      };
+      const jsonText = JSON.stringify(eventPayload, null, 2);
+
+      const rows = [];
+      if (eventId) {
+        rows.push('<div class="lookup-detail-row"><span class="k">Event</span><span class="v">' + escapeHtml(eventId) + '</span></div>');
+      }
+      if (pubkey) {
+        rows.push('<div class="lookup-detail-row"><span class="k">Pubkey</span><span class="v">' + escapeHtml(pubkey) + '</span></div>');
+      }
+      const linkChips = [];
+      if (divineUrl) {
+        linkChips.push('<a class="event-meta-link" href="' + escapeHtml(divineUrl) + '" target="_blank" rel="noopener noreferrer">Open Nostr event</a>');
+      }
+      if (profileUrl) {
+        linkChips.push('<a class="event-meta-link" href="' + escapeHtml(profileUrl) + '" target="_blank" rel="noopener noreferrer">Open profile</a>');
+      }
+      const linksRow = linkChips.length
+        ? '<div class="lookup-detail-row">' + linkChips.join('') + '</div>'
+        : '';
+
+      return (
+        '<aside class="lookup-detail-pane" data-sha256="' + escapeHtml(video.sha256 || '') + '">' +
+          '<div class="lookup-detail-section">' +
+            '<h3>Uploader Identity</h3>' +
+            createEventMetaHTML(video) +
+            rows.join('') +
+            linksRow +
+          '</div>' +
+          '<div class="lookup-detail-section">' +
+            '<div class="nostr-event-toolbar">' +
+              '<h3>Nostr Event</h3>' +
+              '<button type="button" onclick="copyNostrEventJson(this)" data-json=\'' + escapeHtml(jsonText) + '\'>Copy JSON</button>' +
+            '</div>' +
+            '<details open>' +
+              '<summary style="cursor:pointer;color:#94a3b8;font-size:11px;">Toggle raw event JSON</summary>' +
+              '<pre class="nostr-event-json">' + escapeHtml(jsonText) + '</pre>' +
+            '</details>' +
+          '</div>' +
+        '</aside>'
+      );
+    }
+
+    function copyNostrEventJson(button) {
+      const json = button.getAttribute('data-json') || '';
+      copyToClipboard(json);
+      const orig = button.textContent;
+      button.textContent = 'Copied!';
+      setTimeout(() => { button.textContent = orig; }, 1200);
+    }
+
     function createVideoCard(video) {
       const { sha256, cdnUrl, action, scores, reason, processedAt, detailedCategories, provider, manualOverride, overriddenAt, previousAction, showTranscriptTools } = video;
       const provenanceHTML = renderProvenanceSummary(video.provenance);
@@ -3236,6 +3740,7 @@
       // Generate moderation history
       const historyHTML = createModerationHistory(video);
       const uploaderEnforcementPanel = createUploaderEnforcementPanel(video);
+      const uploaderHistoryPanel = createUploaderHistoryPanel(video);
 
       return `
         <div class="video-card ${actionClass}" data-sha256="${sha256}">
@@ -3247,6 +3752,7 @@
             </div>
           </div>
           <div class="video-info">
+            ${createEventMetaHTML(video)}
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
               <div style="display: flex; align-items: center; gap: 4px;">
                 <div class="video-hash" title="Click to copy full hash" onclick="copyToClipboard('${sha256}')" style="margin-bottom: 0;">${sha256.substring(0, 16)}...</div>
@@ -3298,6 +3804,7 @@
             ` : ''}
 
             ${uploaderEnforcementPanel}
+            ${uploaderHistoryPanel}
 
             <div class="action-buttons compact">
               ${creatorInfoButton}

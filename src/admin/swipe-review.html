@@ -95,8 +95,8 @@
 
     .video-card-swipe {
       position: relative;
-      width: 90%;
-      max-width: 600px;
+      width: 96%;
+      max-width: 1100px;
       max-height: none;
       background: #1a1a1a;
       border: 2px solid #333;
@@ -179,6 +179,190 @@
 
     .video-info {
       padding: 20px;
+    }
+
+    .review-primary-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .review-secondary-layout {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .review-media-column,
+    .review-metadata-column {
+      min-width: 0;
+    }
+
+    .review-metadata-column {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .review-full-width {
+      grid-column: 1 / -1;
+    }
+
+    .metadata-section {
+      background: #101010;
+      border: 1px solid #2a2a2a;
+      border-radius: 10px;
+      padding: 14px;
+    }
+
+    .metadata-section-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #8a8a8a;
+      margin-bottom: 12px;
+    }
+
+    .publisher-card {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .publisher-avatar {
+      width: 44px;
+      height: 44px;
+      border-radius: 999px;
+      background: #222;
+      color: #f4f4f5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .publisher-name {
+      font-size: 18px;
+      font-weight: 700;
+      color: #fafafa;
+      line-height: 1.2;
+      word-break: break-word;
+    }
+
+    .publisher-subtitle {
+      margin-top: 4px;
+      font-size: 12px;
+      color: #8b8b8b;
+      line-height: 1.4;
+    }
+
+    .metadata-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .metadata-grid.compact {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px 14px;
+    }
+
+    .metadata-row {
+      display: grid;
+      grid-template-columns: 110px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+    }
+
+    .metadata-key {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #7a7a7a;
+    }
+
+    .metadata-value {
+      font-size: 13px;
+      color: #e7e7e7;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
+    .metadata-value.monospace {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      color: #d4d4d8;
+    }
+
+    .metadata-link {
+      color: #93c5fd;
+      text-decoration: none;
+    }
+
+    .metadata-link:hover {
+      text-decoration: underline;
+    }
+
+    .metadata-link-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .metadata-link-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border: 1px solid #334155;
+      border-radius: 999px;
+      background: #111827;
+      color: #bfdbfe;
+      font-size: 12px;
+      text-decoration: none;
+    }
+
+    .metadata-link-chip:hover {
+      border-color: #60a5fa;
+      color: #dbeafe;
+    }
+
+    .post-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #fafafa;
+      line-height: 1.25;
+      word-break: break-word;
+    }
+
+    .post-body {
+      margin-top: 10px;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #242424;
+      background: #0a0a0a;
+      font-size: 13px;
+      line-height: 1.6;
+      color: #d4d4d8;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .post-body.empty {
+      color: #71717a;
+      font-style: italic;
+    }
+
+    .section-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
     }
 
     .video-hash {
@@ -472,6 +656,33 @@
       font-size: 12px;
       color: #71717a;
       line-height: 1.5;
+    }
+
+    @media (max-width: 900px) {
+      .video-card-swipe {
+        width: 100%;
+        border-left: 0;
+        border-right: 0;
+        border-radius: 0;
+      }
+
+      .review-primary-layout,
+      .review-secondary-layout {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .video-wrapper {
+        height: 44vh;
+      }
+
+      .metadata-grid.compact {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .metadata-row {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 4px;
+      }
     }
 
     .keyboard-hints kbd {
@@ -812,12 +1023,9 @@
         fetchClassifierSummary(video.sha256).then(summary => {
           if (summary && currentIndex < reviewQueue.length && reviewQueue[currentIndex].sha256 === video.sha256) {
             video.classifierSummary = summary;
-            const existing = card.querySelector('.classifier-summary');
-            if (!existing) {
-              const hashEl = card.querySelector('.video-hash');
-              if (hashEl) {
-                hashEl.insertAdjacentHTML('afterend', createClassifierHTML(summary));
-              }
+            const classifierSlot = card.querySelector('.classifier-slot');
+            if (classifierSlot) {
+              classifierSlot.innerHTML = createClassifierHTML(summary);
             }
           }
         });
@@ -837,21 +1045,15 @@
       }
 
       // Async-load nostr context if not already present (for flagged videos from DB)
-      if (!video.nostrContext && !video._nostrContextFetched) {
+      if (!video._nostrContextFetched) {
         video._nostrContextFetched = true;
         fetchVideoContext(video.sha256).then(ctx => {
           if (ctx && currentIndex < reviewQueue.length && reviewQueue[currentIndex].sha256 === video.sha256) {
-            video.nostrContext = ctx.nostrContext || null;
-            video.eventId = video.eventId || ctx.eventId || null;
-            video.uploaded_by = video.uploaded_by || ctx.uploaded_by || null;
-            // Re-render the event meta section
-            const metaEl = card.querySelector('.event-meta');
-            const infoEl = card.querySelector('.video-info');
-            if (infoEl && !metaEl) {
-              const newMetaHTML = createEventMetaHTML(video);
-              if (newMetaHTML) {
-                infoEl.insertAdjacentHTML('afterbegin', newMetaHTML);
-              }
+            const merged = mergeVideoContext(video, ctx);
+            reviewQueue[currentIndex] = merged;
+            const metadataColumn = card.querySelector('.review-metadata-column');
+            if (metadataColumn) {
+              metadataColumn.innerHTML = createMetadataColumnHTML(merged);
             }
           }
         });
@@ -883,13 +1085,11 @@
       }
 
       // Preload nostr context
-      if (!next.nostrContext && !next._nostrContextFetched) {
+      if (!next._nostrContextFetched) {
         next._nostrContextFetched = true;
         fetchVideoContext(next.sha256).then(ctx => {
           if (ctx) {
-            next.nostrContext = ctx.nostrContext || null;
-            next.eventId = next.eventId || ctx.eventId || null;
-            next.uploaded_by = next.uploaded_by || ctx.uploaded_by || null;
+            reviewQueue[nextIdx] = mergeVideoContext(next, ctx);
           }
         });
       }
@@ -909,50 +1109,163 @@
         const resp = await fetch(`/admin/api/video/${sha256}`);
         if (!resp.ok) return null;
         const data = await resp.json();
-        const video = data.video || {};
-        return {
-          nostrContext: video.nostrContext || null,
-          eventId: video.eventId || null,
-          uploaded_by: video.uploaded_by || video.uploadedBy || null,
-          divineUrl: video.divineUrl || null
-        };
+        return data.video || null;
       } catch {
         return null;
       }
     }
 
-    function createEventMetaHTML(video) {
-      const nostrContext = video.nostrContext;
-      const authorName = nostrContext?.author || null;
-      const pubkey = nostrContext?.pubkey || video.uploaded_by || null;
-      const truncatedPubkey = pubkey ? (pubkey.length > 20 ? pubkey.substring(0, 16) + '...' : pubkey) : null;
-      const timestamp = video.moderated_at || video.receivedAt || null;
-      const timeAgo = timestamp ? formatTimeAgo(timestamp) : null;
-      const divineVideoUrl = video.eventId
-        ? `https://divine.video/video/${video.eventId}`
-        : `https://divine.video/video/${video.sha256}`;
-      const divineProfileUrl = pubkey ? `https://divine.video/profile/${pubkey}` : null;
-      const divineLinkLabel = video.eventId ? 'View on Divine' : pubkey ? 'View on Divine (may not be published)' : 'Not published to relay';
-      const hasDivineLink = video.eventId || pubkey;
+    function isPresent(value) {
+      return value !== null && value !== undefined && value !== '';
+    }
 
-      if (!authorName && !pubkey && !timestamp) return '';
+    function pickFirstPresent(...values) {
+      for (const value of values) {
+        if (isPresent(value)) return value;
+      }
+      return null;
+    }
+
+    function mergeFields(existing = {}, incoming = {}) {
+      const merged = { ...(existing || {}) };
+      for (const [key, value] of Object.entries(incoming || {})) {
+        if (!isPresent(merged[key]) && isPresent(value)) {
+          merged[key] = value;
+        }
+      }
+      return Object.keys(merged).length > 0 ? merged : null;
+    }
+
+    function mergeVideoContext(video, context) {
+      if (!context) return video;
+
+      const merged = { ...video };
+      merged.nostrContext = mergeFields(video.nostrContext || {}, context.nostrContext || {});
+      merged.uploaded_by = pickFirstPresent(video.uploaded_by, context.uploaded_by, context.uploadedBy);
+      merged.eventId = pickFirstPresent(video.eventId, video.event_id, context.eventId, context.event_id, merged.nostrContext?.eventId);
+      merged.event_id = pickFirstPresent(video.event_id, video.eventId, context.event_id, context.eventId, merged.nostrContext?.eventId);
+      merged.divineUrl = pickFirstPresent(video.divineUrl, context.divineUrl, merged.eventId ? `https://divine.video/video/${merged.eventId}` : null);
+      merged.title = pickFirstPresent(video.title, context.title, merged.nostrContext?.title);
+      merged.author = pickFirstPresent(video.author, context.author, merged.nostrContext?.author);
+      merged.content_url = pickFirstPresent(video.content_url, context.content_url, context.contentUrl, merged.nostrContext?.url, video.cdnUrl);
+      merged.published_at = pickFirstPresent(video.published_at, context.published_at, context.publishedAt, merged.nostrContext?.publishedAt);
+
+      merged.nostrContext = mergeFields(merged.nostrContext || {}, {
+        title: merged.title,
+        author: merged.author,
+        url: merged.content_url,
+        publishedAt: merged.published_at
+      });
+
+      return Object.assign(video, merged);
+    }
+
+    function buildDivineVideoUrl(video) {
+      return pickFirstPresent(
+        video.divineUrl,
+        video.eventId ? `https://divine.video/video/${video.eventId}` : null,
+        video.event_id ? `https://divine.video/video/${video.event_id}` : null
+      );
+    }
+
+    function buildProfileUrl(pubkey) {
+      return pubkey ? `https://divine.video/profile/${pubkey}` : null;
+    }
+
+    function createMetadataField(label, value, options = {}) {
+      const resolvedValue = isPresent(value) ? value : (options.fallback ?? null);
+      if (!isPresent(resolvedValue)) return '';
+
+      const valueHtml = options.href
+        ? `<a class="metadata-link" href="${escapeHtml(options.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(String(resolvedValue))}</a>`
+        : escapeHtml(String(resolvedValue));
+      const valueClass = options.monospace ? 'metadata-value monospace' : 'metadata-value';
 
       return `
-        <div class="event-meta">
-          <div class="event-meta-avatar">${authorName ? authorName.charAt(0).toUpperCase() : '?'}</div>
-          <div class="event-meta-details">
-            ${authorName ? `<div class="event-meta-author">${divineProfileUrl ? `<a href="${escapeHtml(divineProfileUrl)}" target="_blank" style="color: inherit; text-decoration: none;">${escapeHtml(authorName)}</a>` : escapeHtml(authorName)}</div>` : ''}
-            ${truncatedPubkey ? `<div class="event-meta-pubkey">${divineProfileUrl ? `<a href="${escapeHtml(divineProfileUrl)}" target="_blank" style="color: inherit; text-decoration: underline dotted;">${escapeHtml(truncatedPubkey)}</a>` : escapeHtml(truncatedPubkey)}</div>` : ''}
-            ${timeAgo ? `<div class="event-meta-time">${escapeHtml(timeAgo)}</div>` : ''}
-            <div class="event-meta-links">
-              ${hasDivineLink
-                ? `<a href="${escapeHtml(divineVideoUrl)}" target="_blank">${divineLinkLabel}</a>`
-                : `<span style="color: #666; font-style: italic;">${divineLinkLabel}</span>`}
-              ${nostrContext?.url ? `<a href="${escapeHtml(nostrContext.url)}" target="_blank">CDN</a>` : ''}
-            </div>
-          </div>
+        <div class="metadata-row">
+          <div class="metadata-key">${escapeHtml(label)}</div>
+          <div class="${valueClass}">${valueHtml}</div>
         </div>
       `;
+    }
+
+    function createMetadataSection(title, innerHtml, extraClass = '') {
+      return `
+        <section class="metadata-section ${extraClass}">
+          <div class="metadata-section-title">${escapeHtml(title)}</div>
+          ${innerHtml}
+        </section>
+      `;
+    }
+
+    function createMetadataColumnHTML(video) {
+      const nostrContext = video.nostrContext || {};
+      const authorName = pickFirstPresent(video.author, nostrContext.author, 'Unknown publisher');
+      const pubkey = pickFirstPresent(video.uploaded_by, nostrContext.pubkey);
+      const profileUrl = buildProfileUrl(pubkey);
+      const eventId = pickFirstPresent(video.eventId, video.event_id, nostrContext.eventId);
+      const divineVideoUrl = buildDivineVideoUrl(video);
+      const contentUrl = pickFirstPresent(video.content_url, nostrContext.url, video.cdnUrl);
+      const sourceUrl = pickFirstPresent(nostrContext.sourceUrl);
+      const title = pickFirstPresent(video.title, nostrContext.title);
+      const postBody = pickFirstPresent(nostrContext.content);
+      const publishedAt = pickFirstPresent(video.published_at, nostrContext.publishedAt);
+
+      const publisherSection = createMetadataSection('Publisher', `
+        <div class="publisher-card">
+          <div class="publisher-avatar">${escapeHtml((authorName || '?').charAt(0).toUpperCase())}</div>
+          <div class="section-stack" style="min-width: 0;">
+            <div class="publisher-name">${profileUrl ? `<a class="metadata-link" href="${escapeHtml(profileUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(authorName)}</a>` : escapeHtml(authorName)}</div>
+            <div class="publisher-subtitle">Who published this</div>
+          </div>
+        </div>
+        <div class="metadata-grid" style="margin-top: 12px;">
+          ${createMetadataField('Pubkey', pubkey, { monospace: true, fallback: 'Not available' })}
+          ${profileUrl ? createMetadataField('Profile', 'Open profile', { href: profileUrl }) : createMetadataField('Profile', null, { fallback: 'Not available' })}
+        </div>
+      `);
+
+      const postSection = createMetadataSection('Post Context', `
+        ${title ? `<div class="post-title">${escapeHtml(title)}</div>` : '<div class="post-title">Untitled post</div>'}
+        <div class="post-body ${postBody ? '' : 'empty'}">${postBody ? escapeHtml(postBody) : 'No post text available from stored metadata or relay lookup.'}</div>
+        <div class="metadata-link-list">
+          ${divineVideoUrl ? `<a class="metadata-link-chip" href="${escapeHtml(divineVideoUrl)}" target="_blank" rel="noopener noreferrer">Open Divine Post</a>` : ''}
+          ${contentUrl ? `<a class="metadata-link-chip" href="${escapeHtml(contentUrl)}" target="_blank" rel="noopener noreferrer">Open Content URL</a>` : ''}
+          ${sourceUrl ? `<a class="metadata-link-chip" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">Open Source URL</a>` : ''}
+        </div>
+      `);
+
+      const timelineSection = createMetadataSection('Timeline', `
+        <div class="metadata-grid">
+          ${createMetadataField('Published', formatTimestampDetail(publishedAt), { fallback: 'Not available' })}
+          ${createMetadataField('Received', formatTimestampDetail(video.receivedAt), { fallback: 'Not available' })}
+          ${createMetadataField('Moderated', formatTimestampDetail(video.moderated_at), { fallback: 'Not available' })}
+          ${createMetadataField('Reviewed', formatTimestampDetail(video.reviewed_at), { fallback: 'Not available' })}
+        </div>
+      `);
+
+      const technicalFields = [
+        createMetadataField('Event ID', eventId, { monospace: true }),
+        createMetadataField('SHA256', video.sha256, { monospace: true }),
+        createMetadataField('Provider', video.provider, { fallback: 'Not available' }),
+        createMetadataField('Platform', nostrContext.platform),
+        createMetadataField('Client', nostrContext.client),
+        createMetadataField('Loops', nostrContext.loops),
+        createMetadataField('Likes', nostrContext.likes),
+        createMetadataField('Comments', nostrContext.comments),
+        createMetadataField('Archived At', formatTimestampDetail(nostrContext.archivedAt)),
+        createMetadataField('Imported At', formatTimestampDetail(nostrContext.importedAt)),
+        createMetadataField('Vine Hash ID', nostrContext.vineHashId, { monospace: true }),
+        createMetadataField('Vine User ID', nostrContext.vineUserId, { monospace: true })
+      ].filter(Boolean).join('');
+
+      const technicalSection = createMetadataSection('Technical Metadata', `
+        <div class="metadata-grid compact">
+          ${technicalFields || createMetadataField('Metadata', null, { fallback: 'No additional metadata available' })}
+        </div>
+      `);
+
+      return publisherSection + postSection + timelineSection + technicalSection;
     }
 
     async function fetchClassifierSummary(sha256) {
@@ -1085,11 +1398,10 @@
     }
 
     function createVideoCard(video) {
-      const { sha256, scores, nostrContext, provider, detailedCategories, isUntriaged, classifierSummary, uploaded_by, moderated_at, receivedAt, eventId } = video;
+      const { sha256, scores, detailedCategories, isUntriaged, classifierSummary } = video;
       const videoUrl = '/admin/video/' + sha256 + '.mp4';
       const provenanceHTML = renderProvenanceSummary(video.provenance);
 
-      // Get top scores (empty for untriaged)
       const scoreEntries = Object.entries(scores || {})
         .filter(([, value]) => typeof value === 'number' && value > 0)
         .sort(([, a], [, b]) => b - a)
@@ -1108,77 +1420,27 @@
         `;
       }).join('');
 
-      // Classifier summary (VLM description + topics)
       const classifierHTML = createClassifierHTML(classifierSummary);
       const transcriptHTML = video.transcriptData
         ? createTranscriptHTML(video.transcriptData)
         : '<div class="transcript-panel-empty">Loading transcript…</div>';
 
-      // Provider info with AI source detection
-      let providerHTML = '';
-      if (provider) {
-        providerHTML = `<div style="font-size: 11px; color: #666; margin-top: 8px;">Provider: ${provider}</div>`;
-      }
-
-      // AI source detection details
       let aiSourceHTML = '';
       if (scores.ai_generated && scores.ai_generated > 0 && detailedCategories?.ai_generated) {
         const aiDetails = detailedCategories.ai_generated;
         if (aiDetails.detectedSource) {
           const sourceName = aiDetails.detectedSource.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
           aiSourceHTML = `
-            <div style="background: #1a1a1a; padding: 8px; border-radius: 4px; margin-top: 8px; font-size: 12px;">
-              <div style="color: #f59e0b; font-weight: 600;">🤖 AI Source: ${sourceName}</div>
-              <div style="color: #888; font-size: 11px; margin-top: 4px;">
-                Confidence: ${(aiDetails.sourceConfidence * 100).toFixed(0)}%
-                • ${aiDetails.framesDetected}/${aiDetails.totalFrames} frames
+            <div class="section-stack">
+              <div style="font-size: 14px; font-weight: 700; color: #fbbf24;">${escapeHtml(sourceName)}</div>
+              <div style="font-size: 12px; color: #a1a1aa;">
+                Confidence ${(aiDetails.sourceConfidence * 100).toFixed(0)}% · ${aiDetails.framesDetected}/${aiDetails.totalFrames} frames
               </div>
             </div>
           `;
         }
       }
 
-      // Event metadata: who posted it, when, links
-      const authorName = nostrContext?.author || null;
-      const pubkey = nostrContext?.pubkey || uploaded_by || null;
-      const truncatedPubkey = pubkey ? (pubkey.length > 20 ? pubkey.substring(0, 16) + '...' : pubkey) : null;
-      const timestamp = moderated_at || receivedAt || null;
-      const timeAgo = timestamp ? formatTimeAgo(timestamp) : null;
-      const title = nostrContext?.title || null;
-      const divineVideoUrl = eventId
-        ? `https://divine.video/video/${eventId}`
-        : `https://divine.video/video/${sha256}`;
-      const divineProfileUrl = pubkey ? `https://divine.video/profile/${pubkey}` : null;
-      const divineLinkLabel = eventId ? 'View on Divine' : pubkey ? 'View on Divine (may not be published)' : 'Not published to relay';
-      const hasDivineLink = eventId || pubkey;
-
-      const eventMetaHTML = (authorName || pubkey || timestamp) ? `
-        <div class="event-meta">
-          <div class="event-meta-avatar">${authorName ? authorName.charAt(0).toUpperCase() : '?'}</div>
-          <div class="event-meta-details">
-            ${authorName ? `<div class="event-meta-author">${divineProfileUrl ? `<a href="${escapeHtml(divineProfileUrl)}" target="_blank" style="color: inherit; text-decoration: none;">${escapeHtml(authorName)}</a>` : escapeHtml(authorName)}</div>` : ''}
-            ${truncatedPubkey ? `<div class="event-meta-pubkey">${divineProfileUrl ? `<a href="${escapeHtml(divineProfileUrl)}" target="_blank" style="color: inherit; text-decoration: underline dotted;">${escapeHtml(truncatedPubkey)}</a>` : escapeHtml(truncatedPubkey)}</div>` : ''}
-            ${timeAgo ? `<div class="event-meta-time">${escapeHtml(timeAgo)}</div>` : ''}
-            <div class="event-meta-links">
-              ${hasDivineLink
-                ? `<a href="${escapeHtml(divineVideoUrl)}" target="_blank">${divineLinkLabel}</a>`
-                : `<span style="color: #666; font-style: italic;">${divineLinkLabel}</span>`}
-              ${nostrContext?.url ? `<a href="${escapeHtml(nostrContext.url)}" target="_blank">CDN</a>` : ''}
-            </div>
-          </div>
-        </div>
-      ` : '';
-
-      const nostrStatsHTML = (nostrContext && (nostrContext.loops || nostrContext.likes)) ? `
-        <div class="nostr-meta">
-          <div class="nostr-stats">
-            ${nostrContext.loops ? `<span>🔁 ${formatNumber(nostrContext.loops)}</span>` : ''}
-            ${nostrContext.likes ? `<span>❤️ ${formatNumber(nostrContext.likes)}</span>` : ''}
-          </div>
-        </div>
-      ` : '';
-
-      // Banner for untriaged videos
       const untriagedBanner = isUntriaged ? `
         <div style="background: linear-gradient(135deg, #8b5cf6, #6366f1); padding: 12px; text-align: center;">
           <div style="font-weight: 600; color: white; font-size: 14px;">📦 NEW - Not Yet Moderated</div>
@@ -1194,35 +1456,48 @@
 
           ${untriagedBanner}
 
-          <div class="video-wrapper">
-            <video src="${videoUrl}" controls loop preload="auto"></video>
-          </div>
-
           <div class="video-info">
-            ${eventMetaHTML}
+            <div class="review-primary-layout">
+              <div class="review-media-column">
+                <div class="video-wrapper">
+                  <video src="${videoUrl}" controls loop preload="auto"></video>
+                </div>
+              </div>
 
-            ${title ? `<div class="nostr-title" style="margin-bottom: 10px;">${escapeHtml(title)}</div>` : ''}
-
-            ${provenanceHTML}
-
-            <div class="video-hash" style="display: flex; align-items: center; gap: 8px;">
-              ${sha256}
-              <button onclick="copyPermalink('${sha256}', this)" style="background: none; border: 1px solid #555; color: #aaa; padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">📋 Link</button>
+              <div class="review-metadata-column">
+                ${createMetadataColumnHTML(video)}
+                ${provenanceHTML}
+              </div>
             </div>
 
-            ${classifierHTML}
-
-            <div class="transcript-panel">${transcriptHTML}</div>
-
-            ${scoreEntries.length > 0 ? `
-              <div class="scores-grid">
-                ${scoresHTML}
+            <div class="review-secondary-layout">
+              <div class="classifier-slot">
+                ${classifierHTML}
               </div>
-            ` : (isUntriaged ? '<div style="color: #888; font-size: 13px; margin-bottom: 10px;">No moderation scores yet - will be analyzed after queuing</div>' : '')}
 
-            ${providerHTML}
-            ${aiSourceHTML}
-            ${nostrStatsHTML}
+              <div class="transcript-panel">${transcriptHTML}</div>
+
+              ${scoreEntries.length > 0 ? `
+                <div class="metadata-section">
+                  <div class="metadata-section-title">Moderation Scores</div>
+                  <div class="scores-grid">
+                    ${scoresHTML}
+                  </div>
+                </div>
+              ` : (isUntriaged ? `
+                <div class="metadata-section">
+                  <div class="metadata-section-title">Moderation Scores</div>
+                  <div style="color: #888; font-size: 13px;">No moderation scores yet. This will be analyzed after queuing.</div>
+                </div>
+              ` : '')}
+
+              ${aiSourceHTML ? `
+                <div class="metadata-section">
+                  <div class="metadata-section-title">AI Source</div>
+                  ${aiSourceHTML}
+                </div>
+              ` : ''}
+            </div>
 
             <div class="action-buttons">
               <button class="action-btn ban" onclick="handleAction('${sha256}', 'PERMANENT_BAN')">
@@ -1514,8 +1789,22 @@
       }, 300);
     }
 
+    function normalizeTimestampValue(timestamp) {
+      if (!isPresent(timestamp)) return null;
+      if (timestamp instanceof Date) return timestamp;
+      if (typeof timestamp === 'number') {
+        return new Date(timestamp < 1e12 ? timestamp * 1000 : timestamp);
+      }
+      if (typeof timestamp === 'string' && /^\d+$/.test(timestamp)) {
+        const parsed = Number(timestamp);
+        return new Date(parsed < 1e12 ? parsed * 1000 : parsed);
+      }
+      return new Date(timestamp);
+    }
+
     function formatTimeAgo(timestamp) {
-      const date = new Date(timestamp);
+      const date = normalizeTimestampValue(timestamp);
+      if (!date || Number.isNaN(date.getTime())) return 'Not available';
       const now = new Date();
       const diffMs = now - date;
       const diffSec = Math.floor(diffMs / 1000);
@@ -1536,6 +1825,10 @@
       });
 
       return `${relative} · ${absolute}`;
+    }
+
+    function formatTimestampDetail(timestamp) {
+      return formatTimeAgo(timestamp);
     }
 
     function formatCategoryName(key) {

@@ -10,6 +10,7 @@ import { classifyText, parseVttText } from './text-classifier.mjs';
 import { fetchNostrEventBySha256, parseVideoEventMetadata, isOriginalVine, hasStrongOriginalVineEvidence } from '../nostr/relay-client.mjs';
 import { classifyVideo } from '../classification/pipeline.mjs';
 import { extractTopics } from '../classification/topic-extractor.mjs';
+import { getRetryAfterSecondsFromResponse } from '../http-utils.mjs';
 
 const ORIGINAL_VINE_SUPPRESSED_CATEGORIES = new Set(['ai_generated', 'deepfake']);
 const DOWNSTREAM_SIGNAL_THRESHOLD = 0.5;
@@ -172,6 +173,16 @@ export async function classifyVideoOnly(sha256, env, options = {}) {
       try {
         const vttUrl = `https://media.divine.video/${sha256}.vtt`;
         const vttResponse = await fetchFn(vttUrl);
+        if (vttResponse.status === 202) {
+          // Transcript is still generating. We treat this as a terminal skip
+          // for this classification run — the moderation result persists
+          // without transcript text/topic analysis. A reprocess once the
+          // transcript lands is tracked separately (see follow-up issue); we
+          // do not block the pipeline waiting for Blossom here.
+          const retryAfterSeconds = getRetryAfterSecondsFromResponse(vttResponse);
+          console.log(`[CLASSIFY-ONLY] VTT transcript for ${sha256} is still pending${retryAfterSeconds !== null ? ` (retry after ${retryAfterSeconds}s)` : ''}`);
+          return null;
+        }
         if (vttResponse.status === 404) {
           console.log(`[CLASSIFY-ONLY] No VTT transcript for ${sha256} (404)`);
           return null;
@@ -330,7 +341,14 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     const vttUrl = `https://media.divine.video/${sha256}.vtt`;
     console.log(`[MODERATION] Fetching VTT transcript: ${vttUrl}`);
     const vttResponse = await fetchFn(vttUrl);
-    if (vttResponse.status === 404) {
+    if (vttResponse.status === 202) {
+      // Transcript is still generating. We proceed with video-only moderation
+      // and persist the result without transcript text/topic analysis.
+      // Reprocessing once the transcript lands is tracked separately (see
+      // follow-up issue); blocking the pipeline on Blossom is not acceptable.
+      const retryAfterSeconds = getRetryAfterSecondsFromResponse(vttResponse);
+      console.log(`[MODERATION] VTT transcript for ${sha256} is still pending${retryAfterSeconds !== null ? ` (retry after ${retryAfterSeconds}s)` : ''} - skipping text analysis`);
+    } else if (vttResponse.status === 404) {
       console.log(`[MODERATION] No VTT transcript found for ${sha256} (404) - skipping text analysis`);
     } else if (!vttResponse.ok) {
       console.warn(`[MODERATION] VTT fetch returned ${vttResponse.status} for ${sha256} - skipping text analysis`);

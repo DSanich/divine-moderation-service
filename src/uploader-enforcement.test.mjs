@@ -14,8 +14,7 @@ const EVENT_ID = 'c'.repeat(64);
 function createDbMock({
   moderationResults = new Map(),
   webhookEvents = new Map(),
-  uploaderEnforcements = new Map(),
-  uploaderStats = new Map()
+  uploaderEnforcements = new Map()
 } = {}) {
   return {
     prepare(sql) {
@@ -55,9 +54,6 @@ function createDbMock({
           }
           if (sql.includes('FROM uploader_enforcement')) {
             return uploaderEnforcements.get(bindings[0]) ?? null;
-          }
-          if (sql.includes('FROM uploader_stats')) {
-            return uploaderStats.get(bindings[0]) ?? null;
           }
           return null;
         },
@@ -211,7 +207,7 @@ describe('admin uploader enforcement routes', () => {
     }
   });
 
-  it('returns uploader enforcement and stats in focused lookup responses', async () => {
+  it('returns uploader enforcement in focused lookup responses', async () => {
     const env = createEnv({
       BLOSSOM_DB: createDbMock({
         moderationResults: new Map([[SHA256, {
@@ -238,16 +234,6 @@ describe('admin uploader enforcement routes', () => {
           notes: null,
           created_at: '2026-03-14T00:00:00.000Z',
           updated_at: '2026-03-14T00:00:00.000Z'
-        }]]),
-        uploaderStats: new Map([[PUBKEY, {
-          pubkey: PUBKEY,
-          total_scanned: 12,
-          flagged_count: 3,
-          banned_count: 1,
-          restricted_count: 1,
-          review_count: 1,
-          last_flagged_at: '2026-03-10T00:00:00.000Z',
-          risk_level: 'high'
         }]])
       })
     });
@@ -266,10 +252,6 @@ describe('admin uploader enforcement routes', () => {
         uploaderEnforcement: {
           approval_required: true,
           relay_banned: false
-        },
-        uploaderStats: {
-          risk_level: 'high',
-          flagged_count: 3
         }
       }
     });

@@ -211,7 +211,6 @@ This creates an auditable record of human moderation decisions on the Nostr prot
 | **KV** `classifier:{sha256}` | Raw classifier data (all 75+ Hive classes per frame, VLM classification, VTT topics) | 180 days |
 | **KV** `quarantine:{sha256}` | Quarantine flag with reason and moderator info | 90 days |
 | **D1** `moderation_results` | Action, provider, scores JSON, categories, raw response, timestamps, reviewer info | Permanent |
-| **D1** `uploader_stats` | Per-pubkey counters and risk level | Permanent |
 | **D1** `user_reports` | User-submitted reports with auto-escalation | Permanent |
 | **Blossom** `media.divine.video` | Source video files | Permanent |
 
