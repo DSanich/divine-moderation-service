@@ -124,6 +124,34 @@ describe('parseVideoEventMetadata', () => {
     const result = parseVideoEventMetadata(event);
     expect(result.url).toBe('https://blossom.example.com/abc123');
   });
+
+  it('preserves published, source, Vine, and proofmode metadata', () => {
+    const event = {
+      id: 'abc',
+      content: '',
+      created_at: 1700000000,
+      tags: [
+        ['r', 'https://vine.co/v/abc123'],
+        ['published_at', '1408579200'],
+        ['imported_at', '1710000000'],
+        ['vine_hash_id', 'vine-hash'],
+        ['vine_user_id', 'vine-user'],
+        ['proofmode', 'created_at 1561939200', 'device Pixel 3', 'proof abc123'],
+      ],
+    };
+    const result = parseVideoEventMetadata(event);
+    expect(result.sourceUrl).toBe('https://vine.co/v/abc123');
+    expect(result.publishedAt).toBe(1408579200);
+    expect(result.importedAt).toBe(1710000000);
+    expect(result.vineHashId).toBe('vine-hash');
+    expect(result.vineUserId).toBe('vine-user');
+    expect(result.proofmode).toEqual({
+      createdAt: 1561939200,
+      device: 'Pixel 3',
+      proof: 'abc123',
+      raw: ['created_at 1561939200', 'device Pixel 3', 'proof abc123'],
+    });
+  });
 });
 
 describe('isOriginalVine', () => {

@@ -203,7 +203,8 @@ export function parseVideoEventMetadata(event) {
     archivedAt: null,
     importedAt: null,
     vineHashId: null,
-    vineUserId: null
+    vineUserId: null,
+    proofmode: null
   };
 
   for (const tag of event.tags) {
@@ -254,6 +255,33 @@ export function parseVideoEventMetadata(event) {
       case 'vine_user_id':
         metadata.vineUserId = value;
         break;
+      case 'proofmode': {
+        const proofmode = {
+          createdAt: null,
+          device: null,
+          proof: null,
+          raw: tag.slice(1)
+        };
+
+        for (let i = 1; i < tag.length; i++) {
+          const entry = tag[i];
+          if (!entry || typeof entry !== 'string') {
+            continue;
+          }
+
+          if (entry.startsWith('created_at ')) {
+            const parsed = parseInt(entry.substring('created_at '.length), 10);
+            proofmode.createdAt = Number.isNaN(parsed) ? null : parsed;
+          } else if (entry.startsWith('device ')) {
+            proofmode.device = entry.substring('device '.length).trim() || null;
+          } else if (entry.startsWith('proof ')) {
+            proofmode.proof = entry.substring('proof '.length).trim() || null;
+          }
+        }
+
+        metadata.proofmode = proofmode;
+        break;
+      }
       case 'imeta':
         // Extract URL from imeta tag - format: "url https://..."
         // Blossom URLs use content-addressed hashes without file extensions
