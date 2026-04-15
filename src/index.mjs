@@ -18,6 +18,7 @@ import dashboardHTML from './admin/dashboard.html';
 import swipeReviewHTML from './admin/swipe-review.html';
 import messagesHTML from './admin/messages.html';
 import { buildCreatorContext } from './admin/creator-context.mjs';
+import { buildProvenance } from './admin/provenance.mjs';
 import { initReportsTable, addReport } from './reports.mjs';
 import { initOffenderTable, updateUploaderStats, getUploaderStats } from './offender-tracker.mjs';
 import { initUploaderEnforcementTable, getUploaderEnforcement, setUploaderEnforcement, applyUploaderEnforcementToResult } from './uploader-enforcement.mjs';
@@ -151,6 +152,34 @@ function hostMismatchResponse(requestId, hostname, pathname, expectedHost) {
   return jsonError(`Not found on ${hostname}. Use https://${expectedHost}${pathname}`, 404);
 }
 
+function buildAdminNostrContext({
+  event = null,
+  metadata = null,
+  authorFallback = null,
+  pubkey = null,
+  eventId = null
+} = {}) {
+  const resolvedPubkey = pubkey || event?.pubkey || null;
+  const resolvedEventId = eventId || event?.id || metadata?.eventId || null;
+
+  return {
+    title: metadata?.title || null,
+    author: metadata?.author || authorFallback || null,
+    client: metadata?.client || null,
+    content: metadata?.content || event?.content || null,
+    pubkey: resolvedPubkey ? `${resolvedPubkey.substring(0, 16)}...` : null,
+    eventId: resolvedEventId,
+    platform: metadata?.platform || null,
+    publishedAt: metadata?.publishedAt ?? null,
+    createdAt: metadata?.createdAt ?? event?.created_at ?? null,
+    sourceUrl: metadata?.sourceUrl || null,
+    url: metadata?.url || null,
+    proofmode: metadata?.proofmode || null,
+    vineHashId: metadata?.vineHashId || null,
+    vineUserId: metadata?.vineUserId || null
+  };
+}
+
 function buildFunnelcakeVideoLookup(eventResponse, identifier) {
   if (!eventResponse?.event) {
     return null;
@@ -175,15 +204,11 @@ function buildFunnelcakeVideoLookup(eventResponse, identifier) {
     thumbnailUrl,
     uploadedBy: event.pubkey || null,
     createdAt: event.created_at ? new Date(event.created_at * 1000).toISOString() : null,
-    nostrContext: {
-      title: metadata.title || null,
-      author: metadata.author || stats.author_name || null,
-      client: metadata.client || null,
-      content: metadata.content || event.content || null,
-      pubkey: event.pubkey ? `${event.pubkey.substring(0, 16)}...` : null,
-      eventId: event.id,
-      platform: metadata.platform || null
-    },
+    nostrContext: buildAdminNostrContext({
+      event,
+      metadata,
+      authorFallback: stats.author_name || null
+    }),
     divineUrl: `https://divine.video/video/${encodeURIComponent(stableId)}`
   };
 }
@@ -395,15 +420,10 @@ async function fetchLookupNostrContext(hash, env) {
       eventId: event.id,
       uploadedBy: event.pubkey || null,
       divineUrl: `https://divine.video/video/${encodeURIComponent(stableId)}`,
-      nostrContext: {
-        title: metadata.title || null,
-        author: metadata.author || null,
-        client: metadata.client || null,
-        content: metadata.content || event.content || null,
-        pubkey: event.pubkey ? `${event.pubkey.substring(0, 16)}...` : null,
-        eventId: event.id,
-        platform: metadata.platform || null
-      }
+      nostrContext: buildAdminNostrContext({
+        event,
+        metadata
+      })
     };
   } catch (error) {
     console.error(`[ADMIN] Failed to fetch Nostr context for ${hash}:`, error.message);
@@ -411,7 +431,8 @@ async function fetchLookupNostrContext(hash, env) {
   }
 }
 
-async function enrichAdminLookupVideo(video, env) {
+async function enrichAdminLookupVideo(video, env, options = {}) {
+  const { remoteCreator = true } = options;
   if (!video) {
     return null;
   }
@@ -452,9 +473,19 @@ async function enrichAdminLookupVideo(video, env) {
         pubkey: enriched.uploaded_by,
         uploaderStats,
         uploaderEnforcement
+      }, {
+        includeRemote: remoteCreator
       })
     };
   }
+
+  enriched = {
+    ...enriched,
+    provenance: buildProvenance({
+      nostrContext: enriched.nostrContext,
+      receivedAt: enriched.receivedAt || enriched.moderated_at || null
+    })
+  };
 
   return enriched;
 }
@@ -465,7 +496,8 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
   const cdnUrl = `https://${env.CDN_DOMAIN || 'media.divine.video'}/${hash}`;
   if (hash) {
     const moderatedRow = await env.BLOSSOM_DB.prepare(`
-      SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by
+      SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by,
+             title, author, event_id, content_url, published_at
       FROM moderation_results
       WHERE sha256 = ?
     `).bind(hash).first();
@@ -492,7 +524,21 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
         previousAction: kvModeration?.previousAction || null,
         detailedCategories: parseMaybeJson(kvModeration?.detailedCategories, null),
         categoryVerifications: parseMaybeJson(kvModeration?.categoryVerifications, {}) || {},
-        cdnUrl: kvModeration?.cdnUrl || cdnUrl
+        cdnUrl: kvModeration?.cdnUrl || cdnUrl,
+        eventId: moderatedRow?.event_id || kvModeration?.nostrEventId || null,
+        divineUrl: moderatedRow?.event_id ? `https://divine.video/video/${encodeURIComponent(moderatedRow.event_id)}` : null,
+        nostrContext: buildAdminNostrContext({
+          metadata: {
+            title: moderatedRow?.title || kvModeration?.title || null,
+            author: moderatedRow?.author || kvModeration?.author || null,
+            content: kvModeration?.content || null,
+            url: moderatedRow?.content_url || kvModeration?.cdnUrl || null,
+            publishedAt: moderatedRow?.published_at ?? kvModeration?.publishedAt ?? null,
+            eventId: moderatedRow?.event_id || kvModeration?.nostrEventId || null
+          },
+          pubkey: moderatedRow?.uploaded_by || kvModeration?.uploadedBy || null,
+          eventId: moderatedRow?.event_id || kvModeration?.nostrEventId || null
+        })
       }, env);
     }
 
@@ -519,14 +565,11 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
           eventId = event.id;
           divineUrl = `https://divine.video/video/${encodeURIComponent(stableId)}`;
           uploaderPubkey = event.pubkey || null;
-          nostrContext = {
-            title: metadata?.title || null,
-            author: metadata?.author || null,
-            client: metadata?.client || null,
-            content: metadata?.content || event.content || null,
-            pubkey: event.pubkey ? `${event.pubkey.substring(0, 16)}...` : null,
+          nostrContext = buildAdminNostrContext({
+            event,
+            metadata,
             eventId
-          };
+          });
         }
       } catch (error) {
         console.error(`[ADMIN] Failed to fetch Nostr context for ${hash}:`, error.message);
@@ -885,7 +928,8 @@ export default {
 
       // Query D1 with pagination
       const query = `
-        SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, uploaded_by
+        SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, uploaded_by,
+               title, author, event_id, content_url, published_at
         FROM moderation_results
         ${whereClause}
         ORDER BY moderated_at ${orderDirection}
@@ -908,11 +952,26 @@ export default {
         moderated_at: row.moderated_at,
         reviewed_by: row.reviewed_by,
         reviewed_at: row.reviewed_at,
-        uploaded_by: row.uploaded_by || null
+        uploaded_by: row.uploaded_by || null,
+        eventId: row.event_id || null,
+        divineUrl: row.event_id ? `https://divine.video/video/${encodeURIComponent(row.event_id)}` : null,
+        nostrContext: buildAdminNostrContext({
+          metadata: {
+            title: row.title || null,
+            author: row.author || null,
+            url: row.content_url || null,
+            publishedAt: row.published_at ?? null,
+            eventId: row.event_id || null
+          },
+          pubkey: row.uploaded_by || null,
+          eventId: row.event_id || null
+        })
       }));
 
       // Classifier summaries fetched client-side via /admin/api/classifier/{sha256}
-      const videos = videoRows;
+      const videos = await Promise.all(videoRows.map((row) => enrichAdminLookupVideo(row, env, {
+        remoteCreator: false
+      })));
 
       console.log(`[${requestId}] Returning ${videos.length} videos in ${Date.now() - startTime}ms`);
       return new Response(JSON.stringify({
@@ -1078,10 +1137,10 @@ export default {
               return {
                 sha256: row.sha256,
                 eventId: event.id,
-                title: metadata?.title || null,
-                author: metadata?.author || null,
-                client: metadata?.client || null,
-                content: metadata?.content || event.content || null,
+                nostrContext: buildAdminNostrContext({
+                  event,
+                  metadata
+                }),
                 pubkey: event.pubkey || null
               };
             }
@@ -1108,15 +1167,13 @@ export default {
             cdnUrl: `https://${env.CDN_DOMAIN}/${row.sha256}`,
             eventId: nostr.eventId || null,
             uploaded_by: nostr.pubkey || null,
-            nostrContext: {
-              title: nostr.title,
-              author: nostr.author,
-              client: nostr.client,
-              content: nostr.content,
-              pubkey: nostr.pubkey ? nostr.pubkey.substring(0, 16) + '...' : null
-            }
+            nostrContext: nostr.nostrContext || null
           };
         });
+
+        const enrichedVideos = await Promise.all(videos.map((video) => enrichAdminLookupVideo(video, env, {
+          remoteCreator: false
+        })));
 
         // Get total count of untriaged (same logic - latest status not deleted/error)
         const countResult = await env.BLOSSOM_DB.prepare(`
@@ -1132,7 +1189,7 @@ export default {
         `).first();
 
         return new Response(JSON.stringify({
-          videos,
+          videos: enrichedVideos,
           total: countResult?.total || 0,
           offset,
           limit,

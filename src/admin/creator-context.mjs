@@ -33,7 +33,7 @@ function mapProfileName(userData) {
   return userData?.profile?.display_name || userData?.profile?.name || null;
 }
 
-export async function buildCreatorContext(input, { fetchFn = fetch } = {}) {
+export async function buildCreatorContext(input, { fetchFn = fetch, includeRemote = true } = {}) {
   const { pubkey, uploaderStats = null, uploaderEnforcement = null } = input || {};
   if (!pubkey) {
     return null;
@@ -48,6 +48,10 @@ export async function buildCreatorContext(input, { fetchFn = fetch } = {}) {
     social: null,
     enforcement: mapEnforcement(uploaderEnforcement, pubkey),
   };
+
+  if (!includeRemote) {
+    return creatorContext;
+  }
 
   try {
     const [userResponse, socialResponse] = await Promise.all([

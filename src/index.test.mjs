@@ -43,6 +43,12 @@ function createDbMock({
           return null;
         },
         async all() {
+          if (sql.includes('COUNT(*) as total FROM moderation_results')) {
+            return { results: [{ total: moderationResults.size }] };
+          }
+          if (sql.includes('FROM moderation_results')) {
+            return { results: Array.from(moderationResults.values()) };
+          }
           return { results: [] };
         }
       };
@@ -316,7 +322,12 @@ describe('Admin video lookup', () => {
           reviewed_by: 'admin',
           reviewed_at: '2026-03-07T01:00:00.000Z',
           review_notes: 'legacy note',
-          uploaded_by: pubkey
+          uploaded_by: pubkey,
+          title: 'Imported clip',
+          author: 'Alice',
+          event_id: 'e'.repeat(64),
+          content_url: `https://blossom.primal.net/${SHA256}.mp4`,
+          published_at: 1408579200
         }]]),
         uploaderStats: new Map([[pubkey, {
           pubkey,
@@ -385,12 +396,63 @@ describe('Admin video lookup', () => {
           enforcement: {
             relayBanned: true
           }
+        },
+        provenance: {
+          status: 'pre_2022_legacy',
+          dateSource: 'published_at',
+          isPre2022: true,
+          reasons: expect.arrayContaining(['published_at:2014-08-21T00:00:00.000Z'])
         }
       }
     });
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it('returns provenance in admin video list payloads', async () => {
+    const pubkey = '1'.repeat(64);
+    const env = createEnv({
+      BLOSSOM_DB: createDbMock({
+        moderationResults: new Map([[SHA256, {
+          sha256: SHA256,
+          action: 'AGE_RESTRICTED',
+          provider: 'hiveai',
+          scores: JSON.stringify({ ai_generated: 0.92 }),
+          categories: JSON.stringify(['ai_generated']),
+          moderated_at: '2026-03-07T00:00:00.000Z',
+          reviewed_by: null,
+          reviewed_at: null,
+          uploaded_by: pubkey,
+          title: 'Old archive upload',
+          author: 'Archivist',
+          event_id: '2'.repeat(64),
+          content_url: `https://blossom.primal.net/${SHA256}.mp4`,
+          published_at: 1514678400
+        }]])
+      })
+    });
+
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/api/videos?action=FLAGGED&limit=10', {
+        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      videos: [
+        {
+          sha256: SHA256,
+          provenance: {
+            status: 'pre_2022_legacy',
+            dateSource: 'published_at',
+            isPre2022: true
+          }
+        }
+      ]
+    });
   });
 
   it('returns an untriaged video by sha lookup', async () => {
