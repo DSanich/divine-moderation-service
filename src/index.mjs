@@ -31,6 +31,11 @@ import { notifyAtprotoLabeler } from './atproto/label-webhook.mjs';
 import { buildDownstreamPublishContext } from './moderation/downstream-publishing.mjs';
 import { runClassicVineRollback } from './moderation/classic-vine-rollback.mjs';
 import { notifyBlossom } from './blossom-client.mjs';
+import { handleSyncDelete } from './creator-delete/sync-endpoint.mjs';
+import { handleStatusQuery } from './creator-delete/status-endpoint.mjs';
+import { runCreatorDeleteCron } from './creator-delete/cron.mjs';
+import { fetchKind5WithRetry } from './creator-delete/funnelcake-fetch.mjs';
+import { fetchKind5EventsSince, fetchNostrEventById } from './nostr/relay-client.mjs';
 /**
  * NIP-32 label mapping for content categories
  * Maps internal category names to NIP-32/NIP-56 compatible labels
@@ -143,7 +148,9 @@ function isApiSurfacePath(pathname) {
     || pathname === '/test-moderate'
     || pathname === '/test-kv'
     || pathname.startsWith('/check-result/')
-    || pathname.startsWith('/api/v1/');
+    || pathname.startsWith('/api/v1/')
+    || pathname.startsWith('/api/delete/')
+    || pathname.startsWith('/api/delete-status/');
 }
 
 function isAdminSurfacePath(pathname) {
@@ -4136,6 +4143,34 @@ async function runMigration() {
       }
     }
 
+    // Creator-delete endpoints — gated by CREATOR_DELETE_PIPELINE_ENABLED feature flag
+    if (url.hostname === API_HOSTNAME && env.CREATOR_DELETE_PIPELINE_ENABLED === 'true') {
+      const relayUrl = env.CREATOR_DELETE_RELAY_URL || 'wss://relay.divine.video';
+
+      // Adapter: processKind5 and handleSyncDelete expect notifyBlossom's return shape
+      // (success, status?, error?, networkError?, skipped?) bound to the DELETE action.
+      const callBlossomDelete = (sha256) => notifyBlossom(sha256, 'DELETE', env);
+
+      if (url.pathname.startsWith('/api/delete/') && request.method === 'POST') {
+        return handleSyncDelete(request, {
+          db: env.BLOSSOM_DB,
+          kv: env.MODERATION_KV,
+          fetchKind5WithRetry: (id) => fetchKind5WithRetry(id, {
+            fetchEventById: (eid) => fetchNostrEventById(eid, [relayUrl], env)
+          }),
+          fetchTargetEvent: (eid) => fetchNostrEventById(eid, [relayUrl], env),
+          callBlossomDelete
+        });
+      }
+
+      if (url.pathname.startsWith('/api/delete-status/') && request.method === 'GET') {
+        return handleStatusQuery(request, {
+          db: env.BLOSSOM_DB,
+          kv: env.MODERATION_KV
+        });
+      }
+    }
+
     // API: Submit a user report for a piece of content (NIP-56)
     // Auth: Bearer token or Cloudflare Access JWT
     if (url.pathname === '/api/v1/scan' && request.method === 'POST') {
@@ -5008,218 +5043,242 @@ async function runMigration() {
    * Polls relay.divine.video for new video events and queues them for moderation
    */
   async scheduled(event, env, ctx) {
-    console.log(`[RELAY-POLLER] Cron triggered at ${new Date().toISOString()}`);
-
-    // Check if polling is enabled
-    if (env.RELAY_POLLING_ENABLED === 'false') {
-      console.log('[RELAY-POLLER] Polling is disabled, skipping');
+    if (event.cron === '* * * * *') {
+      // Every-minute: creator-delete pipeline (gated by feature flag)
+      if (env.CREATOR_DELETE_PIPELINE_ENABLED !== 'true') {
+        return;
+      }
+      const relayUrl = env.CREATOR_DELETE_RELAY_URL || 'wss://relay.divine.video';
+      try {
+        const result = await runCreatorDeleteCron({
+          db: env.BLOSSOM_DB,
+          kv: env.MODERATION_KV,
+          queryKind5Since: async (sinceSeconds) =>
+            fetchKind5EventsSince(sinceSeconds, relayUrl, env),
+          fetchTargetEvent: (eid) => fetchNostrEventById(eid, [relayUrl], env),
+          callBlossomDelete: (sha256) => notifyBlossom(sha256, 'DELETE', env)
+        });
+        console.log(`[CREATOR-DELETE-CRON] Processed ${result.processed}, errors: ${result.errors.length}`);
+      } catch (e) {
+        console.error('[CREATOR-DELETE-CRON] failed:', e);
+      }
       return;
     }
 
-    try {
-      // Get the timestamp to poll from
-      let since = await getLastPollTimestamp(env);
+    if (event.cron === '*/5 * * * *') {
+      console.log(`[RELAY-POLLER] Cron triggered at ${new Date().toISOString()}`);
 
-      if (!since) {
-        // First run - look back based on config
-        const lookbackHours = parseInt(env.RELAY_POLLING_LOOKBACK_HOURS || '1', 10);
-        since = Math.floor(Date.now() / 1000) - (lookbackHours * 3600);
-        console.log(`[RELAY-POLLER] First run, looking back ${lookbackHours} hours`);
-      } else {
-        console.log(`[RELAY-POLLER] Continuing from last poll at ${new Date(since * 1000).toISOString()}`);
+      // Check if polling is enabled
+      if (env.RELAY_POLLING_ENABLED === 'false') {
+        console.log('[RELAY-POLLER] Polling is disabled, skipping');
+        return;
       }
 
-      // Get relay URL from config
-      const relays = env.RELAY_POLLING_RELAY_URL
-        ? [env.RELAY_POLLING_RELAY_URL]
-        : ['wss://relay.divine.video'];
-
-      // Poll for new video events
-      const results = await pollRelayForVideos(env, {
-        since,
-        limit: parseInt(env.RELAY_POLLING_LIMIT || '100', 10),
-        relays
-      });
-
-      // Update last poll timestamp
-      await setLastPollTimestamp(env, Math.floor(Date.now() / 1000), {
-        totalEvents: results.totalEvents,
-        queuedForModeration: results.queuedForModeration,
-        alreadyModerated: results.alreadyModerated,
-        errors: results.errors.length,
-        trigger: 'cron'
-      });
-
-      console.log(`[RELAY-POLLER] Cron complete: ${results.totalEvents} events found, ${results.queuedForModeration} queued for moderation`);
-
-    } catch (error) {
-      console.error('[RELAY-POLLER] Cron poll failed:', error);
-
-      // Store error for debugging
       try {
-        await env.MODERATION_KV.put('relay-poller:last-error', JSON.stringify({
-          error: error.message,
-          stack: error.stack,
-          timestamp: new Date().toISOString()
-        }));
-      } catch (kvError) {
-        console.error('[RELAY-POLLER] Failed to store error:', kvError);
+        // Get the timestamp to poll from
+        let since = await getLastPollTimestamp(env);
+
+        if (!since) {
+          // First run - look back based on config
+          const lookbackHours = parseInt(env.RELAY_POLLING_LOOKBACK_HOURS || '1', 10);
+          since = Math.floor(Date.now() / 1000) - (lookbackHours * 3600);
+          console.log(`[RELAY-POLLER] First run, looking back ${lookbackHours} hours`);
+        } else {
+          console.log(`[RELAY-POLLER] Continuing from last poll at ${new Date(since * 1000).toISOString()}`);
+        }
+
+        // Get relay URL from config
+        const relays = env.RELAY_POLLING_RELAY_URL
+          ? [env.RELAY_POLLING_RELAY_URL]
+          : ['wss://relay.divine.video'];
+
+        // Poll for new video events
+        const results = await pollRelayForVideos(env, {
+          since,
+          limit: parseInt(env.RELAY_POLLING_LIMIT || '100', 10),
+          relays
+        });
+
+        // Update last poll timestamp
+        await setLastPollTimestamp(env, Math.floor(Date.now() / 1000), {
+          totalEvents: results.totalEvents,
+          queuedForModeration: results.queuedForModeration,
+          alreadyModerated: results.alreadyModerated,
+          errors: results.errors.length,
+          trigger: 'cron'
+        });
+
+        console.log(`[RELAY-POLLER] Cron complete: ${results.totalEvents} events found, ${results.queuedForModeration} queued for moderation`);
+
+      } catch (error) {
+        console.error('[RELAY-POLLER] Cron poll failed:', error);
+
+        // Store error for debugging
+        try {
+          await env.MODERATION_KV.put('relay-poller:last-error', JSON.stringify({
+            error: error.message,
+            stack: error.stack,
+            timestamp: new Date().toISOString()
+          }));
+        } catch (kvError) {
+          console.error('[RELAY-POLLER] Failed to store error:', kvError);
+        }
       }
-    }
 
-    // Sync DM inbox from relay
-    if (env.NOSTR_PRIVATE_KEY) {
-      try {
-        const { syncInbox } = await import('./nostr/dm-reader.mjs');
-        const syncResult = await syncInbox(env);
-        console.log(`[CRON] DM inbox sync: ${syncResult.synced} new, ${syncResult.skipped} deduped, ${syncResult.errors} errors`);
-      } catch (err) {
-        console.error('[CRON] DM inbox sync failed:', err);
+      // Sync DM inbox from relay
+      if (env.NOSTR_PRIVATE_KEY) {
+        try {
+          const { syncInbox } = await import('./nostr/dm-reader.mjs');
+          const syncResult = await syncInbox(env);
+          console.log(`[CRON] DM inbox sync: ${syncResult.synced} new, ${syncResult.skipped} deduped, ${syncResult.errors} errors`);
+        } catch (err) {
+          console.error('[CRON] DM inbox sync failed:', err);
+        }
       }
-    }
 
-    // Poll pending Reality Defender results and auto-escalate confirmed fakes
-    if (env.REALITY_DEFENDER_API_KEY && env.MODERATION_KV) {
-      try {
-        const pendingKeys = await env.MODERATION_KV.list({ prefix: 'rd:', limit: 20 });
-        let polled = 0;
-        let escalated = 0;
-        for (const key of pendingKeys.keys) {
-          const cached = await env.MODERATION_KV.get(key.name);
-          if (!cached) continue;
-          const parsed = JSON.parse(cached);
+      // Poll pending Reality Defender results and auto-escalate confirmed fakes
+      if (env.REALITY_DEFENDER_API_KEY && env.MODERATION_KV) {
+        try {
+          const pendingKeys = await env.MODERATION_KV.list({ prefix: 'rd:', limit: 20 });
+          let polled = 0;
+          let escalated = 0;
+          for (const key of pendingKeys.keys) {
+            const cached = await env.MODERATION_KV.get(key.name);
+            if (!cached) continue;
+            const parsed = JSON.parse(cached);
 
-          const sha256 = key.name.replace('rd:', '');
+            const sha256 = key.name.replace('rd:', '');
 
-          // Two cases to handle:
-          // 1. pending → poll RD API for results
-          // 2. complete + likely_ai but not yet escalated → retry escalation
-          let result = null;
-          if (parsed.status === 'pending') {
-            const { pollRealityDefender } = await import('./moderation/realness-client.mjs');
-            result = await pollRealityDefender(sha256, env);
-          } else if (parsed.status === 'complete' && parsed.verdict === 'likely_ai' && !parsed.escalated) {
-            // Previous escalation attempt failed — retry
-            result = parsed;
-            console.log(`[CRON] Retrying failed escalation for ${sha256}`);
-          } else {
-            continue; // complete + escalated, or complete + authentic — nothing to do
-          }
+            // Two cases to handle:
+            // 1. pending → poll RD API for results
+            // 2. complete + likely_ai but not yet escalated → retry escalation
+            let result = null;
+            if (parsed.status === 'pending') {
+              const { pollRealityDefender } = await import('./moderation/realness-client.mjs');
+              result = await pollRealityDefender(sha256, env);
+            } else if (parsed.status === 'complete' && parsed.verdict === 'likely_ai' && !parsed.escalated) {
+              // Previous escalation attempt failed — retry
+              result = parsed;
+              console.log(`[CRON] Retrying failed escalation for ${sha256}`);
+            } else {
+              continue; // complete + escalated, or complete + authentic — nothing to do
+            }
 
-          if (result && result.status === 'complete') {
-            polled++;
-            console.log(`[CRON] Reality Defender result for ${sha256}: ${result.verdict} (score=${result.score})`);
+            if (result && result.status === 'complete') {
+              polled++;
+              console.log(`[CRON] Reality Defender result for ${sha256}: ${result.verdict} (score=${result.score})`);
 
-            // Auto-escalate confirmed fakes if content is still quarantined.
-            // De-escalation (AUTHENTIC → SAFE) requires moderator action.
-            // Human decisions are never overridden.
-            if (result.verdict === 'likely_ai') {
-              const moderationData = await env.MODERATION_KV.get(`moderation:${sha256}`);
-              if (moderationData) {
-                const moderation = JSON.parse(moderationData);
-                if (moderation.action === 'QUARANTINE') {
-                  console.log(`[CRON] Auto-escalating ${sha256} from QUARANTINE to PERMANENT_BAN (RD verdict: ${result.verdict})`);
+              // Auto-escalate confirmed fakes if content is still quarantined.
+              // De-escalation (AUTHENTIC → SAFE) requires moderator action.
+              // Human decisions are never overridden.
+              if (result.verdict === 'likely_ai') {
+                const moderationData = await env.MODERATION_KV.get(`moderation:${sha256}`);
+                if (moderationData) {
+                  const moderation = JSON.parse(moderationData);
+                  if (moderation.action === 'QUARANTINE') {
+                    console.log(`[CRON] Auto-escalating ${sha256} from QUARANTINE to PERMANENT_BAN (RD verdict: ${result.verdict})`);
 
-                  // Update KV classification
-                  moderation.action = 'PERMANENT_BAN';
-                  moderation.reason = `Auto-escalated: Reality Defender confirmed AI-generated (score=${result.score})`;
-                  moderation.reviewedAt = new Date().toISOString();
-                  moderation.reviewedBy = 'reality-defender-auto';
-                  await env.MODERATION_KV.put(
-                    `moderation:${sha256}`,
-                    JSON.stringify(moderation),
-                    { expirationTtl: 60 * 60 * 24 * 90 }
-                  );
+                    // Update KV classification
+                    moderation.action = 'PERMANENT_BAN';
+                    moderation.reason = `Auto-escalated: Reality Defender confirmed AI-generated (score=${result.score})`;
+                    moderation.reviewedAt = new Date().toISOString();
+                    moderation.reviewedBy = 'reality-defender-auto';
+                    await env.MODERATION_KV.put(
+                      `moderation:${sha256}`,
+                      JSON.stringify(moderation),
+                      { expirationTtl: 60 * 60 * 24 * 90 }
+                    );
 
-                  // Update action-specific KV keys
-                  await env.MODERATION_KV.delete(`quarantine:${sha256}`);
-                  await env.MODERATION_KV.put(`permanent-ban:${sha256}`, JSON.stringify({
-                    category: moderation.category || 'ai_generated',
-                    reason: moderation.reason,
-                    timestamp: Date.now(),
-                    autoEscalated: true,
-                  }));
+                    // Update action-specific KV keys
+                    await env.MODERATION_KV.delete(`quarantine:${sha256}`);
+                    await env.MODERATION_KV.put(`permanent-ban:${sha256}`, JSON.stringify({
+                      category: moderation.category || 'ai_generated',
+                      reason: moderation.reason,
+                      timestamp: Date.now(),
+                      autoEscalated: true,
+                    }));
 
-                  // Update D1
-                  try {
-                    await env.BLOSSOM_DB.prepare(`
-                      UPDATE moderation_results
-                      SET action = ?, review_notes = ?, reviewed_by = ?, reviewed_at = ?
-                      WHERE sha256 = ?
-                    `).bind(
-                      'PERMANENT_BAN',
-                      moderation.reason,
-                      'reality-defender-auto',
-                      new Date().toISOString(),
-                      sha256
-                    ).run();
-                  } catch (dbErr) {
-                    console.error(`[CRON] D1 update failed for ${sha256}:`, dbErr.message);
-                  }
-
-                  // Notify Blossom (PERMANENT_BAN → Banned)
-                  const blossomResult = await notifyBlossom(sha256, 'PERMANENT_BAN', env);
-                  if (!blossomResult.success && !blossomResult.skipped) {
-                    console.warn(`[CRON] Blossom notification failed for ${sha256}: ${blossomResult.error}`);
-                  }
-
-                  // Delete event from relay (critical for externally-hosted content)
-                  const relayDeleteResult = await deleteEventFromRelayBySha256(sha256, env, 'rd-auto-escalation');
-                  if (relayDeleteResult?.success) {
-                    console.log(`[CRON] Deleted relay event ${relayDeleteResult.eventId} for auto-escalated ${sha256}`);
-                  }
-
-                  // Send moderation DM to creator
-                  const uploadedBy = moderation.uploadedBy;
-                  if (uploadedBy && env.NOSTR_PRIVATE_KEY) {
+                    // Update D1
                     try {
-                      const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
-                      const metaRow = await env.BLOSSOM_DB.prepare(
-                        'SELECT title, published_at FROM moderation_results WHERE sha256 = ?'
-                      ).bind(sha256).first();
-                      await sendModerationDM(uploadedBy, sha256, 'PERMANENT_BAN', moderation.reason, env, null, { title: metaRow?.title, publishedAt: metaRow?.published_at });
-                      console.log(`[CRON] DM sent to creator for auto-escalated ${sha256}`);
-                    } catch (dmErr) {
-                      console.error(`[CRON] DM failed for ${sha256}:`, dmErr.message);
+                      await env.BLOSSOM_DB.prepare(`
+                        UPDATE moderation_results
+                        SET action = ?, review_notes = ?, reviewed_by = ?, reviewed_at = ?
+                        WHERE sha256 = ?
+                      `).bind(
+                        'PERMANENT_BAN',
+                        moderation.reason,
+                        'reality-defender-auto',
+                        new Date().toISOString(),
+                        sha256
+                      ).run();
+                    } catch (dbErr) {
+                      console.error(`[CRON] D1 update failed for ${sha256}:`, dbErr.message);
                     }
-                  }
 
-                  // Notify reporters
-                  const { notifyReporters: notifyCronReporters } = await import('./nostr/dm-sender.mjs');
-                  notifyCronReporters(sha256, 'PERMANENT_BAN', env, '[CRON]').catch(() => {});
+                    // Notify Blossom (PERMANENT_BAN → Banned)
+                    const blossomResult = await notifyBlossom(sha256, 'PERMANENT_BAN', env);
+                    if (!blossomResult.success && !blossomResult.skipped) {
+                      console.warn(`[CRON] Blossom notification failed for ${sha256}: ${blossomResult.error}`);
+                    }
 
-                  // Mark escalation complete so cron doesn't retry
-                  const rdCached = await env.MODERATION_KV.get(`rd:${sha256}`);
-                  if (rdCached) {
-                    const rdData = JSON.parse(rdCached);
-                    rdData.escalated = true;
-                    await env.MODERATION_KV.put(`rd:${sha256}`, JSON.stringify(rdData), {
-                      expirationTtl: 86400 * 7
-                    });
-                  }
+                    // Delete event from relay (critical for externally-hosted content)
+                    const relayDeleteResult = await deleteEventFromRelayBySha256(sha256, env, 'rd-auto-escalation');
+                    if (relayDeleteResult?.success) {
+                      console.log(`[CRON] Deleted relay event ${relayDeleteResult.eventId} for auto-escalated ${sha256}`);
+                    }
 
-                  escalated++;
-                } else {
-                  // Human already resolved — mark so we don't re-check
-                  const rdCached = await env.MODERATION_KV.get(`rd:${sha256}`);
-                  if (rdCached) {
-                    const rdData = JSON.parse(rdCached);
-                    rdData.escalated = true; // nothing to escalate, but stop retrying
-                    await env.MODERATION_KV.put(`rd:${sha256}`, JSON.stringify(rdData), {
-                      expirationTtl: 86400 * 7
-                    });
+                    // Send moderation DM to creator
+                    const uploadedBy = moderation.uploadedBy;
+                    if (uploadedBy && env.NOSTR_PRIVATE_KEY) {
+                      try {
+                        const { sendModerationDM } = await import('./nostr/dm-sender.mjs');
+                        const metaRow = await env.BLOSSOM_DB.prepare(
+                          'SELECT title, published_at FROM moderation_results WHERE sha256 = ?'
+                        ).bind(sha256).first();
+                        await sendModerationDM(uploadedBy, sha256, 'PERMANENT_BAN', moderation.reason, env, null, { title: metaRow?.title, publishedAt: metaRow?.published_at });
+                        console.log(`[CRON] DM sent to creator for auto-escalated ${sha256}`);
+                      } catch (dmErr) {
+                        console.error(`[CRON] DM failed for ${sha256}:`, dmErr.message);
+                      }
+                    }
+
+                    // Notify reporters
+                    const { notifyReporters: notifyCronReporters } = await import('./nostr/dm-sender.mjs');
+                    notifyCronReporters(sha256, 'PERMANENT_BAN', env, '[CRON]').catch(() => {});
+
+                    // Mark escalation complete so cron doesn't retry
+                    const rdCached = await env.MODERATION_KV.get(`rd:${sha256}`);
+                    if (rdCached) {
+                      const rdData = JSON.parse(rdCached);
+                      rdData.escalated = true;
+                      await env.MODERATION_KV.put(`rd:${sha256}`, JSON.stringify(rdData), {
+                        expirationTtl: 86400 * 7
+                      });
+                    }
+
+                    escalated++;
+                  } else {
+                    // Human already resolved — mark so we don't re-check
+                    const rdCached = await env.MODERATION_KV.get(`rd:${sha256}`);
+                    if (rdCached) {
+                      const rdData = JSON.parse(rdCached);
+                      rdData.escalated = true; // nothing to escalate, but stop retrying
+                      await env.MODERATION_KV.put(`rd:${sha256}`, JSON.stringify(rdData), {
+                        expirationTtl: 86400 * 7
+                      });
+                    }
+                    console.log(`[CRON] Skipping auto-escalation for ${sha256}: no longer quarantined (action=${moderation.action})`);
                   }
-                  console.log(`[CRON] Skipping auto-escalation for ${sha256}: no longer quarantined (action=${moderation.action})`);
                 }
               }
             }
           }
+          if (polled > 0) {
+            console.log(`[CRON] Polled ${polled} Reality Defender results, auto-escalated ${escalated}`);
+          }
+        } catch (err) {
+          console.error('[CRON] Reality Defender polling failed:', err);
         }
-        if (polled > 0) {
-          console.log(`[CRON] Polled ${polled} Reality Defender results, auto-escalated ${escalated}`);
-        }
-      } catch (err) {
-        console.error('[CRON] Reality Defender polling failed:', err);
       }
     }
   }

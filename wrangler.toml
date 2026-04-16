@@ -87,9 +87,12 @@ RELAY_POLLING_RELAY_URL = "wss://relay.divine.video"  # Relay to poll for new vi
 RELAY_POLLING_LOOKBACK_HOURS = "1"                # How far back to look for events (in hours)
 RELAY_POLLING_LIMIT = "100"                       # Max events to fetch per poll
 
+# Creator-delete pipeline feature flag (default off; flip to "true" via `wrangler secret put` or [vars] once ready)
+CREATOR_DELETE_PIPELINE_ENABLED = "false"
+
 # Cron trigger for relay polling - runs every 5 minutes
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["* * * * *", "*/5 * * * *"]
 
 # Secrets (set with: wrangler secret put <NAME>)
 # SERVICE_API_TOKEN - bearer token for authenticated requests to moderation-api.divine.video

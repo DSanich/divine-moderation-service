@@ -338,3 +338,15 @@ export function hasStrongOriginalVineEvidence(nostrContext) {
 
   return false;
 }
+
+export async function fetchKind5EventsSince(sinceSeconds, relayUrl = 'wss://relay.divine.video', env = {}) {
+  return queryRelay(relayUrl, { kinds: [5], since: sinceSeconds }, env, { collectAll: true });
+}
+
+export async function fetchNostrEventById(eventId, relays = ['wss://relay.divine.video'], env = {}) {
+  for (const relayUrl of relays) {
+    const event = await queryRelay(relayUrl, { ids: [eventId], limit: 1 }, env);
+    if (event) return event;
+  }
+  return null;
+}
