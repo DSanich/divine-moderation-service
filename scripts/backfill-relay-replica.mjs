@@ -80,6 +80,10 @@ function extractImetaUrl(tags = []) {
 }
 
 function compareCursor(a, b) {
+  const aPriority = Number.isFinite(a?.priority_bucket) ? a.priority_bucket : 2;
+  const bPriority = Number.isFinite(b?.priority_bucket) ? b.priority_bucket : 2;
+  if (aPriority < bPriority) return -1;
+  if (aPriority > bPriority) return 1;
   if (a.moderated_at < b.moderated_at) return -1;
   if (a.moderated_at > b.moderated_at) return 1;
   if (a.sha256 < b.sha256) return -1;
@@ -298,19 +302,33 @@ export function buildSparseModerationRowsQuery({ cursor = null, limit = DEFAULT_
       published_at IS NULL OR published_at = ''
     )
   `.trim();
+  const priorityExpression = `
+    CASE
+      WHEN action = 'REVIEW' AND reviewed_by IS NULL THEN 0
+      WHEN action IN ('AGE_RESTRICTED', 'PERMANENT_BAN') AND reviewed_by IS NULL THEN 1
+      ELSE 2
+    END
+  `.trim();
   const cursorPredicate = cursor
     ? `AND (
-      moderated_at < ${sqlLiteral(cursor.moderated_at)}
-      OR (moderated_at = ${sqlLiteral(cursor.moderated_at)} AND sha256 < ${sqlLiteral(cursor.sha256)})
+      ${priorityExpression} > ${Number.isFinite(cursor.priority_bucket) ? cursor.priority_bucket : 2}
+      OR (
+        ${priorityExpression} = ${Number.isFinite(cursor.priority_bucket) ? cursor.priority_bucket : 2}
+        AND (
+          moderated_at < ${sqlLiteral(cursor.moderated_at)}
+          OR (moderated_at = ${sqlLiteral(cursor.moderated_at)} AND sha256 < ${sqlLiteral(cursor.sha256)})
+        )
+      )
     )`
     : '';
 
   const sql = `
-    SELECT sha256, moderated_at, raw_response, uploaded_by, title, author, event_id, content_url, published_at
+    SELECT sha256, moderated_at, raw_response, uploaded_by, title, author, event_id, content_url, published_at,
+           ${priorityExpression} AS priority_bucket
     FROM moderation_results
     WHERE ${missingPredicate}
     ${cursorPredicate}
-    ORDER BY moderated_at DESC, sha256 DESC
+    ORDER BY priority_bucket ASC, moderated_at DESC, sha256 DESC
     LIMIT ${safeLimit}
   `.trim();
 
@@ -531,6 +549,7 @@ export async function processReplicaBatch(rows, deps, options = {}) {
 
   const lastRow = rows.at(-1) || null;
   const cursor = lastRow ? {
+    priority_bucket: Number.isFinite(lastRow.priority_bucket) ? lastRow.priority_bucket : 2,
     moderated_at: lastRow.moderated_at,
     sha256: lastRow.sha256
   } : null;

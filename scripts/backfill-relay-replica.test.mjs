@@ -18,6 +18,7 @@ describe('backfill-relay-replica', () => {
   it('builds sparse moderation query with stable cursor pagination', () => {
     const { sql } = buildSparseModerationRowsQuery({
       cursor: {
+        priority_bucket: 2,
         moderated_at: '2026-04-16T00:00:00.000Z',
         sha256: 'f'.repeat(64)
       },
@@ -28,8 +29,27 @@ describe('backfill-relay-replica', () => {
     expect(sql).toContain("uploaded_by IS NULL OR uploaded_by = ''");
     expect(sql).toContain("moderated_at < '2026-04-16T00:00:00.000Z'");
     expect(sql).toContain(`sha256 < '${'f'.repeat(64)}'`);
-    expect(sql).toContain('ORDER BY moderated_at DESC, sha256 DESC');
+    expect(sql).toContain("CASE");
+    expect(sql).toContain("END > 2");
+    expect(sql).toContain('ORDER BY priority_bucket ASC, moderated_at DESC, sha256 DESC');
     expect(sql).toContain('LIMIT 250');
+  });
+
+  it('prioritizes REVIEW rows before quick-review flagged rows before the rest', () => {
+    const { sql } = buildSparseModerationRowsQuery({
+      cursor: {
+        priority_bucket: 1,
+        moderated_at: '2026-04-16T00:00:00.000Z',
+        sha256: 'f'.repeat(64)
+      },
+      limit: 250
+    });
+
+    expect(sql).toContain("WHEN action = 'REVIEW' AND reviewed_by IS NULL THEN 0");
+    expect(sql).toContain("WHEN action IN ('AGE_RESTRICTED', 'PERMANENT_BAN') AND reviewed_by IS NULL THEN 1");
+    expect(sql).toContain("ELSE 2");
+    expect(sql).toContain("END > 1");
+    expect(sql).toContain("priority_bucket ASC, moderated_at DESC, sha256 DESC");
   });
 
   it('parses the Cloudflare account id from wrangler whoami output', () => {
@@ -140,6 +160,7 @@ describe('backfill-relay-replica', () => {
       failed: 1
     });
     expect(result.cursor).toEqual({
+      priority_bucket: 2,
       moderated_at: '2026-04-16T00:00:00.000Z',
       sha256: 'c'.repeat(64)
     });
@@ -557,6 +578,7 @@ describe('backfill-relay-replica', () => {
     expect(firstRun.completed).toBe(false);
     expect(processed).toEqual(['d'.repeat(64), 'c'.repeat(64)]);
     expect(storedCheckpoint.cursor).toEqual({
+      priority_bucket: 2,
       moderated_at: '2026-04-16T02:00:00.000Z',
       sha256: 'c'.repeat(64)
     });
@@ -574,6 +596,7 @@ describe('backfill-relay-replica', () => {
       'a'.repeat(64)
     ]);
     expect(storedCheckpoint.cursor).toEqual({
+      priority_bucket: 2,
       moderated_at: '2026-04-16T00:00:00.000Z',
       sha256: 'a'.repeat(64)
     });
