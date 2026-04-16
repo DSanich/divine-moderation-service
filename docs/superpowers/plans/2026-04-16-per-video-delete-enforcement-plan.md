@@ -944,12 +944,20 @@ The shared function called by both the sync endpoint and the cron. Given a fetch
 
       it('skips when existing row is success (idempotent)', async () => {
         const kind5 = { id: 'k1', pubkey: 'pub1', tags: [['e', 't1']] };
-        // Pre-populate D1 with a successful row
-        await db.prepare(
-          `INSERT INTO creator_deletions (kind5_id, target_event_id, creator_pubkey, status, accepted_at, blob_sha256)
-           VALUES (?, ?, ?, 'success', ?, ?)
-           ON CONFLICT(kind5_id, target_event_id) DO NOTHING`
-        ).bind('k1', 't1', 'pub1', new Date().toISOString(), 'abc').run();
+        // Pre-seed D1 directly — bypass the fake's INSERT path, which is tailored to
+        // claimRow's 4-arg bind with an inlined 'accepted' status literal. A direct
+        // rows.set() lets this test simulate a pre-existing terminal row.
+        db.rows.set('k1:t1', {
+          kind5_id: 'k1',
+          target_event_id: 't1',
+          creator_pubkey: 'pub1',
+          status: 'success',
+          accepted_at: new Date().toISOString(),
+          blob_sha256: SHA_C,
+          retry_count: 0,
+          last_error: null,
+          completed_at: new Date().toISOString()
+        });
         const result = await processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete });
         expect(result.targets[0].status).toBe('success');
         expect(callBlossomDelete).not.toHaveBeenCalled();
