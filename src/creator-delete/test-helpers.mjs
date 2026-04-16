@@ -42,6 +42,22 @@ export function makeFakeD1() {
             return rows.get(key) || null;
           }
           return null;
+        },
+        async all() {
+          if (this._sql.startsWith('SELECT')) {
+            // Return all rows matching the bound kind5_id (status-endpoint + cron use-case).
+            // The SQL shape we care about is: SELECT ... WHERE kind5_id = ? [AND ...]
+            const kind5_id = this._binds[0];
+            const results = [];
+            for (const row of rows.values()) {
+              if (row.kind5_id !== kind5_id) continue;
+              // If a second bind (target_event_id) is present, filter by it too.
+              if (this._binds.length >= 2 && row.target_event_id !== this._binds[1]) continue;
+              results.push(row);
+            }
+            return { results };
+          }
+          return { results: [] };
         }
       };
     }
