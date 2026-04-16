@@ -2009,14 +2009,13 @@ async all() {
 
 - [ ] **Step 3: Wire routes into `src/index.mjs`**
 
-    Add imports near the top of `src/index.mjs` (next to the other imports):
+    Add five new imports near the top of `src/index.mjs` (next to the other imports). The `notifyBlossom` import was already added by Task 9's extraction — DO NOT add a duplicate line for it; just reuse the existing one.
 
     ```javascript
     import { handleSyncDelete } from './creator-delete/sync-endpoint.mjs';
     import { handleStatusQuery } from './creator-delete/status-endpoint.mjs';
     import { runCreatorDeleteCron } from './creator-delete/cron.mjs';
     import { fetchKind5WithRetry } from './creator-delete/funnelcake-fetch.mjs';
-    import { notifyBlossom } from './blossom-client.mjs'; // already imported via Task 9's extraction; reuse
     import { fetchKind5EventsSince, fetchNostrEventById } from './nostr/relay-client.mjs';
     ```
 
@@ -2096,21 +2095,7 @@ async all() {
 
 - [ ] **Step 5: Add `fetchKind5EventsSince` and `fetchNostrEventById` to `src/nostr/relay-client.mjs`**
 
-    Both are new; they extend the existing WebSocket REQ pattern in `queryRelay`. Add failing tests first in `src/nostr/relay-client.test.mjs`:
-
-    ```javascript
-    it('fetchKind5EventsSince returns all kind 5 events for the since filter', async () => {
-      // Mock the WebSocket or use a fake relay — follow whichever pattern the existing tests use.
-      // Assert that the returned filter matches {kinds: [5], since: <provided>}.
-      // Assert the return value is an array of events.
-    });
-
-    it('fetchNostrEventById returns a single event by id or null', async () => {
-      // Similar: mock relay, assert filter {ids: [<id>], limit: 1}, assert return shape.
-    });
-    ```
-
-    Then implement the two exports in `relay-client.mjs`, using `queryRelay` with `collectAll: true` for the kind 5 variant (returns all events until EOSE) and the default behavior for the by-id variant (single event).
+    Both are new; they extend the existing WebSocket REQ pattern in `queryRelay`. Append these two exports to `relay-client.mjs`:
 
     ```javascript
     export async function fetchKind5EventsSince(sinceSeconds, relayUrl = 'wss://relay.divine.video', env = {}) {
@@ -2126,7 +2111,9 @@ async all() {
     }
     ```
 
-    Run tests; confirm pass.
+    **Unit testing note:** the existing `relay-client.test.mjs` covers only the pure-function helpers (`parseVideoEventMetadata`, `isOriginalVine`, `hasStrongOriginalVineEvidence`) — it has no WebSocket mocking precedent, and neither does the existing `fetchNostrEventBySha256`/`fetchNostrVideoEventsByDTag` (both untested at the unit level). To stay consistent with the file's existing coverage posture and avoid introducing a bespoke WebSocket mock, do NOT add unit tests for these two new functions in this task. They will be exercised end-to-end in the staging preflight (Task 13 Step 3 "cron path test") and in the race test against staging Funnelcake.
+
+    Confirm the existing `relay-client.test.mjs` still passes (`npx vitest run src/nostr/relay-client.test.mjs`).
 
 - [ ] **Step 6: Local dev sanity check**
 
