@@ -1831,7 +1831,10 @@ export default {
       });
     }
 
-    if (url.pathname === '/admin/api/backfill-review-context' && request.method === 'POST') {
+    if (
+      url.pathname === '/admin/api/backfill-review-context' &&
+      (request.method === 'POST' || request.method === 'GET')
+    ) {
       const authError = await requireAuth(request, env);
       if (authError) {
         return authError;

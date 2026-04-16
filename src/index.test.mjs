@@ -1730,6 +1730,94 @@ describe('Admin context backfill', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('supports GET for admin context backfill endpoint', async () => {
+    const sparseSha = 'c'.repeat(64);
+    const repairedPubkey = 'f'.repeat(64);
+    const repairedEventId = 'g'.repeat(64);
+    const moderationResults = new Map([[sparseSha, {
+      sha256: sparseSha,
+      action: 'REVIEW',
+      provider: 'hiveai',
+      scores: '{}',
+      categories: '[]',
+      raw_response: '{}',
+      moderated_at: '2026-04-15T00:00:00.000Z',
+      reviewed_by: null,
+      reviewed_at: null,
+      uploaded_by: null,
+      title: null,
+      author: null,
+      event_id: null,
+      content_url: null,
+      published_at: null
+    }]]);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url) === `https://api.divine.video/api/videos/${sparseSha}`) {
+        return new Response(JSON.stringify({
+          event: {
+            id: repairedEventId,
+            pubkey: repairedPubkey,
+            created_at: 1700000200,
+            kind: 34236,
+            tags: [
+              ['d', 'repaired-stable-id-get'],
+              ['title', 'Recovered title via GET'],
+              ['published_at', '1389756607'],
+              ['imeta', `url https://media.divine.video/${sparseSha}.mp4`, `x ${sparseSha}`]
+            ],
+            content: 'Recovered by GET backfill',
+            sig: 'h'.repeat(128)
+          },
+          stats: {
+            author_name: 'Recovered author via GET'
+          }
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const env = createEnv({
+        BLOSSOM_DB: createDbMock({ moderationResults })
+      });
+
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/backfill-review-context?limit=10', {
+          method: 'GET',
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        scanned: 1,
+        repaired: 1,
+        skipped: 0,
+        repairs: [{
+          sha256: sparseSha,
+          status: 'repaired'
+        }]
+      });
+
+      expect(moderationResults.get(sparseSha)).toMatchObject({
+        uploaded_by: repairedPubkey,
+        title: 'Recovered title via GET',
+        author: 'Recovered author via GET',
+        event_id: repairedEventId,
+        content_url: `https://media.divine.video/${sparseSha}.mp4`,
+        published_at: 1389756607
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 describe('Admin nostr context lookup', () => {
