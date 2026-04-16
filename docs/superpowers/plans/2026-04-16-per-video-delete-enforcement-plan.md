@@ -626,11 +626,9 @@ Race-safe claim-or-inspect logic that multiple concurrent invocations can call s
 
 - [ ] **Step 5: Add failing tests for `decideAction`**
 
-    Append to `src/creator-delete/d1.test.mjs`:
+    Add `decideAction` to the existing top-of-file import (`import { claimRow, readRow, updateToSuccess, updateToFailed, decideAction } from './d1.mjs';`), then append the `describe('decideAction', ...)` block to `src/creator-delete/d1.test.mjs`:
 
     ```javascript
-    import { decideAction } from './d1.mjs';
-
     describe('decideAction', () => {
       it('proceed when no row exists', () => {
         expect(decideAction(null)).toBe('proceed');
