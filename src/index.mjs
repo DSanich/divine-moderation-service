@@ -30,6 +30,7 @@ import { parseVttText } from './moderation/text-classifier.mjs';
 import { notifyAtprotoLabeler } from './atproto/label-webhook.mjs';
 import { buildDownstreamPublishContext } from './moderation/downstream-publishing.mjs';
 import { runClassicVineRollback } from './moderation/classic-vine-rollback.mjs';
+import { notifyBlossom } from './blossom-client.mjs';
 /**
  * NIP-32 label mapping for content categories
  * Maps internal category names to NIP-32/NIP-56 compatible labels
@@ -5326,74 +5327,3 @@ function blossomFailureResponse(sha256, action, blossomError) {
   });
 }
 
-/**
- * Notify divine-blossom of moderation decision via webhook
- * This allows blossom to update blob status and enforce blocking
- * @param {string} sha256 - The blob hash
- * @param {string} action - The moderation action (SAFE, REVIEW, QUARANTINE, AGE_RESTRICTED, PERMANENT_BAN)
- * @param {Object} env - Environment with BLOSSOM_WEBHOOK_URL and BLOSSOM_WEBHOOK_SECRET
- * @returns {Promise<{success: boolean, error?: string}>}
- */
-async function notifyBlossom(sha256, action, env) {
-  // Skip if webhook not configured
-  if (!env.BLOSSOM_WEBHOOK_URL) {
-    console.log('[BLOSSOM] Webhook not configured, skipping notification');
-    return { success: true, skipped: true };
-  }
-
-  // Map internal actions to Blossom-understood actions.
-  // Blossom has five states (Active/Restricted/Pending/Banned/Deleted).
-  // Its webhook handler accepts: SAFE→Active, AGE_RESTRICTED→Restricted,
-  // PERMANENT_BAN→Banned, RESTRICT→Restricted.
-  // QUARANTINE maps to RESTRICT (owner can view, public gets 404).
-  // REVIEW is internal only — content stays publicly accessible.
-  const BLOSSOM_ACTION_MAP = {
-    'SAFE': 'SAFE',
-    'AGE_RESTRICTED': 'AGE_RESTRICTED',
-    'PERMANENT_BAN': 'PERMANENT_BAN',
-    'QUARANTINE': 'RESTRICT',
-  };
-
-  const blossomAction = BLOSSOM_ACTION_MAP[action];
-  if (!blossomAction) {
-    console.log(`[BLOSSOM] Skipping notification for internal action: ${action}`);
-    return { success: true, skipped: true };
-  }
-
-  try {
-    const headers = {
-      'Content-Type': 'application/json',
-    };
-
-    // Add authentication if secret is configured
-    if (env.BLOSSOM_WEBHOOK_SECRET) {
-      headers['Authorization'] = `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}`;
-    }
-
-    console.log(`[BLOSSOM] Notifying blossom of ${action} (as ${blossomAction}) for ${sha256}`);
-
-    const response = await fetch(env.BLOSSOM_WEBHOOK_URL, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        sha256,
-        action: blossomAction,
-        timestamp: new Date().toISOString(),
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[BLOSSOM] Webhook failed: ${response.status} - ${errorText}`);
-      return { success: false, error: `HTTP ${response.status}: ${errorText}` };
-    }
-
-    const result = await response.json();
-    console.log(`[BLOSSOM] Webhook succeeded for ${sha256}:`, result);
-    return { success: true, result };
-
-  } catch (error) {
-    console.error(`[BLOSSOM] Webhook error for ${sha256}:`, error);
-    return { success: false, error: error.message };
-  }
-}
