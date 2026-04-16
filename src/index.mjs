@@ -755,6 +755,225 @@ function buildResolvedAdminRawResponse(existingRawResponse, video) {
   return JSON.stringify(mergedRoot);
 }
 
+function buildRelayVideoMirrorRecord(sha256, video) {
+  if (!sha256 || !video) {
+    return null;
+  }
+
+  const eventId = pickFirstPresentValue(video.eventId, video.event_id, video.nostrContext?.eventId);
+  const stableId = pickFirstPresentValue(video.stableId, video.nostrContext?.stableId, extractStableIdFromDivineUrl(video.divineUrl));
+  const pubkey = pickFirstPresentValue(video.uploaded_by);
+  const title = pickFirstPresentValue(video.title, video.nostrContext?.title);
+  const content = pickFirstPresentValue(video.content_text, video.nostrContext?.content);
+  const summary = pickFirstPresentValue(video.nostrContext?.summary);
+  const videoUrl = pickFirstPresentValue(video.content_url, video.nostrContext?.url, video.cdnUrl);
+  const thumbnailUrl = pickFirstPresentValue(video.thumbnailUrl);
+  const publishedAt = normalizePersistedTimestampValue(pickFirstPresentValue(video.published_at, video.nostrContext?.publishedAt));
+  const createdAt = normalizePersistedTimestampValue(pickFirstPresentValue(video.nostrContext?.createdAt));
+  const authorName = pickFirstPresentValue(video.author, video.nostrContext?.author);
+  const authorAvatar = pickFirstPresentValue(video.publisherProfile?.picture, video.creatorContext?.avatarUrl);
+  const syncedAt = new Date().toISOString();
+
+  const hasUsefulData = [
+    eventId,
+    stableId,
+    pubkey,
+    title,
+    content,
+    videoUrl,
+    authorName
+  ].some((value) => isPresentValue(value));
+
+  if (!hasUsefulData) {
+    return null;
+  }
+
+  return {
+    sha256,
+    event_id: eventId,
+    stable_id: stableId,
+    pubkey,
+    title,
+    content,
+    summary,
+    video_url: videoUrl,
+    thumbnail_url: thumbnailUrl,
+    published_at: publishedAt,
+    created_at: createdAt,
+    author_name: authorName,
+    author_avatar: authorAvatar,
+    raw_json: JSON.stringify({
+      sha256,
+      eventId,
+      stableId,
+      pubkey,
+      title,
+      content,
+      summary,
+      videoUrl,
+      thumbnailUrl,
+      publishedAt,
+      createdAt,
+      authorName,
+      authorAvatar,
+      publisherProfile: video.publisherProfile || null
+    }),
+    synced_at: syncedAt,
+    source_updated_at: null
+  };
+}
+
+function buildRelayCreatorMirrorRecord(pubkey, video) {
+  if (!pubkey || !video) {
+    return null;
+  }
+
+  const displayName = pickFirstPresentValue(video.publisherProfile?.display_name, video.creatorContext?.name, video.author);
+  const username = pickFirstPresentValue(video.publisherProfile?.name);
+  const avatarUrl = pickFirstPresentValue(video.publisherProfile?.picture, video.creatorContext?.avatarUrl);
+  const bio = pickFirstPresentValue(video.publisherProfile?.about);
+  const website = pickFirstPresentValue(video.publisherProfile?.website);
+  const nip05 = pickFirstPresentValue(video.publisherProfile?.nip05);
+  const social = video.creatorContext?.social || {};
+  const syncedAt = new Date().toISOString();
+
+  const hasUsefulData = [
+    displayName,
+    username,
+    avatarUrl,
+    social.followerCount,
+    social.videoCount
+  ].some((value) => isPresentValue(value));
+
+  if (!hasUsefulData) {
+    return null;
+  }
+
+  return {
+    pubkey,
+    display_name: displayName,
+    username,
+    avatar_url: avatarUrl,
+    bio,
+    website,
+    nip05,
+    follower_count: social.followerCount ?? null,
+    following_count: social.followingCount ?? null,
+    video_count: social.videoCount ?? null,
+    event_count: social.totalEvents ?? null,
+    first_activity: social.firstActivity ?? null,
+    last_activity: social.lastActivity ?? null,
+    raw_json: JSON.stringify({
+      pubkey,
+      displayName,
+      username,
+      avatarUrl,
+      bio,
+      website,
+      nip05,
+      social
+    }),
+    synced_at: syncedAt
+  };
+}
+
+async function persistRelayMirrorContext(sha256, video, env) {
+  if (!sha256 || !video) {
+    return false;
+  }
+
+  let wrote = false;
+  const relayVideo = buildRelayVideoMirrorRecord(sha256, video);
+  if (relayVideo) {
+    await env.BLOSSOM_DB.prepare(`
+      INSERT INTO relay_videos (
+        sha256, event_id, stable_id, pubkey, title, content, summary, video_url, thumbnail_url,
+        published_at, created_at, author_name, author_avatar, raw_json, synced_at, source_updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(sha256) DO UPDATE SET
+        event_id = excluded.event_id,
+        stable_id = excluded.stable_id,
+        pubkey = excluded.pubkey,
+        title = excluded.title,
+        content = excluded.content,
+        summary = excluded.summary,
+        video_url = excluded.video_url,
+        thumbnail_url = excluded.thumbnail_url,
+        published_at = excluded.published_at,
+        created_at = excluded.created_at,
+        author_name = excluded.author_name,
+        author_avatar = excluded.author_avatar,
+        raw_json = excluded.raw_json,
+        synced_at = excluded.synced_at,
+        source_updated_at = excluded.source_updated_at
+    `).bind(
+      relayVideo.sha256,
+      relayVideo.event_id,
+      relayVideo.stable_id,
+      relayVideo.pubkey,
+      relayVideo.title,
+      relayVideo.content,
+      relayVideo.summary,
+      relayVideo.video_url,
+      relayVideo.thumbnail_url,
+      relayVideo.published_at,
+      relayVideo.created_at,
+      relayVideo.author_name,
+      relayVideo.author_avatar,
+      relayVideo.raw_json,
+      relayVideo.synced_at,
+      relayVideo.source_updated_at
+    ).run();
+    wrote = true;
+  }
+
+  const pubkey = pickFirstPresentValue(video.uploaded_by, relayVideo?.pubkey);
+  const relayCreator = buildRelayCreatorMirrorRecord(pubkey, video);
+  if (relayCreator) {
+    await env.BLOSSOM_DB.prepare(`
+      INSERT INTO relay_creators (
+        pubkey, display_name, username, avatar_url, bio, website, nip05,
+        follower_count, following_count, video_count, event_count,
+        first_activity, last_activity, raw_json, synced_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(pubkey) DO UPDATE SET
+        display_name = excluded.display_name,
+        username = excluded.username,
+        avatar_url = excluded.avatar_url,
+        bio = excluded.bio,
+        website = excluded.website,
+        nip05 = excluded.nip05,
+        follower_count = excluded.follower_count,
+        following_count = excluded.following_count,
+        video_count = excluded.video_count,
+        event_count = excluded.event_count,
+        first_activity = excluded.first_activity,
+        last_activity = excluded.last_activity,
+        raw_json = excluded.raw_json,
+        synced_at = excluded.synced_at
+    `).bind(
+      relayCreator.pubkey,
+      relayCreator.display_name,
+      relayCreator.username,
+      relayCreator.avatar_url,
+      relayCreator.bio,
+      relayCreator.website,
+      relayCreator.nip05,
+      relayCreator.follower_count,
+      relayCreator.following_count,
+      relayCreator.video_count,
+      relayCreator.event_count,
+      relayCreator.first_activity,
+      relayCreator.last_activity,
+      relayCreator.raw_json,
+      relayCreator.synced_at
+    ).run();
+    wrote = true;
+  }
+
+  return wrote;
+}
+
 async function persistResolvedAdminContext(sha256, video, env, existingRow = null) {
   if (!sha256 || !video || !existingRow) {
     return false;
@@ -1544,6 +1763,8 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
         );
         video.creatorContext = mergeStoredRelayCreatorContext(video.creatorContext, relayCreatorRow, video.uploaded_by);
       }
+
+      await persistRelayMirrorContext(hash, video, env);
 
       if (moderatedRow) {
         await persistResolvedAdminContext(hash, video, env, moderatedRow);

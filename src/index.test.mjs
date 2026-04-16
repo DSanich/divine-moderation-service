@@ -42,6 +42,84 @@ function createDbMock({
               raw_response
             });
           }
+          if (sql.includes('INSERT INTO relay_videos')) {
+            const [
+              sha256,
+              event_id,
+              stable_id,
+              pubkey,
+              title,
+              content,
+              summary,
+              video_url,
+              thumbnail_url,
+              published_at,
+              created_at,
+              author_name,
+              author_avatar,
+              raw_json,
+              synced_at,
+              source_updated_at
+            ] = bindings;
+            const existing = relayVideos.get(sha256) || { sha256 };
+            relayVideos.set(sha256, {
+              ...existing,
+              sha256,
+              event_id,
+              stable_id,
+              pubkey,
+              title,
+              content,
+              summary,
+              video_url,
+              thumbnail_url,
+              published_at,
+              created_at,
+              author_name,
+              author_avatar,
+              raw_json,
+              synced_at,
+              source_updated_at
+            });
+          }
+          if (sql.includes('INSERT INTO relay_creators')) {
+            const [
+              pubkey,
+              display_name,
+              username,
+              avatar_url,
+              bio,
+              website,
+              nip05,
+              follower_count,
+              following_count,
+              video_count,
+              event_count,
+              first_activity,
+              last_activity,
+              raw_json,
+              synced_at
+            ] = bindings;
+            const existing = relayCreators.get(pubkey) || { pubkey };
+            relayCreators.set(pubkey, {
+              ...existing,
+              pubkey,
+              display_name,
+              username,
+              avatar_url,
+              bio,
+              website,
+              nip05,
+              follower_count,
+              following_count,
+              video_count,
+              event_count,
+              first_activity,
+              last_activity,
+              raw_json,
+              synced_at
+            });
+          }
           return { success: true };
         },
         async first() {
@@ -1696,6 +1774,166 @@ describe('Admin video lookup', () => {
           eventId,
           content_url: 'https://media.divine.video/cached-content.mp4'
         }
+      });
+
+      expect(moderationResults.get(SHA256)).toMatchObject({
+        uploaded_by: uploaderPubkey,
+        title: 'Cached title',
+        author: 'Cached author',
+        event_id: eventId,
+        content_url: 'https://media.divine.video/cached-content.mp4',
+        published_at: 1389756506
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('writes through relay mirror tables during admin lookup cache miss', async () => {
+    const eventId = 'f'.repeat(64);
+    const uploaderPubkey = 'b'.repeat(64);
+    const moderationResults = new Map([[SHA256, {
+      sha256: SHA256,
+      action: 'REVIEW',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.91 }),
+      categories: JSON.stringify(['nudity']),
+      raw_response: '{}',
+      moderated_at: '2026-02-17T20:32:58.616Z',
+      reviewed_by: null,
+      reviewed_at: null,
+      uploaded_by: null,
+      title: null,
+      author: null,
+      event_id: null,
+      content_url: null,
+      published_at: null
+    }]]);
+    const relayVideos = new Map();
+    const relayCreators = new Map();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      if (String(url) === `https://api.divine.video/api/videos/${SHA256}`) {
+        return new Response(JSON.stringify({
+          event: {
+            id: eventId,
+            pubkey: uploaderPubkey,
+            created_at: 1700000000,
+            kind: 34236,
+            tags: [
+              ['d', 'cacheable-stable-id'],
+              ['title', 'Cached title'],
+              ['published_at', '1389756506'],
+              ['imeta', 'url https://media.divine.video/cached-content.mp4', `x ${SHA256}`]
+            ],
+            content: 'Cached body text',
+            sig: 'e'.repeat(128)
+          },
+          stats: {
+            author_name: 'Cached author',
+            author_avatar: 'https://cdn.divine.video/avatar.jpg'
+          }
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (String(url) === 'https://api.divine.video/api/users/bulk') {
+        expect(init.method).toBe('POST');
+        return new Response(JSON.stringify({
+          users: [{
+            pubkey: uploaderPubkey,
+            profile: {
+              display_name: 'Bulk cached creator',
+              name: 'bulk-cached',
+              picture: 'https://cdn.divine.video/bulk-avatar.jpg'
+            }
+          }]
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (String(url) === `https://api.divine.video/api/users/${uploaderPubkey}`) {
+        return new Response(JSON.stringify({
+          pubkey: uploaderPubkey,
+          profile: {
+            display_name: 'Creator profile name',
+            name: 'creator-handle',
+            picture: 'https://cdn.divine.video/profile-avatar.jpg'
+          },
+          stats: {
+            video_count: 12,
+            total_events: 88,
+            first_activity: '2019-01-01T00:00:00.000Z',
+            last_activity: '2026-04-14T00:00:00.000Z'
+          },
+          social: {
+            follower_count: 100,
+            following_count: 20
+          }
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (String(url) === `https://api.divine.video/api/users/${uploaderPubkey}/social`) {
+        return new Response(JSON.stringify({
+          follower_count: 100,
+          following_count: 20
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const env = createEnv({
+        BLOSSOM_DB: createDbMock({ moderationResults, relayVideos, relayCreators })
+      });
+
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
+          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        video: {
+          sha256: SHA256,
+          uploaded_by: uploaderPubkey,
+          title: 'Cached title',
+          author: 'Cached author',
+          eventId,
+          content_url: 'https://media.divine.video/cached-content.mp4'
+        }
+      });
+
+      expect(relayVideos.get(SHA256)).toMatchObject({
+        sha256: SHA256,
+        event_id: eventId,
+        stable_id: 'cacheable-stable-id',
+        pubkey: uploaderPubkey,
+        title: 'Cached title',
+        content: 'Cached body text',
+        video_url: 'https://media.divine.video/cached-content.mp4',
+        author_name: 'Cached author'
+      });
+
+      expect(relayCreators.get(uploaderPubkey)).toMatchObject({
+        pubkey: uploaderPubkey,
+        display_name: 'Bulk cached creator',
+        username: 'bulk-cached',
+        avatar_url: 'https://cdn.divine.video/bulk-avatar.jpg',
+        follower_count: 100,
+        following_count: 20,
+        video_count: 12,
+        event_count: 88
       });
 
       expect(moderationResults.get(SHA256)).toMatchObject({
