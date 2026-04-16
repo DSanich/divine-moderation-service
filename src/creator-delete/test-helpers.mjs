@@ -1,7 +1,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// ABOUTME: Shared test helpers for creator-delete unit tests — in-memory D1 fake.
+// ABOUTME: Shared test helpers for creator-delete unit tests — in-memory D1 and KV fakes.
 // ABOUTME: makeFakeD1 mirrors production SQL arity (see src/creator-delete/d1.mjs claimRow).
 
 // Test helper: in-memory D1 fake with the same schema as creator_deletions.
@@ -45,5 +45,16 @@ export function makeFakeD1() {
         }
       };
     }
+  };
+}
+
+// Test helper: in-memory KV fake matching the subset of Cloudflare Workers KV we use.
+// Real CF KV accepts a third options arg on put() (e.g. { expirationTtl }); the fake ignores it.
+export function makeFakeKV() {
+  const store = new Map();
+  return {
+    async get(key) { return store.get(key) ?? null; },
+    async put(key, value) { store.set(key, value); },
+    async delete(key) { store.delete(key); }
   };
 }
