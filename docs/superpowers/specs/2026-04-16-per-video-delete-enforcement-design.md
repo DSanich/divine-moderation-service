@@ -4,7 +4,7 @@
 **Author:** Matt Bradley
 **Status:** Draft. Awaiting review.
 
-**Issue:** divine-mobile#3102 (parent #2656; sibling mobile-copy polish #3101)
+**Issue:** divine-mobile#3102 (parent #2656; sibling mobile-copy polish #3117)
 
 ## Goal
 
@@ -283,7 +283,7 @@ The states mobile must represent in the UI:
 
 The relay-side delete has already succeeded in every row below the first. The timeout and unreachable states must remain honest at NIP-01 OK: the video is gone from Divine feeds and profile the moment Funnelcake accepts, even when the cleanup tail is pending.
 
-**Exact user-facing strings are owned by #3101** (mobile copy polish). This spec describes state intent only. Coordination note on #3101 to reference this design so the two tickets ship compatible copy.
+**Exact user-facing strings are owned by #3117** (mobile copy polish). This spec describes state intent only. Coordination note on #3117 to reference this design so the two tickets ship compatible copy.
 
 ### 5. Blossom `DELETE` action with cascade and physical removal
 
@@ -296,6 +296,7 @@ PR against `divine-blossom/src/admin.rs` and related:
    - **Physical GCS byte removal** on the main blob, thumbnail (`{sha256}.jpg`), VTT transcript, and any derived audio. Ordered status-first-then-bytes: the status flip precedes GCS calls so serving is already blocked before destruction begins.
    - **GCS 404 is idempotent success.** If a GCS object doesn't exist (because a prior retry already deleted it), treat as success, not failure. Prevents spurious `failed:gcs_delete` on retries.
    - **Transient GCS errors retried** with exponential backoff (max 3 attempts). Permanent failure returns a distinct error the subscriber records as `failed:transient:gcs_delete` in D1 (cron retries).
+   - **Fastly CDN cache invalidation.** After GCS deletion, issue a Fastly Purge for every affected URL path pattern (`/<sha256>`, `/<sha256>.jpg`, `/<sha256>.vtt`, and any derived-audio URL). Blossom runs on Fastly Compute so this is an internal purge call — cheap and reliable, no external token. Purge failures are logged (Sentry) but do NOT block the DELETE response from returning 200 to the caller: the core compliance claim is "bytes removed from GCS"; a failed edge purge means caches expire naturally per TTL instead of instantly. Observability: a Sentry alert on `blossom.creator_delete.cdn_purge.failed` rate surfaces degraded invalidation without degrading the creator-facing pipeline.
 3. **Physical-removal flag.** New config value (Fastly config store or env var) `ENABLE_PHYSICAL_DELETE`, default `false`. When `true`, step 2's GCS deletions run. When `false`, the handler flips status and returns `{success: true, physical_delete_skipped: true}` without touching GCS. The flag is useful on first prod deploy (validate pipeline selects correct sha256s without data destruction), for future incident response, and for any scenario where we want to fall back to reversible behavior. Default-off on first prod deploy, flip after validation.
 4. Verify serve paths reject `Deleted`. **Dependency: divine-blossom PR #33** is the in-flight work closing these route gaps (HLS HEAD, subtitle-by-hash). Our feature lands on top of #33.
 5. **Verify tombstone prevents re-upload.** The vocab alignment doc states that `Deleted` state "prevents re-upload." Scout confirms `BlobStatus::Deleted` exists but the upload-path check is unverified. Blossom PR must include (or verify) that a `PUT` request targeting a sha256 in `Deleted` state is rejected with 409 or equivalent.
@@ -316,7 +317,7 @@ Origin distinguishment (creator vs admin) lives in the D1 audit layer, not in Bl
 
 ## Failure handling
 
-Full matrix below. Every state must be scoped to what is actually known at the time the UI update appears. Exact copy is #3101's; this spec specifies state intent.
+Full matrix below. Every state must be scoped to what is actually known at the time the UI update appears. Exact copy is #3117's; this spec specifies state intent.
 
 | Scenario | Funnelcake | Mod-service | Mobile state intent |
 |---|---|---|---|
@@ -381,7 +382,7 @@ Deploy order matters. Out-of-order deployment creates failure modes that degrade
 1. **divine-blossom PR #33** must land and deploy first. Without it, `Deleted` status is not consistently checked on serve paths (HLS HEAD, subtitle-by-hash), so blob status flips are cosmetic on those routes.
 2. **divine-blossom DELETE-action PR**, flag default-off. Staging first; verify `DELETE` returns success with `physical_delete_skipped: true` when flag off.
 3. **divine-moderation-service migration + cron + sync endpoint + status endpoint PR**. Deploys to staging. Verify end-to-end against staging Blossom (flag off) — pipeline executes, Blossom returns success, D1 captures full lifecycle.
-4. **divine-mobile polling + UI states PR**. Can develop in parallel against staging mod-service; merges after #3101.
+4. **divine-mobile polling + UI states PR**. Can develop in parallel against staging mod-service; merges after #3117.
 5. **Vocabulary alignment doc PR** alongside Blossom DELETE PR.
 6. **Production rollout:** deploy Blossom (flag off), then mod-service, then mobile. Run validation window (suggested: 1 week or first 50 creator-initiated deletes in prod, whichever comes first). Flip `ENABLE_PHYSICAL_DELETE=true` and run the one-time sweep described in §5.
 
@@ -394,9 +395,11 @@ Verify before implementation or at the start of implementation (failures here re
 - [ ] Staging GCS bucket accepts authenticated delete calls from the Blossom identity.
 - [ ] Staging mod-service `wrangler.toml` supports a new D1 binding for the audit table (or uses the existing one) and a new cron trigger.
 - [ ] Staging has NIP-98 verification path testable end-to-end (nostr-tools signature verification).
+- [ ] Fastly Purge works from Blossom: verify that Blossom's DELETE handler can issue an internal Purge call and that a cached URL returns 404 (or a fresh response) within seconds. If misconfigured, Blossom logs the failure but does not block the DELETE response — acceptable graceful degradation.
 
 ## Non-goals and follow-ups (explicit)
 
+- **CDN cache invalidation is v1, not a follow-up.** Blossom's DELETE handler issues an internal Fastly Purge immediately after GCS byte deletion; the purge is cheap because Blossom runs on Fastly Compute. A purge failure is logged (Sentry) but does not block the DELETE response — the bytes-are-gone compliance claim is fulfilled via GCS deletion, and edges clear per TTL in the fallback case. Explicitly accepting "TTL window as expected latency" is NOT the v1 stance.
 - **ClickHouse reconciliation cron.** The 60s REQ cron is the primary durability mechanism. ClickHouse-based reconciliation is only worth building if observed cron miss rate justifies it, and it requires prod ClickHouse read access currently pending with ops.
 - **Grace period / creator-initiated un-delete.** Not in scope; creator-initiated deletes are not reversible by creators. Operator recovery (via direct D1 + Blossom admin access) is the escape hatch.
 - **Divine backend API for synchronous kind 5 publish (option C from brainstorm).** Foreclosed. Non-Divine clients publishing kind 5 directly to Funnelcake would bypass such an API; cron + sync endpoint covers all ingress uniformly.
