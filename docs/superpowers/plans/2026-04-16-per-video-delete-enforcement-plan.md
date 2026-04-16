@@ -441,6 +441,8 @@ Race-safe claim-or-inspect logic that multiple concurrent invocations can call s
     import { claimRow, readRow, updateToSuccess, updateToFailed } from './d1.mjs';
 
     // Test helper: in-memory D1 fake with the same schema as creator_deletions.
+    // Note: claimRow's INSERT binds 4 args (kind5_id, target_event_id, creator_pubkey, accepted_at)
+    // and inlines 'accepted' as a literal in the SQL. The fake mirrors that arity.
     function makeFakeD1() {
       const rows = new Map(); // key: `${kind5_id}:${target_event_id}`
       return {
@@ -452,12 +454,12 @@ Race-safe claim-or-inspect logic that multiple concurrent invocations can call s
             bind(...args) { this._binds = args; return this; },
             async run() {
               if (this._sql.startsWith('INSERT')) {
-                const [kind5_id, target_event_id, creator_pubkey, status, accepted_at] = this._binds;
+                const [kind5_id, target_event_id, creator_pubkey, accepted_at] = this._binds;
                 const key = `${kind5_id}:${target_event_id}`;
                 if (rows.has(key)) {
                   return { meta: { changes: 0, rows_written: 0 } };
                 }
-                rows.set(key, { kind5_id, target_event_id, creator_pubkey, status, accepted_at, retry_count: 0, last_error: null, blob_sha256: null, completed_at: null });
+                rows.set(key, { kind5_id, target_event_id, creator_pubkey, status: 'accepted', accepted_at, retry_count: 0, last_error: null, blob_sha256: null, completed_at: null });
                 return { meta: { changes: 1, rows_written: 1 } };
               }
               if (this._sql.startsWith('UPDATE')) {
