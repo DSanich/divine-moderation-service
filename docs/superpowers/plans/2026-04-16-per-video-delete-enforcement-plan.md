@@ -691,6 +691,8 @@ Race-safe claim-or-inspect logic that multiple concurrent invocations can call s
 
 The shared function called by both the sync endpoint and the cron. Given a fetched kind 5 event, processes each target independently.
 
+**Execution order dependency:** This task depends on Task 9 (extracted `notifyBlossom`). Complete Task 9 first. The `callBlossomDelete` dependency injected into `processKind5` will be wired at integration time to `(sha256) => notifyBlossom(sha256, 'DELETE', env)` (see Task 11). Mocks and implementation below assume the `notifyBlossom` return shape: `{ success: boolean, status?: number, error?: string, networkError?: boolean, skipped?: boolean }`.
+
 **Files:**
 - Create: `src/creator-delete/process.mjs`
 - Create: `src/creator-delete/process.test.mjs`
@@ -723,7 +725,7 @@ The shared function called by both the sync endpoint and the cron. Given a fetch
           pubkey: 'pub1',
           tags: [['imeta', 'url https://media.divine.video/abc.mp4', 'x abc']]
         });
-        callBlossomDelete.mockResolvedValueOnce({ ok: true, status: 200 });
+        callBlossomDelete.mockResolvedValueOnce({ success: true, status: 200 });
 
         const result = await processKind5(kind5, {
           db,
@@ -838,7 +840,7 @@ The shared function called by both the sync endpoint and the cron. Given a fetch
         }
 
         const blossomResult = await callBlossomDelete(sha256);
-        if (blossomResult.ok && blossomResult.status >= 200 && blossomResult.status < 300) {
+        if (blossomResult.success && !blossomResult.skipped) {
           await updateToSuccess(db, {
             kind5_id: kind5.id,
             target_event_id,
@@ -849,11 +851,12 @@ The shared function called by both the sync endpoint and the cron. Given a fetch
           continue;
         }
 
-        // Blossom returned non-2xx
-        const isTransient = blossomResult.status >= 500 || blossomResult.status === 429 || blossomResult.networkError;
+        // Blossom failed or skipped
+        const status = blossomResult.status;
+        const isTransient = blossomResult.networkError || (status !== undefined && (status >= 500 || status === 429));
         const category = isTransient
-          ? (blossomResult.networkError ? 'failed:transient:network' : `failed:transient:blossom_${blossomResult.status === 429 ? '429' : '5xx'}`)
-          : `failed:permanent:blossom_${blossomResult.status}`;
+          ? (blossomResult.networkError ? 'failed:transient:network' : `failed:transient:blossom_${status === 429 ? '429' : '5xx'}`)
+          : (status !== undefined ? `failed:permanent:blossom_${status}` : 'failed:permanent:blossom_skipped');
 
         await updateToFailed(db, {
           kind5_id: kind5.id,
@@ -891,7 +894,7 @@ The shared function called by both the sync endpoint and the cron. Given a fetch
         fetchTargetEvent
           .mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', 'x aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']] })
           .mockResolvedValueOnce({ id: 't2', pubkey: 'pub1', tags: [['imeta', 'x bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb']] });
-        callBlossomDelete.mockResolvedValue({ ok: true, status: 200 });
+        callBlossomDelete.mockResolvedValue({ success: true, status: 200 });
 
         const result = await processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete });
         expect(result.targets).toHaveLength(2);
@@ -916,7 +919,7 @@ The shared function called by both the sync endpoint and the cron. Given a fetch
       it('transient failure on Blossom 503', async () => {
         const kind5 = { id: 'k1', pubkey: 'pub1', tags: [['e', 't1']] };
         fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', 'x abc']] });
-        callBlossomDelete.mockResolvedValueOnce({ ok: false, status: 503, error: 'service unavailable' });
+        callBlossomDelete.mockResolvedValueOnce({ success: false, status: 503, error: 'HTTP 503: service unavailable' });
         const result = await processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete });
         expect(result.targets[0].status).toBe('failed:transient:blossom_5xx');
       });
@@ -924,9 +927,17 @@ The shared function called by both the sync endpoint and the cron. Given a fetch
       it('permanent failure on Blossom 400', async () => {
         const kind5 = { id: 'k1', pubkey: 'pub1', tags: [['e', 't1']] };
         fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', 'x abc']] });
-        callBlossomDelete.mockResolvedValueOnce({ ok: false, status: 400, error: 'bad request' });
+        callBlossomDelete.mockResolvedValueOnce({ success: false, status: 400, error: 'HTTP 400: bad request' });
         const result = await processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete });
         expect(result.targets[0].status).toBe('failed:permanent:blossom_400');
+      });
+
+      it('transient failure on network error', async () => {
+        const kind5 = { id: 'k1', pubkey: 'pub1', tags: [['e', 't1']] };
+        fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', 'x abc']] });
+        callBlossomDelete.mockResolvedValueOnce({ success: false, error: 'connection reset', networkError: true });
+        const result = await processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete });
+        expect(result.targets[0].status).toBe('failed:transient:network');
       });
 
       it('skips when existing row is success (idempotent)', async () => {
@@ -1535,88 +1546,212 @@ Thin wrapper over existing `fetchNostrEventById` with retry schedule 0ms, 100ms,
 
 ---
 
-## Task 9: Blossom DELETE call wrapper
+## Task 9: Extract `notifyBlossom` to `src/blossom-client.mjs` and add `DELETE` action
 
-Thin wrapper that calls Blossom's `/admin/api/moderate` with `action: "DELETE"` and the existing `webhook_secret` Bearer.
+**Execution order note: dispatch this BEFORE Task 4 (`processKind5`) — Task 4 imports from the extracted module.**
+
+Preflight found that `src/index.mjs:5337` already has a working `notifyBlossom(sha256, action, env)` that calls Blossom's webhook with Bearer auth, maps internal actions to Blossom actions via `BLOSSOM_ACTION_MAP`, and handles network errors. The existing env vars are `BLOSSOM_WEBHOOK_URL` (full URL) and `BLOSSOM_WEBHOOK_SECRET` — both are set as Wrangler secrets on the production worker and covered by integration tests.
+
+Rather than create a new Blossom client and duplicate ~40 lines of code, extract the existing function into a shared module and add the `DELETE` action. Both existing call sites (AI/moderator paths) and the new creator-delete pipeline will import from it.
 
 **Files:**
-- Create: `src/creator-delete/blossom-client.mjs`
-- Create: `src/creator-delete/blossom-client.test.mjs`
+- Create: `src/blossom-client.mjs`
+- Create: `src/blossom-client.test.mjs`
+- Modify: `src/index.mjs` (remove the local `notifyBlossom` definition, add import, no other changes to callers)
 
-- [ ] **Step 1: Failing test — happy path**
+**Guardrail exception:** this is a targeted refactor that serves the work (CLAUDE.md explicitly permits this: "Where existing code has problems that affect the work... include targeted improvements as part of the design"). Scope is narrow — move one function to a new file, add one entry to the action map, update existing callers to import. No other refactoring.
+
+- [ ] **Step 1: Read the current `notifyBlossom` definition**
+
+    ```bash
+    sed -n '5329,5399p' src/index.mjs
+    ```
+    Note: this function starts around line 5337 and ends around line 5399. The exact range may shift as other edits land; use `grep -n "async function notifyBlossom" src/index.mjs` to confirm.
+
+- [ ] **Step 2: Write failing test for the extracted module**
+
+    Create `src/blossom-client.test.mjs`:
 
     ```javascript
     import { describe, it, expect, vi } from 'vitest';
-    import { callBlossomDelete } from './blossom-client.mjs';
+    import { notifyBlossom } from './blossom-client.mjs';
 
-    describe('callBlossomDelete', () => {
-      it('POSTs to /admin/api/moderate with action DELETE and Bearer', async () => {
+    describe('notifyBlossom (extracted)', () => {
+      const baseEnv = {
+        BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/admin/api/moderate',
+        BLOSSOM_WEBHOOK_SECRET: 'test-secret'
+      };
+
+      it('POSTs to BLOSSOM_WEBHOOK_URL with Bearer auth and mapped action', async () => {
         const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }));
-        const result = await callBlossomDelete('abc123', {
-          adminUrl: 'https://media.divine.video',
-          webhookSecret: 'secret-value',
-          fetchFn: fetchMock
-        });
+        const env = { ...baseEnv };
+        global.fetch = fetchMock;
+
+        const result = await notifyBlossom('abc123', 'PERMANENT_BAN', env);
+
         expect(fetchMock).toHaveBeenCalledWith(
-          'https://media.divine.video/admin/api/moderate',
+          baseEnv.BLOSSOM_WEBHOOK_URL,
           expect.objectContaining({
             method: 'POST',
-            headers: expect.objectContaining({ 'Authorization': 'Bearer secret-value' }),
-            body: JSON.stringify({ sha256: 'abc123', action: 'DELETE' })
+            headers: expect.objectContaining({ 'Authorization': 'Bearer test-secret' }),
+            body: expect.stringContaining('"action":"PERMANENT_BAN"')
           })
         );
-        expect(result).toMatchObject({ ok: true, status: 200 });
+        expect(result).toMatchObject({ success: true });
       });
 
-      it('returns networkError: true when fetch throws', async () => {
-        const fetchMock = vi.fn().mockRejectedValue(new Error('connection reset'));
-        const result = await callBlossomDelete('abc', { adminUrl: 'https://x', webhookSecret: 's', fetchFn: fetchMock });
-        expect(result).toMatchObject({ ok: false, networkError: true });
+      it('maps DELETE → DELETE action', async () => {
+        const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }));
+        global.fetch = fetchMock;
+
+        await notifyBlossom('abc', 'DELETE', baseEnv);
+
+        expect(fetchMock).toHaveBeenCalledWith(
+          baseEnv.BLOSSOM_WEBHOOK_URL,
+          expect.objectContaining({
+            body: expect.stringContaining('"action":"DELETE"')
+          })
+        );
+      });
+
+      it('returns skipped when BLOSSOM_WEBHOOK_URL is not configured', async () => {
+        const result = await notifyBlossom('abc', 'PERMANENT_BAN', { BLOSSOM_WEBHOOK_SECRET: 'x' });
+        expect(result).toMatchObject({ success: true, skipped: true });
+      });
+
+      it('returns error with numeric status on non-2xx response', async () => {
+        global.fetch = vi.fn().mockResolvedValue(new Response('blob not found', { status: 404 }));
+        const result = await notifyBlossom('abc', 'PERMANENT_BAN', baseEnv);
+        expect(result).toMatchObject({ success: false, status: 404 });
+        expect(result.error).toContain('404');
+      });
+
+      it('catches fetch rejection with networkError flag', async () => {
+        global.fetch = vi.fn().mockRejectedValue(new Error('connection reset'));
+        const result = await notifyBlossom('abc', 'PERMANENT_BAN', baseEnv);
+        expect(result).toMatchObject({ success: false, networkError: true });
+        expect(result.error).toContain('connection reset');
       });
     });
     ```
 
-- [ ] **Step 2: Run — FAIL**
-
-- [ ] **Step 3: Implement**
-
-    ```javascript
-    // ABOUTME: Wrapper around Blossom's /admin/api/moderate endpoint for DELETE actions.
-    // ABOUTME: Returns { ok, status, error?, networkError? } for consumption by processKind5.
-
-    export async function callBlossomDelete(sha256, { adminUrl, webhookSecret, fetchFn = fetch }) {
-      let response;
-      try {
-        response = await fetchFn(`${adminUrl}/admin/api/moderate`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${webhookSecret}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ sha256, action: 'DELETE' })
-        });
-      } catch (e) {
-        return { ok: false, networkError: true, error: e.message };
-      }
-
-      if (response.ok) {
-        return { ok: true, status: response.status };
-      }
-
-      let errorBody;
-      try { errorBody = await response.text(); } catch (e) { errorBody = '(failed to read body)'; }
-
-      return { ok: false, status: response.status, error: errorBody };
-    }
-    ```
-
-- [ ] **Step 4: Run — passes**
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Run — FAIL (module missing)**
 
     ```bash
-    git add src/creator-delete/blossom-client.mjs src/creator-delete/blossom-client.test.mjs
-    git commit -m "feat: add Blossom DELETE action client"
+    npx vitest run src/blossom-client.test.mjs
+    ```
+
+- [ ] **Step 4: Create `src/blossom-client.mjs`**
+
+    Create the file by moving the existing `notifyBlossom` function and `BLOSSOM_ACTION_MAP` out of `src/index.mjs`. Add `'DELETE': 'DELETE'` to the action map. Preserve every line of the existing logic verbatim — this is an extraction, not a rewrite.
+
+    ```javascript
+    // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+    // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+    //
+    // ABOUTME: Shared Blossom admin client. Called from the moderator-action pipeline and the creator-delete pipeline.
+    // ABOUTME: Maps internal action names to Blossom-understood actions and POSTs to BLOSSOM_WEBHOOK_URL with Bearer auth.
+
+    // Blossom has five states (Active/Restricted/Pending/Banned/Deleted).
+    // Its webhook handler accepts: SAFE→Active, AGE_RESTRICTED→Restricted,
+    // PERMANENT_BAN→Banned, RESTRICT→Restricted, DELETE→Deleted.
+    // QUARANTINE maps to RESTRICT (owner can view, public gets 404).
+    // REVIEW is internal only — content stays publicly accessible.
+    const BLOSSOM_ACTION_MAP = {
+      'SAFE': 'SAFE',
+      'AGE_RESTRICTED': 'AGE_RESTRICTED',
+      'PERMANENT_BAN': 'PERMANENT_BAN',
+      'QUARANTINE': 'RESTRICT',
+      'DELETE': 'DELETE'
+    };
+
+    /**
+     * Notify divine-blossom of a moderation decision or creator-initiated delete via webhook.
+     * @param {string} sha256 - The blob hash
+     * @param {string} action - Internal action (SAFE, REVIEW, QUARANTINE, AGE_RESTRICTED, PERMANENT_BAN, DELETE)
+     * @param {Object} env - Environment with BLOSSOM_WEBHOOK_URL and BLOSSOM_WEBHOOK_SECRET
+     * @returns {Promise<{success: boolean, error?: string, skipped?: boolean, result?: any}>}
+     */
+    export async function notifyBlossom(sha256, action, env) {
+      if (!env.BLOSSOM_WEBHOOK_URL) {
+        console.log('[BLOSSOM] Webhook not configured, skipping notification');
+        return { success: true, skipped: true };
+      }
+
+      const blossomAction = BLOSSOM_ACTION_MAP[action];
+      if (!blossomAction) {
+        console.log(`[BLOSSOM] Skipping notification for internal action: ${action}`);
+        return { success: true, skipped: true };
+      }
+
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (env.BLOSSOM_WEBHOOK_SECRET) {
+          headers['Authorization'] = `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}`;
+        }
+
+        console.log(`[BLOSSOM] Notifying blossom of ${action} (as ${blossomAction}) for ${sha256}`);
+
+        const response = await fetch(env.BLOSSOM_WEBHOOK_URL, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            sha256,
+            action: blossomAction,
+            timestamp: new Date().toISOString()
+          })
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`[BLOSSOM] Webhook failed: ${response.status} - ${errorText}`);
+          return { success: false, error: `HTTP ${response.status}: ${errorText}` };
+        }
+
+        const result = await response.json();
+        console.log(`[BLOSSOM] Webhook succeeded for ${sha256}:`, result);
+        return { success: true, result, status: response.status };
+
+      } catch (error) {
+        console.error(`[BLOSSOM] Webhook error for ${sha256}:`, error);
+        return { success: false, error: error.message, networkError: true };
+      }
+    }
+
+    export { BLOSSOM_ACTION_MAP };
+    ```
+
+- [ ] **Step 5: Update `src/index.mjs` to import from the new module**
+
+    Remove the local `notifyBlossom` function definition and the `BLOSSOM_ACTION_MAP` constant inside it. Add an import at the top of the file (near the other imports):
+
+    ```javascript
+    import { notifyBlossom } from './blossom-client.mjs';
+    ```
+
+    All existing callers of `notifyBlossom(sha256, action, env)` continue to work unchanged — function signature is identical.
+
+- [ ] **Step 6: Run the new blossom-client tests AND the existing integration tests**
+
+    ```bash
+    npx vitest run src/blossom-client.test.mjs
+    npx vitest run src/index.test.mjs
+    ```
+
+    Expected: blossom-client tests pass, existing index tests still pass (the extracted function is behavior-equivalent).
+
+- [ ] **Step 7: Commit**
+
+    ```bash
+    git add src/blossom-client.mjs src/blossom-client.test.mjs src/index.mjs
+    git commit -m "refactor: extract notifyBlossom to shared module, add DELETE action
+
+    Moves notifyBlossom out of index.mjs so both the existing moderator-action
+    pipeline and the new creator-delete pipeline can use the same Blossom
+    client. Adds 'DELETE' to BLOSSOM_ACTION_MAP so the new creator-delete
+    pipeline can request physical removal via the same webhook path.
+
+    Behavior-equivalent extraction — no changes to existing callers."
     ```
 
 ---
@@ -1654,7 +1789,7 @@ Every-minute cron: REQ Funnelcake for kind 5 events since last poll; call `proce
           { id: 'k1', pubkey: 'pub1', tags: [['e', 't1']] }
         ]);
         deps.fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', 'x abc']] });
-        deps.callBlossomDelete.mockResolvedValueOnce({ ok: true, status: 200 });
+        deps.callBlossomDelete.mockResolvedValueOnce({ success: true, status: 200 });
 
         const result = await runCreatorDeleteCron(deps);
         expect(deps.queryKind5Since).toHaveBeenCalled();
@@ -1743,7 +1878,7 @@ Every-minute cron: REQ Funnelcake for kind 5 events since last poll; call `proce
         await deps.kv.put('creator-delete-cron:last-poll', String(Date.now() - 30_000));
         deps.queryKind5Since.mockResolvedValueOnce([]); // no new events
         deps.fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', 'x abc']] });
-        deps.callBlossomDelete.mockResolvedValueOnce({ ok: true, status: 200 });
+        deps.callBlossomDelete.mockResolvedValueOnce({ success: true, status: 200 });
 
         const result = await runCreatorDeleteCron(deps);
         expect(deps.callBlossomDelete).toHaveBeenCalledWith('abc');
@@ -1768,7 +1903,9 @@ Every-minute cron: REQ Funnelcake for kind 5 events since last poll; call `proce
 - Modify: `wrangler.toml`
 - Modify: `src/index.mjs`
 
-- [ ] **Step 1: Update wrangler.toml cron schedule**
+**Environment variables used here:** `BLOSSOM_WEBHOOK_URL` and `BLOSSOM_WEBHOOK_SECRET` (already set as Wrangler secrets on the production worker; verified in preflight). `CREATOR_DELETE_PIPELINE_ENABLED` is a new env var (default `"false"`; set to `"true"` via `wrangler secret put` or `[vars]` once we are ready to activate the feature in production).
+
+- [ ] **Step 1: Update wrangler.toml cron schedule and add feature flag default**
 
     Replace the existing:
     ```toml
@@ -1781,42 +1918,48 @@ Every-minute cron: REQ Funnelcake for kind 5 events since last poll; call `proce
     crons = ["* * * * *", "*/5 * * * *"]
     ```
 
+    Add a `CREATOR_DELETE_PIPELINE_ENABLED = "false"` line to the `[vars]` block so the default is inert until explicitly flipped.
+
 - [ ] **Step 2: Verify new cron accepted by wrangler dry-run**
 
     ```bash
-    npx wrangler deploy --dry-run --env staging
+    npx wrangler deploy --dry-run
     ```
-    Expected: success, no errors on cron config.
+    Expected: success, no errors on cron config or vars.
 
 - [ ] **Step 3: Wire routes into `src/index.mjs`**
 
-    Add imports near the top of `src/index.mjs`:
+    Add imports near the top of `src/index.mjs` (next to the other imports):
 
     ```javascript
     import { handleSyncDelete } from './creator-delete/sync-endpoint.mjs';
     import { handleStatusQuery } from './creator-delete/status-endpoint.mjs';
     import { runCreatorDeleteCron } from './creator-delete/cron.mjs';
     import { fetchKind5WithRetry } from './creator-delete/funnelcake-fetch.mjs';
-    import { callBlossomDelete as blossomDelete } from './creator-delete/blossom-client.mjs';
+    import { notifyBlossom } from './blossom-client.mjs'; // already imported via Task 9's extraction; reuse
+    import { fetchKind5EventsSince, fetchNostrEventById } from './nostr/relay-client.mjs';
     ```
 
     In the fetch handler, add (find the API_HOSTNAME routing block):
 
     ```javascript
-    // Creator-delete endpoints
-    if (url.hostname === API_HOSTNAME) {
+    // Creator-delete endpoints — gated by CREATOR_DELETE_PIPELINE_ENABLED feature flag
+    if (url.hostname === API_HOSTNAME && env.CREATOR_DELETE_PIPELINE_ENABLED === 'true') {
+      const relayUrl = env.CREATOR_DELETE_RELAY_URL || 'wss://relay.divine.video';
+
+      // Adapter: processKind5 and handleSyncDelete expect notifyBlossom's return shape
+      // (success, status?, error?, networkError?, skipped?) bound to the DELETE action.
+      const callBlossomDelete = (sha256) => notifyBlossom(sha256, 'DELETE', env);
+
       if (url.pathname.startsWith('/api/delete/') && request.method === 'POST') {
         return handleSyncDelete(request, {
           db: env.BLOSSOM_DB,
           kv: env.MODERATION_KV,
           fetchKind5WithRetry: (id) => fetchKind5WithRetry(id, {
-            fetchEventById: (eid) => fetchNostrEventById(eid, [env.CREATOR_DELETE_RELAY_URL || 'wss://relay.divine.video'], env)
+            fetchEventById: (eid) => fetchNostrEventById(eid, [relayUrl], env)
           }),
-          fetchTargetEvent: (eid) => fetchNostrEventById(eid, [env.CREATOR_DELETE_RELAY_URL || 'wss://relay.divine.video'], env),
-          callBlossomDelete: (sha256) => blossomDelete(sha256, {
-            adminUrl: env.BLOSSOM_ADMIN_URL,
-            webhookSecret: env.BLOSSOM_WEBHOOK_SECRET
-          })
+          fetchTargetEvent: (eid) => fetchNostrEventById(eid, [relayUrl], env),
+          callBlossomDelete
         });
       }
 
@@ -1827,31 +1970,33 @@ Every-minute cron: REQ Funnelcake for kind 5 events since last poll; call `proce
         });
       }
     }
+
+    // If CREATOR_DELETE_PIPELINE_ENABLED is not 'true', fall through to existing routing.
+    // Routes return 404 from the default handler until the flag is flipped on.
     ```
 
     Note: `fetchNostrEventById` and `fetchKind5EventsSince` are added to `relay-client.mjs` in Step 5 below. Both are required by the route handlers being wired here.
 
 - [ ] **Step 4: Wire cron dispatch**
 
-    In the existing `scheduled(event, env, ctx)` handler (around line 5009 of index.mjs), add a branch based on `event.cron`:
+    In the existing `scheduled(event, env, ctx)` handler (around line 5009 of index.mjs), add a branch based on `event.cron`. Also gate the new cron on `CREATOR_DELETE_PIPELINE_ENABLED`:
 
     ```javascript
     async scheduled(event, env, ctx) {
       if (event.cron === '* * * * *') {
-        // Every-minute: creator-delete pipeline
+        // Every-minute: creator-delete pipeline (gated by feature flag)
+        if (env.CREATOR_DELETE_PIPELINE_ENABLED !== 'true') {
+          return;
+        }
+        const relayUrl = env.CREATOR_DELETE_RELAY_URL || 'wss://relay.divine.video';
         try {
           const result = await runCreatorDeleteCron({
             db: env.BLOSSOM_DB,
             kv: env.MODERATION_KV,
-            queryKind5Since: async (sinceSeconds) => {
-              // Use existing relay-client.mjs REQ helper
-              return await fetchKind5EventsSince(sinceSeconds, env.CREATOR_DELETE_RELAY_URL || 'wss://relay.divine.video', env);
-            },
-            fetchTargetEvent: (eid) => fetchNostrEventById(eid, [env.CREATOR_DELETE_RELAY_URL || 'wss://relay.divine.video'], env),
-            callBlossomDelete: (sha256) => blossomDelete(sha256, {
-              adminUrl: env.BLOSSOM_ADMIN_URL,
-              webhookSecret: env.BLOSSOM_WEBHOOK_SECRET
-            })
+            queryKind5Since: async (sinceSeconds) =>
+              fetchKind5EventsSince(sinceSeconds, relayUrl, env),
+            fetchTargetEvent: (eid) => fetchNostrEventById(eid, [relayUrl], env),
+            callBlossomDelete: (sha256) => notifyBlossom(sha256, 'DELETE', env)
           });
           console.log(`[CREATOR-DELETE-CRON] Processed ${result.processed}, errors: ${result.errors.length}`);
         } catch (e) {
@@ -1862,12 +2007,12 @@ Every-minute cron: REQ Funnelcake for kind 5 events since last poll; call `proce
 
       if (event.cron === '*/5 * * * *') {
         // Existing 5-minute relay poller — preserve existing behavior below
-        // ... existing scheduled() body ...
+        // ... existing scheduled() body moves here unchanged ...
       }
     }
     ```
 
-    Restructure the existing scheduled() body to be under the `'*/5 * * * *'` branch rather than unconditional.
+    Restructure the existing scheduled() body to be under the `'*/5 * * * *'` branch rather than unconditional. Do not modify the existing logic; only move it inside the branch.
 
 - [ ] **Step 5: Add `fetchKind5EventsSince` and `fetchNostrEventById` to `src/nostr/relay-client.mjs`**
 
@@ -1905,11 +2050,22 @@ Every-minute cron: REQ Funnelcake for kind 5 events since last poll; call `proce
 
 - [ ] **Step 6: Local dev sanity check**
 
+    Temporarily enable the feature flag for local dev, then verify routes respond:
+
     ```bash
-    npx wrangler dev
+    # Start wrangler dev with the flag enabled for this session only
+    CREATOR_DELETE_PIPELINE_ENABLED=true npx wrangler dev --var CREATOR_DELETE_PIPELINE_ENABLED:true
     # In another terminal:
     curl -v http://localhost:8787/api/delete-status/abc -H 'Host: moderation-api.divine.video'
     # Expected: 401 (NIP-98 required)
+    ```
+
+    Then re-run without the flag to confirm the endpoints 404 when disabled:
+
+    ```bash
+    npx wrangler dev
+    curl -v http://localhost:8787/api/delete-status/abc -H 'Host: moderation-api.divine.video'
+    # Expected: 404 (routes gated off)
     ```
 
 - [ ] **Step 7: Commit**
@@ -1971,89 +2127,137 @@ Every-minute cron: REQ Funnelcake for kind 5 events since last poll; call `proce
 
 ---
 
-## Task 13: Staging deploy and end-to-end validation
+## Task 13: Production deploy (feature flag off) and end-to-end validation
 
-- [ ] **Step 1: Deploy to staging**
+This repo does not have a separate staging environment in `wrangler.toml`. The established convention is to deploy directly to production. We mitigate destructive-code risk via two flags layered on top of each other:
+
+1. **`CREATOR_DELETE_PIPELINE_ENABLED`** (this repo) — default `"false"`. Keeps our new routes 404'd and our new cron inert until explicitly flipped on.
+2. **`ENABLE_PHYSICAL_DELETE`** (Blossom repo) — default `"false"` on first deploy. Blossom flips status to `Deleted` (stops serving) but does not touch GCS bytes until this flag is flipped.
+
+This means the first production deploy of our code is fully inert. No routes respond. No cron processes. No Blossom calls. Safe by construction.
+
+- [ ] **Step 1: Deploy moderation-service to production with flag off**
 
     ```bash
-    npx wrangler deploy --env staging
+    npx wrangler deploy
     ```
-    Expected: deploy success, routes active.
+
+    Confirm via `wrangler tail` that the worker is live, existing routes still respond, and the new creator-delete routes return 404 (flag is off).
 
 - [ ] **Step 2: Log deploy**
 
     ```bash
-    scripts/log-deploy.sh divine-moderation-service staging spec/per-video-delete-enforcement "creator-delete v1 staging"
+    scripts/log-deploy.sh divine-moderation-service production spec/per-video-delete-enforcement "creator-delete v1 prod (flag off)"
     ```
 
-- [ ] **Step 3: Run staging e2e: sync endpoint happy path**
+- [ ] **Step 3: Create a test script for end-to-end validation**
 
-    Using a test account's nsec, publish a kind 5 to staging Funnelcake deleting a test video. Immediately call the sync endpoint:
+    Create `scripts/test-creator-delete.mjs` (only run when the flag is on):
+
+    - Accept `--relay <url>` (default `wss://relay.divine.video`), `--api <url>` (default `https://moderation-api.divine.video`), `--nsec <hex>`, `--target-event-id <id>`.
+    - Sign a kind 5 deleting the target, publish to the relay, wait for OK.
+    - Sign a NIP-98 header for `POST /api/delete/{kind5_id}` and call the sync endpoint.
+    - Print the response body and any D1 row state.
+
+    Script should use the existing `scripts/publish-test-video.mjs` style as a reference for CLI args and relay interaction.
+
+- [ ] **Step 4: Flip the flag on a small test account first**
+
+    Because there is no staging, temporarily set `CREATOR_DELETE_PIPELINE_ENABLED="true"` on the production worker:
 
     ```bash
-    # Script: scripts/test-creator-delete.mjs (create as part of this task)
-    # Signs NIP-98, calls sync endpoint, asserts 200 + success
-    node scripts/test-creator-delete.mjs --env staging --kind5-id <id> --nsec <test-nsec>
+    npx wrangler secret put CREATOR_DELETE_PIPELINE_ENABLED
+    # Enter: true
     ```
 
-    Expected: 200 with status `success`, D1 row present with status `success`.
+    (or add `CREATOR_DELETE_PIPELINE_ENABLED = "true"` to `[vars]` and re-deploy — whichever you prefer.)
 
-- [ ] **Step 4: Verify Blossom-side effect (flag off)**
+- [ ] **Step 5: Run e2e sync endpoint happy path (with a throwaway test video)**
 
-    Confirm the target blob shows `Deleted` status in Blossom admin UI and serves 404 on the main URL and thumbnail. With `ENABLE_PHYSICAL_DELETE=false` (staging default), GCS bytes should remain.
+    Upload a throwaway test video via the divine-mobile app using a test account, confirm it's served from Blossom, then:
 
-- [ ] **Step 5: Run staging e2e: cron path**
+    ```bash
+    node scripts/test-creator-delete.mjs \
+      --relay wss://relay.divine.video \
+      --api https://moderation-api.divine.video \
+      --nsec <test-nsec> \
+      --target-event-id <test-video-event-id>
+    ```
 
-    Publish a kind 5 to staging Funnelcake WITHOUT calling the sync endpoint. Wait up to 90 seconds. Confirm D1 shows a row with `status: success` and Blossom shows `Deleted`.
+    Expected: 200 with `status: "success"`. D1 row `{status: "success", blob_sha256: <sha>, completed_at: <timestamp>}`.
 
-- [ ] **Step 6: Run staging e2e: race test**
+- [ ] **Step 6: Verify Blossom-side effect**
+
+    Confirm the target blob serves 404 on:
+    - `https://media.divine.video/<sha256>`
+    - `https://media.divine.video/<sha256>.jpg`
+    - `https://media.divine.video/<sha256>.vtt`
+
+    With `ENABLE_PHYSICAL_DELETE=false` in Blossom (first-prod-deploy default), GCS bytes should still exist. Verify via Blossom admin UI (status shows `Deleted`).
+
+- [ ] **Step 7: Run cron path test**
+
+    Using a different test video + test account, publish a kind 5 WITHOUT calling the sync endpoint. Wait up to 90 seconds. Confirm D1 shows a row with `status: success` and Blossom shows `Deleted`.
+
+- [ ] **Step 8: Run race test**
 
     Publish a kind 5. Immediately (within 100ms of NIP-01 OK) call the sync endpoint. Assert 200 success without 404 or 202 (retry logic handled the Funnelcake read-after-write race).
 
-- [ ] **Step 7: Record staging validation results in the PR**
+- [ ] **Step 9: Record production validation results in the PR**
 
-    Comment on PR #92 with a summary: preflight results, e2e test results, any observed p95 lag numbers from the staging logs.
+    Comment on PR #92 with a summary: preflight results, e2e test results, observed p95 latency for sync path, observed cron lag, any failed:transient rows in D1 during validation.
 
-- [ ] **Step 8: Commit test script**
+- [ ] **Step 10: Commit test script**
 
     ```bash
     git add scripts/test-creator-delete.mjs
-    git commit -m "test: add creator-delete staging e2e script"
+    git commit -m "test: add creator-delete production validation script"
     ```
 
 ---
 
-## Task 14: Prepare for production
+## Task 14: Validation window and phased flag flips
 
-- [ ] **Step 1: Ensure Blossom DELETE PR has landed in prod and flag is off**
+- [ ] **Step 1: Confirm Blossom DELETE action is accepted in production**
 
-    Check `media.divine.video/admin/api/moderate` accepts `action: "DELETE"` with the flag default-off. If not, pause production rollout until Blossom PR lands.
-
-- [ ] **Step 2: Deploy moderation-service to prod with flag off path**
-
-    The moderation-service has no `ENABLE_PHYSICAL_DELETE` flag of its own. Rollout depends on Blossom's flag state.
+    Blossom's `admin/api/moderate` must accept `action: "DELETE"` before we turn the pipeline on. If the Blossom PR hasn't shipped, either the validation fails or we fall back to `PERMANENT_BAN` for a transitional deploy. Check with a NIP-98-less smoke request to confirm the action is recognized (not necessarily authorized):
 
     ```bash
-    npx wrangler deploy --env production
-    scripts/log-deploy.sh divine-moderation-service production main "creator-delete v1 prod (flag off)"
+    curl -v -X POST https://media.divine.video/admin/api/moderate \
+      -H 'Content-Type: application/json' \
+      -H 'Authorization: Bearer <test-token-or-empty>' \
+      -d '{"sha256":"0000000000000000000000000000000000000000000000000000000000000000","action":"DELETE"}'
     ```
 
-- [ ] **Step 3: Validation window**
+    Expect 401/403 (auth) rather than 400 "Unknown action". If 400 "Unknown action", Blossom doesn't yet have DELETE wired — pause the flag flip until it does.
 
-    Over the next 1 week (or the first 50 creator deletes in production, whichever comes first), monitor:
-    - D1 `creator_deletions` rows
-    - Sentry alerts for sync latency, cron lag, Blossom failure rate, permanent failures
-    - Blossom dashboard for Deleted blob count + bytes_still_present count
+- [ ] **Step 2: Production validation window**
 
-    Confirm pipeline selects the right sha256s (no wrong-blob deletions in the sample). If all green, proceed.
+    With `CREATOR_DELETE_PIPELINE_ENABLED=true` (from Task 13) and Blossom's `ENABLE_PHYSICAL_DELETE=false`, monitor over 1 week OR the first 50 creator deletes in production (whichever comes first):
 
-- [ ] **Step 4: Flip the Blossom flag**
+    - D1 `creator_deletions` rows — scan for `failed:*` statuses
+    - Sentry alerts — sync latency, cron lag, Blossom failure rate, permanent failures
+    - Blossom dashboard — `Deleted` blob count (should grow), GCS byte count unchanged (flag off)
+    - Spot-check: for each of the first ~10 deletes, confirm the blob_sha256 recorded in D1 matches the actual video's sha256 from its kind 34236 event (no wrong-blob deletions)
 
-    Separately from moderation-service, flip `ENABLE_PHYSICAL_DELETE=true` in Blossom's prod config. Run Blossom's one-time sweep over historical `Deleted` blobs to physically remove their bytes.
+    Any `failed:permanent:*` rows other than `target_unresolved` are triage tickets, not blockers.
 
-- [ ] **Step 5: Confirm physical byte removal**
+- [ ] **Step 3: Flip the Blossom flag**
 
-    Next production delete after flag flip should show both Blossom `Deleted` and GCS bytes gone (verify via Blossom admin). Monitor for failures.
+    Separately from moderation-service, flip `ENABLE_PHYSICAL_DELETE=true` in Blossom's prod config. Run Blossom's one-time sweep over historical `Deleted` blobs to physically remove their bytes (see Blossom PR for sweep details).
+
+- [ ] **Step 4: Confirm physical byte removal**
+
+    Next production delete after flag flip should show both Blossom `Deleted` status AND GCS bytes gone (verify via Blossom admin UI and direct GCS bucket list). Monitor sync endpoint latency for Blossom-side regression (physical delete adds GCS call latency).
+
+- [ ] **Step 5: Rolling back if needed**
+
+    If any stage reveals a bug, the rollback path is:
+    - Flip `CREATOR_DELETE_PIPELINE_ENABLED=false` immediately (stops new pipeline invocations without redeploying)
+    - For Blossom issues, flip `ENABLE_PHYSICAL_DELETE=false` (stops new byte deletions)
+    - Revert offending commits on a follow-up branch if needed
+
+    Both flags are production-flippable without code changes.
 
 ---
 
@@ -2077,7 +2281,15 @@ After the plan is written, run through:
 
 **Placeholder scan:** No TODOs, no "implement later", no "similar to Task N". Every code step has the code.
 
-**Type consistency:** Function names across tasks (`processKind5`, `claimRow`, `decideAction`, `validateNip98Header`, `callBlossomDelete`, `fetchKind5WithRetry`) match across all tasks they appear in.
+**Type consistency:** Function names across tasks (`processKind5`, `claimRow`, `decideAction`, `validateNip98Header`, `notifyBlossom`, `callBlossomDelete` (dep-injection alias bound to `notifyBlossom(sha256, 'DELETE', env)`), `fetchKind5WithRetry`) match across all tasks they appear in.
+
+**Execution order note:**
+
+Because Task 4 (`processKind5`) depends on Task 9 (extraction of `notifyBlossom`), the execution sequence is:
+
+Task 1 → Task 2 → Task 3 → **Task 9** → Task 4 → Task 5 → Task 6 → Task 7 → Task 8 → Task 10 → Task 11 → Task 12 → Task 13 → Task 14
+
+Task 9 is physically located after Tasks 4-8 in this document, but MUST be dispatched before Task 4.
 
 ---
 
