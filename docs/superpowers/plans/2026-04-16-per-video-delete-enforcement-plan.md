@@ -1091,7 +1091,17 @@ Wraps NIP-98 validation, rate limiting, Funnelcake fetch with retries, `processK
     ```javascript
     import { describe, it, expect, vi, beforeEach } from 'vitest';
     import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
-    import { handleSyncDelete } from './sync-endpoint.mjs';
+    import {
+      handleSyncDelete,
+      PER_PUBKEY_LIMIT,
+      PER_IP_LIMIT,
+      RATE_WINDOW_SECONDS
+    } from './sync-endpoint.mjs';
+    import { checkRateLimit } from './rate-limit.mjs';
+    import { makeFakeD1, makeFakeKV } from './test-helpers.mjs';
+
+    const KIND5_ID = 'a'.repeat(64); // 64-char hex for URL path + kind5.id fixture
+    const SHA_C = 'c'.repeat(64);    // 64-char hex for blob sha256 (extractSha256 requires)
 
     describe('handleSyncDelete', () => {
       let sk, pk, deps;
@@ -1120,26 +1130,24 @@ Wraps NIP-98 validation, rate limiting, Funnelcake fetch with retries, `processK
       }
 
       it('returns 200 with success on happy path', async () => {
-        const kind5 = { id: 'k1', pubkey: pk, tags: [['e', 't1']] };
+        const kind5 = { id: KIND5_ID, pubkey: pk, tags: [['e', 't1']] };
         deps.fetchKind5WithRetry.mockResolvedValueOnce(kind5);
-        deps.fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: pk, tags: [['imeta', 'x abc']] });
-        deps.callBlossomDelete.mockResolvedValueOnce({ ok: true, status: 200 });
+        deps.fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: pk, tags: [['imeta', `x ${SHA_C}`]] });
+        deps.callBlossomDelete.mockResolvedValueOnce({ success: true, status: 200 });
 
-        const request = new Request('https://moderation-api.divine.video/api/delete/k1', {
+        const url = `https://moderation-api.divine.video/api/delete/${KIND5_ID}`;
+        const request = new Request(url, {
           method: 'POST',
-          headers: { 'Authorization': signNip98('https://moderation-api.divine.video/api/delete/k1', 'POST') }
+          headers: { 'Authorization': signNip98(url, 'POST') }
         });
 
         const response = await handleSyncDelete(request, deps);
         expect(response.status).toBe(200);
         const body = await response.json();
-        expect(body).toMatchObject({ kind5_id: 'k1', status: 'success' });
-        expect(body.targets[0]).toMatchObject({ target_event_id: 't1', status: 'success', blob_sha256: 'abc' });
+        expect(body).toMatchObject({ kind5_id: KIND5_ID, status: 'success' });
+        expect(body.targets[0]).toMatchObject({ target_event_id: 't1', status: 'success', blob_sha256: SHA_C });
       });
     });
-
-    function makeFakeD1() { /* see d1.test.mjs */ }
-    function makeFakeKV() { /* see rate-limit.test.mjs */ }
     ```
 
 - [ ] **Step 2: Run — FAIL**
@@ -1156,9 +1164,9 @@ Wraps NIP-98 validation, rate limiting, Funnelcake fetch with retries, `processK
     import { processKind5 } from './process.mjs';
     import { checkRateLimit } from './rate-limit.mjs';
 
-    const PER_PUBKEY_LIMIT = 5;
-    const PER_IP_LIMIT = 30;
-    const RATE_WINDOW_SECONDS = 60;
+    export const PER_PUBKEY_LIMIT = 5;
+    export const PER_IP_LIMIT = 30;
+    export const RATE_WINDOW_SECONDS = 60;
 
     export async function handleSyncDelete(request, deps) {
       const { db, kv, fetchKind5WithRetry, fetchTargetEvent, callBlossomDelete, budgetMs = 8000 } = deps;
@@ -1290,13 +1298,13 @@ Wraps NIP-98 validation, rate limiting, Funnelcake fetch with retries, `processK
       });
 
       it('returns 202 when internal budget exceeded', async () => {
-        const kind5 = { id: 'a'.repeat(64), pubkey: pk, tags: [['e', 't1']] };
+        const kind5 = { id: KIND5_ID, pubkey: pk, tags: [['e', 't1']] };
         deps.fetchKind5WithRetry.mockResolvedValueOnce(kind5);
-        deps.fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: pk, tags: [['imeta', 'x abc']] });
+        deps.fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: pk, tags: [['imeta', `x ${SHA_C}`]] });
         // Blossom slow — never resolves within budget
         deps.callBlossomDelete.mockReturnValueOnce(new Promise(() => {}));
 
-        const url = 'https://moderation-api.divine.video/api/delete/' + 'a'.repeat(64);
+        const url = `https://moderation-api.divine.video/api/delete/${KIND5_ID}`;
         const request = new Request(url, { method: 'POST', headers: { Authorization: signNip98(url, 'POST') } });
         const response = await handleSyncDelete(request, { ...deps, budgetMs: 50 });
         expect(response.status).toBe(202);
@@ -1305,7 +1313,7 @@ Wraps NIP-98 validation, rate limiting, Funnelcake fetch with retries, `processK
       });
     ```
 
-    Import `checkRateLimit` and constants at the top of the test file.
+    Also update the other rejection tests to use the `KIND5_ID` constant rather than `'a'.repeat(64)` literals, and tighten `'notahex'` to a string that is clearly not 64-hex (e.g., `'not-a-hex-id'`). Tests for 401 / 403 / 404 / 429 should replace `'a'.repeat(64)` with `` `${KIND5_ID}` `` for consistency.
 
 - [ ] **Step 6: Run — all pass**
 
