@@ -1799,12 +1799,47 @@ Every-minute cron: REQ Funnelcake for kind 5 events since last poll; call `proce
 **Files:**
 - Create: `src/creator-delete/cron.mjs`
 - Create: `src/creator-delete/cron.test.mjs`
+- Modify: `src/creator-delete/test-helpers.mjs` — extend `makeFakeD1`'s `.all()` to support a second SELECT query shape: `WHERE status LIKE 'failed:transient:%' AND retry_count < ?`. The cron uses this for transient-retry sweeps; without support, the test returns an empty array and the retry branch silently does nothing.
+
+Extend the `.all()` method in `test-helpers.mjs` to detect and handle BOTH patterns:
+
+```javascript
+async all() {
+  if (this._sql.startsWith('SELECT')) {
+    // Pattern 1: cron transient-retry sweep
+    // SELECT ... WHERE status LIKE 'failed:transient:%' AND retry_count < ?
+    if (this._sql.includes("status LIKE 'failed:transient:%'") && this._sql.includes("retry_count <")) {
+      const maxRetry = this._binds[0];
+      const results = [];
+      for (const row of rows.values()) {
+        if (!row.status?.startsWith('failed:transient:')) continue;
+        if (row.retry_count >= maxRetry) continue;
+        results.push(row);
+      }
+      return { results };
+    }
+    // Pattern 2 (existing): SELECT ... WHERE kind5_id = ? [AND target_event_id = ?]
+    const kind5_id = this._binds[0];
+    const results = [];
+    for (const row of rows.values()) {
+      if (row.kind5_id !== kind5_id) continue;
+      if (this._binds.length >= 2 && row.target_event_id !== this._binds[1]) continue;
+      results.push(row);
+    }
+    return { results };
+  }
+  return { results: [] };
+},
+```
 
 - [ ] **Step 1: Failing test — happy path**
 
     ```javascript
     import { describe, it, expect, vi, beforeEach } from 'vitest';
     import { runCreatorDeleteCron } from './cron.mjs';
+    import { makeFakeD1, makeFakeKV } from './test-helpers.mjs';
+
+    const SHA_C = 'c'.repeat(64); // 64-char hex fixture (extractSha256 requires)
 
     describe('runCreatorDeleteCron', () => {
       let deps;
@@ -1824,7 +1859,7 @@ Every-minute cron: REQ Funnelcake for kind 5 events since last poll; call `proce
         deps.queryKind5Since.mockResolvedValueOnce([
           { id: 'k1', pubkey: 'pub1', tags: [['e', 't1']] }
         ]);
-        deps.fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', 'x abc']] });
+        deps.fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', `x ${SHA_C}`]] });
         deps.callBlossomDelete.mockResolvedValueOnce({ success: true, status: 200 });
 
         const result = await runCreatorDeleteCron(deps);
@@ -1905,19 +1940,28 @@ Every-minute cron: REQ Funnelcake for kind 5 events since last poll; call `proce
 
     ```javascript
       it('retries failed:transient rows with retry_count < 5', async () => {
-        await deps.db.prepare(
-          `INSERT INTO creator_deletions (kind5_id, target_event_id, creator_pubkey, status, accepted_at, retry_count)
-           VALUES (?, ?, ?, 'failed:transient:blossom_5xx', ?, 2)
-           ON CONFLICT(kind5_id, target_event_id) DO NOTHING`
-        ).bind('k1', 't1', 'pub1', new Date(Date.now() - 60_000).toISOString(), 2).run();
+        // Seed D1 directly — the fake's INSERT path is tailored to claimRow's
+        // 4-arg bind with 'accepted' status literal, so it can't represent a
+        // pre-existing failed:transient row. Direct rows.set() bypasses it.
+        deps.db.rows.set('k1:t1', {
+          kind5_id: 'k1',
+          target_event_id: 't1',
+          creator_pubkey: 'pub1',
+          status: 'failed:transient:blossom_5xx',
+          accepted_at: new Date(Date.now() - 60_000).toISOString(),
+          blob_sha256: null,
+          retry_count: 2,
+          last_error: 'HTTP 503: prior attempt',
+          completed_at: null
+        });
 
         await deps.kv.put('creator-delete-cron:last-poll', String(Date.now() - 30_000));
         deps.queryKind5Since.mockResolvedValueOnce([]); // no new events
-        deps.fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', 'x abc']] });
+        deps.fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', `x ${SHA_C}`]] });
         deps.callBlossomDelete.mockResolvedValueOnce({ success: true, status: 200 });
 
         const result = await runCreatorDeleteCron(deps);
-        expect(deps.callBlossomDelete).toHaveBeenCalledWith('abc');
+        expect(deps.callBlossomDelete).toHaveBeenCalledWith(SHA_C);
         expect(result.processed).toBeGreaterThanOrEqual(1);
       });
     ```
