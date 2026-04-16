@@ -714,6 +714,8 @@ The shared function called by both the sync endpoint and the cron. Given a fetch
         callBlossomDelete = vi.fn();
       });
 
+      const SHA_C = 'c'.repeat(64); // 64-char hex fixture (extractSha256 requires exactly 64 hex chars)
+
       it('happy path: claim, fetch target, extract sha256, call Blossom, mark success', async () => {
         const kind5 = {
           id: 'k1',
@@ -723,7 +725,7 @@ The shared function called by both the sync endpoint and the cron. Given a fetch
         fetchTargetEvent.mockResolvedValueOnce({
           id: 't1',
           pubkey: 'pub1',
-          tags: [['imeta', 'url https://media.divine.video/abc.mp4', 'x abc']]
+          tags: [['imeta', `url https://media.divine.video/${SHA_C}.mp4`, `x ${SHA_C}`]]
         });
         callBlossomDelete.mockResolvedValueOnce({ success: true, status: 200 });
 
@@ -733,8 +735,8 @@ The shared function called by both the sync endpoint and the cron. Given a fetch
           callBlossomDelete
         });
 
-        expect(result.targets).toEqual([{ target_event_id: 't1', status: 'success', blob_sha256: 'abc' }]);
-        expect(callBlossomDelete).toHaveBeenCalledWith('abc');
+        expect(result.targets).toEqual([{ target_event_id: 't1', status: 'success', blob_sha256: SHA_C }]);
+        expect(callBlossomDelete).toHaveBeenCalledWith(SHA_C);
       });
     });
 
@@ -918,7 +920,7 @@ The shared function called by both the sync endpoint and the cron. Given a fetch
 
       it('transient failure on Blossom 503', async () => {
         const kind5 = { id: 'k1', pubkey: 'pub1', tags: [['e', 't1']] };
-        fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', 'x abc']] });
+        fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', `x ${SHA_C}`]] });
         callBlossomDelete.mockResolvedValueOnce({ success: false, status: 503, error: 'HTTP 503: service unavailable' });
         const result = await processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete });
         expect(result.targets[0].status).toBe('failed:transient:blossom_5xx');
@@ -926,7 +928,7 @@ The shared function called by both the sync endpoint and the cron. Given a fetch
 
       it('permanent failure on Blossom 400', async () => {
         const kind5 = { id: 'k1', pubkey: 'pub1', tags: [['e', 't1']] };
-        fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', 'x abc']] });
+        fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', `x ${SHA_C}`]] });
         callBlossomDelete.mockResolvedValueOnce({ success: false, status: 400, error: 'HTTP 400: bad request' });
         const result = await processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete });
         expect(result.targets[0].status).toBe('failed:permanent:blossom_400');
@@ -934,7 +936,7 @@ The shared function called by both the sync endpoint and the cron. Given a fetch
 
       it('transient failure on network error', async () => {
         const kind5 = { id: 'k1', pubkey: 'pub1', tags: [['e', 't1']] };
-        fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', 'x abc']] });
+        fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: 'pub1', tags: [['imeta', `x ${SHA_C}`]] });
         callBlossomDelete.mockResolvedValueOnce({ success: false, error: 'connection reset', networkError: true });
         const result = await processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete });
         expect(result.targets[0].status).toBe('failed:transient:network');
