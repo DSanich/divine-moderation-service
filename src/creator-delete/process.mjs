@@ -28,7 +28,7 @@ export function extractSha256(targetEvent) {
  * Process a kind 5 event. Processes each e-tag target independently.
  * Returns { targets: [{ target_event_id, status, blob_sha256?, last_error? }] }
  */
-export async function processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete, now = () => Date.now() }) {
+export async function processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete, now = () => Date.now(), triggerLabel = 'unknown' }) {
   const targetIds = (kind5.tags || [])
     .filter(t => t[0] === 'e' && t[1])
     .map(t => t[1]);
@@ -60,6 +60,15 @@ export async function processKind5(kind5, { db, fetchTargetEvent, callBlossomDel
     }
 
     // action === 'proceed'
+    console.log(JSON.stringify({
+      event: 'creator_delete.accepted',
+      kind5_id: kind5.id,
+      target_event_id,
+      creator_pubkey: kind5.pubkey,
+      accepted_at: acceptedIso,
+      trigger: triggerLabel
+    }));
+
     const target = await fetchTargetEvent(target_event_id);
     if (!target) {
       await updateToFailed(db, {
@@ -68,6 +77,16 @@ export async function processKind5(kind5, { db, fetchTargetEvent, callBlossomDel
         status: 'failed:permanent:target_unresolved',
         last_error: 'Target event not found on Funnelcake'
       });
+      console.log(JSON.stringify({
+        event: 'creator_delete.failed',
+        kind5_id: kind5.id,
+        target_event_id,
+        creator_pubkey: kind5.pubkey,
+        status: 'failed:permanent:target_unresolved',
+        last_error: 'Target event not found on Funnelcake',
+        retry_count_after: (claim.existing && claim.existing.retry_count) || 0,
+        trigger: triggerLabel
+      }));
       resultTargets.push({ target_event_id, status: 'failed:permanent:target_unresolved' });
       continue;
     }
@@ -80,18 +99,38 @@ export async function processKind5(kind5, { db, fetchTargetEvent, callBlossomDel
         status: 'failed:permanent:no_sha256',
         last_error: 'No sha256 in target event imeta/url'
       });
+      console.log(JSON.stringify({
+        event: 'creator_delete.failed',
+        kind5_id: kind5.id,
+        target_event_id,
+        creator_pubkey: kind5.pubkey,
+        status: 'failed:permanent:no_sha256',
+        last_error: 'No sha256 in target event imeta/url',
+        retry_count_after: (claim.existing && claim.existing.retry_count) || 0,
+        trigger: triggerLabel
+      }));
       resultTargets.push({ target_event_id, status: 'failed:permanent:no_sha256' });
       continue;
     }
 
     const blossomResult = await callBlossomDelete(sha256);
     if (blossomResult.success && !blossomResult.skipped) {
+      const completedIso = new Date(now()).toISOString();
       await updateToSuccess(db, {
         kind5_id: kind5.id,
         target_event_id,
         blob_sha256: sha256,
-        completed_at: new Date(now()).toISOString()
+        completed_at: completedIso
       });
+      console.log(JSON.stringify({
+        event: 'creator_delete.success',
+        kind5_id: kind5.id,
+        target_event_id,
+        creator_pubkey: kind5.pubkey,
+        blob_sha256: sha256,
+        completed_at: completedIso,
+        trigger: triggerLabel
+      }));
       resultTargets.push({ target_event_id, status: 'success', blob_sha256: sha256 });
       continue;
     }
@@ -103,13 +142,26 @@ export async function processKind5(kind5, { db, fetchTargetEvent, callBlossomDel
       ? (blossomResult.networkError ? 'failed:transient:network' : `failed:transient:blossom_${status === 429 ? '429' : '5xx'}`)
       : (status !== undefined ? `failed:permanent:blossom_${status}` : 'failed:permanent:blossom_skipped');
 
+    const lastError = blossomResult.error || `Blossom returned ${blossomResult.status}`;
     await updateToFailed(db, {
       kind5_id: kind5.id,
       target_event_id,
       status: category,
-      last_error: blossomResult.error || `Blossom returned ${blossomResult.status}`,
+      last_error: lastError,
       increment_retry: isTransient
     });
+    const priorRetryCount = (claim.existing && claim.existing.retry_count) || 0;
+    const retryCountAfter = isTransient ? priorRetryCount + 1 : priorRetryCount;
+    console.log(JSON.stringify({
+      event: 'creator_delete.failed',
+      kind5_id: kind5.id,
+      target_event_id,
+      creator_pubkey: kind5.pubkey,
+      status: category,
+      last_error: lastError,
+      retry_count_after: retryCountAfter,
+      trigger: triggerLabel
+    }));
     resultTargets.push({ target_event_id, status: category, last_error: blossomResult.error, blob_sha256: sha256 });
   }
 

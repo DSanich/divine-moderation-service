@@ -25,7 +25,13 @@ export async function runCreatorDeleteCron(deps) {
     const events = await queryKind5Since(sinceSeconds);
     for (const kind5 of events) {
       try {
-        await processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete });
+        const lagSeconds = Math.max(0, Math.floor(now() / 1000) - (kind5.created_at || 0));
+        console.log(JSON.stringify({
+          event: 'creator_delete.cron.kind5_lag',
+          kind5_id: kind5.id,
+          lag_seconds: lagSeconds
+        }));
+        await processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete, triggerLabel: 'cron' });
         processed++;
       } catch (e) {
         errors.push({ kind5_id: kind5.id, error: e.message });
@@ -45,7 +51,7 @@ export async function runCreatorDeleteCron(deps) {
   for (const row of (transientRows.results || [])) {
     try {
       const kind5 = { id: row.kind5_id, pubkey: row.creator_pubkey, tags: [['e', row.target_event_id]] };
-      await processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete });
+      await processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete, triggerLabel: 'cron' });
       processed++;
     } catch (e) {
       errors.push({ kind5_id: row.kind5_id, stage: 'retry', error: e.message });
