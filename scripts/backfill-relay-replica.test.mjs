@@ -253,6 +253,8 @@ describe('backfill-relay-replica', () => {
     expect(chunks[0]).toContain('ON CONFLICT(sha256) DO UPDATE SET');
     expect(chunks[0]).toContain('INSERT INTO relay_creators');
     expect(chunks[0]).toContain('UPDATE moderation_results');
+    expect(chunks[0]).toContain('source_updated_at = excluded.source_updated_at;');
+    expect(chunks[0]).toContain('synced_at = excluded.synced_at;');
     expect(chunks[0]).toContain('CASE sha256');
     expect(chunks[1]).toContain('INSERT INTO relay_videos');
     expect(chunks[1]).toContain("WHERE sha256 IN ('bbbbbbbbbbbbbbbb");

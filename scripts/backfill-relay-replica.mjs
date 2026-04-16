@@ -85,7 +85,10 @@ function compareCursor(a, b) {
 }
 
 function wrapTransaction(statements = []) {
-  return ['BEGIN TRANSACTION;', ...statements.filter(Boolean), 'COMMIT;'].join('\n');
+  const terminatedStatements = statements
+    .filter(Boolean)
+    .map((statement) => `${statement.replace(/;\s*$/, '')};`);
+  return ['BEGIN TRANSACTION;', ...terminatedStatements, 'COMMIT;'].join('\n');
 }
 
 function buildRelayVideoUpsertSql(records = []) {
