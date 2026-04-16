@@ -1340,6 +1340,8 @@ NIP-98 author-only read of D1 rows for a given kind5_id.
     import { describe, it, expect, beforeEach } from 'vitest';
     import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
     import { handleStatusQuery } from './status-endpoint.mjs';
+    import { checkRateLimit } from './rate-limit.mjs';
+    import { makeFakeD1, makeFakeKV } from './test-helpers.mjs';
 
     describe('handleStatusQuery', () => {
       let sk, pk, deps;
@@ -1361,11 +1363,20 @@ NIP-98 author-only read of D1 rows for a given kind5_id.
       }
 
       it('returns 200 with target rows for the caller pubkey', async () => {
-        await deps.db.prepare(
-          `INSERT INTO creator_deletions (kind5_id, target_event_id, creator_pubkey, status, accepted_at, blob_sha256, completed_at)
-           VALUES (?, ?, ?, 'success', ?, 'abc', ?)
-           ON CONFLICT(kind5_id, target_event_id) DO NOTHING`
-        ).bind('k1', 't1', pk, new Date().toISOString(), new Date().toISOString()).run();
+        // Seed D1 directly — bypass the fake's INSERT path, which is tailored
+        // to claimRow's 4-arg bind with 'accepted' status literal. Direct
+        // rows.set() lets us simulate a terminal 'success' row.
+        deps.db.rows.set('k1:t1', {
+          kind5_id: 'k1',
+          target_event_id: 't1',
+          creator_pubkey: pk,
+          status: 'success',
+          accepted_at: new Date().toISOString(),
+          blob_sha256: 'c'.repeat(64),
+          retry_count: 0,
+          last_error: null,
+          completed_at: new Date().toISOString()
+        });
 
         const url = 'https://moderation-api.divine.video/api/delete-status/k1';
         const request = new Request(url, { method: 'GET', headers: { Authorization: signNip98Get(url) } });
@@ -1465,11 +1476,18 @@ NIP-98 author-only read of D1 rows for a given kind5_id.
       it('returns 403 when caller pubkey does not match row creator_pubkey', async () => {
         const otherSk = generateSecretKey();
         const otherPk = getPublicKey(otherSk);
-        await deps.db.prepare(
-          `INSERT INTO creator_deletions (kind5_id, target_event_id, creator_pubkey, status, accepted_at)
-           VALUES (?, ?, ?, 'success', ?)
-           ON CONFLICT(kind5_id, target_event_id) DO NOTHING`
-        ).bind('k2', 't1', otherPk, new Date().toISOString()).run();
+        // Seed D1 directly (see happy-path note).
+        deps.db.rows.set('k2:t1', {
+          kind5_id: 'k2',
+          target_event_id: 't1',
+          creator_pubkey: otherPk,
+          status: 'success',
+          accepted_at: new Date().toISOString(),
+          blob_sha256: null,
+          retry_count: 0,
+          last_error: null,
+          completed_at: null
+        });
 
         const url = 'https://moderation-api.divine.video/api/delete-status/k2';
         const response = await handleStatusQuery(new Request(url, { method: 'GET', headers: { Authorization: signNip98Get(url) } }), deps);
@@ -1486,7 +1504,7 @@ NIP-98 author-only read of D1 rows for a given kind5_id.
       });
     ```
 
-    Add `import { checkRateLimit } from './rate-limit.mjs'` at the top of the test file.
+    Imports (`checkRateLimit` from `./rate-limit.mjs` and `makeFakeD1` / `makeFakeKV` from `./test-helpers.mjs`) are already included in the Step 1 test-file header above.
 
 - [ ] **Step 6: Run — all pass**
 
