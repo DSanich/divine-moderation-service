@@ -9,6 +9,7 @@ export const DEFAULT_CONCURRENCY = 8;
 export const DEFAULT_CHECKPOINT_FILE = 'tmp/backfill-relay-replica.checkpoint.json';
 export const DEFAULT_DIVINE_API_BASE_URL = 'https://api.divine.video';
 export const DEFAULT_D1_DATABASE_NAME = 'blossom-webhook-events';
+export const DEFAULT_D1_DATABASE_ID = '829f06cf-294b-4491-8611-30fc53df2589';
 export const DEFAULT_PERSIST_CHUNK_SIZE = 10;
 export const DEFAULT_PERSIST_MAX_SQL_LENGTH = 60000;
 export const DEFAULT_WRANGLER_FILE_SQL_THRESHOLD = Number.MAX_SAFE_INTEGER;
@@ -437,6 +438,7 @@ export function buildModerationRefreshRecord(videoRecord, creatorRecord = null) 
 export async function processReplicaBatch(rows, deps, options = {}) {
   const {
     fetchVideoBySha,
+    fetchBulkUsers = async () => ({}),
     fetchBulkProfiles = async () => ({}),
     fetchUser = async () => null,
     fetchUserSocial = async () => null,
@@ -467,6 +469,9 @@ export async function processReplicaBatch(rows, deps, options = {}) {
   const bulkProfiles = await fetchBulkProfiles(unique(
     fetched.map(({ payload }) => payload?.event?.pubkey || null)
   ));
+  const bulkUsers = await fetchBulkUsers(unique(
+    fetched.map(({ payload }) => payload?.event?.pubkey || null)
+  ));
   const repairedRows = [];
 
   for (const item of fetched) {
@@ -481,13 +486,16 @@ export async function processReplicaBatch(rows, deps, options = {}) {
       continue;
     }
 
-    const profile = bulkProfiles[payload.event.pubkey] || null;
+    const bulkUser = bulkUsers[payload.event.pubkey] || null;
+    const profile = bulkUser?.profile || bulkProfiles[payload.event.pubkey] || null;
     const videoRecord = buildRelayVideoMirrorRecord(row.sha256, payload, profile, syncedAt);
     const [userData, socialData] = payload.event.pubkey
-      ? await Promise.all([
-          fetchUser(payload.event.pubkey),
-          fetchUserSocial(payload.event.pubkey)
-        ])
+      ? bulkUser
+        ? [bulkUser, bulkUser.social || null]
+        : await Promise.all([
+            fetchUser(payload.event.pubkey),
+            fetchUserSocial(payload.event.pubkey)
+          ])
       : [null, null];
     const creatorRecord = buildRelayCreatorMirrorRecord(payload.event.pubkey, profile, userData, socialData, syncedAt);
     const moderationRecord = {
@@ -592,6 +600,89 @@ export async function runReplicaBackfill(options = {}, deps = {}) {
 function parseWranglerJson(stdout) {
   const parsed = JSON.parse(stdout);
   return Array.isArray(parsed) ? parsed[0] : parsed;
+}
+
+export function parseWranglerWhoamiAccountId(output = '') {
+  const match = String(output).match(/\b([a-f0-9]{32})\b/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
+export function createCloudflareApiD1Client({
+  accountId,
+  databaseId,
+  apiToken,
+  fetchImpl = fetch
+} = {}) {
+  if (!accountId || !databaseId || !apiToken) {
+    throw new Error('Cloudflare API D1 client requires accountId, databaseId, and apiToken');
+  }
+
+  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`;
+
+  async function executeSql(sql) {
+    const response = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ sql })
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload?.success) {
+      throw new Error(`Cloudflare D1 API request failed (${response.status || 'unknown'}): ${JSON.stringify(payload)}`);
+    }
+    return Array.isArray(payload.result) ? payload.result[0] : payload.result;
+  }
+
+  return {
+    async querySparseRows({ cursor, limit }) {
+      const { sql } = buildSparseModerationRowsQuery({ cursor, limit });
+      const result = await executeSql(sql);
+      return result?.results || [];
+    },
+    async persistReplicaBatch(records) {
+      const chunks = buildPersistReplicaSqlChunks(records);
+      for (const sql of chunks) {
+        await executeSql(sql);
+      }
+    },
+    async upsertRelayVideo(record) {
+      await executeSql(buildRelayVideoUpsertSql([record]));
+    },
+    async upsertRelayCreator(record) {
+      await executeSql(buildRelayCreatorUpsertSql([record]));
+    },
+    async refreshModerationResult(sha256, record) {
+      await executeSql(buildModerationRefreshSql([{ sha256, ...record }]));
+    }
+  };
+}
+
+async function loadWranglerOAuthToken() {
+  const fsApi = await import('node:fs/promises');
+  const osApi = await import('node:os');
+  const pathApi = await import('node:path');
+  const configPath = pathApi.join(osApi.homedir(), 'Library/Preferences/.wrangler/config/default.toml');
+  const content = await fsApi.readFile(configPath, 'utf8');
+  const match = content.match(/^oauth_token = "([^"]+)"/m);
+  return match ? match[1] : null;
+}
+
+async function loadWranglerAccountId({ wranglerBin = 'npx' } = {}) {
+  const { execFile } = await import('node:child_process');
+  const command = wranglerBin;
+  const args = wranglerBin === 'npx' ? ['wrangler', 'whoami'] : ['whoami'];
+  const stdout = await new Promise((resolve, reject) => {
+    execFile(command, args, { maxBuffer: 1024 * 1024 }, (error, out, stderr) => {
+      if (error) {
+        reject(new Error(stderr || error.message));
+        return;
+      }
+      resolve(out);
+    });
+  });
+  return parseWranglerWhoamiAccountId(stdout);
 }
 
 async function createWranglerD1Client({
@@ -714,6 +805,39 @@ async function createWranglerD1Client({
   };
 }
 
+async function createPreferredD1Client({
+  databaseName = DEFAULT_D1_DATABASE_NAME,
+  databaseId = DEFAULT_D1_DATABASE_ID,
+  remote = true,
+  wranglerBin = 'npx',
+  fileSqlThreshold = DEFAULT_WRANGLER_FILE_SQL_THRESHOLD
+} = {}) {
+  if (remote && databaseId) {
+    try {
+      const [apiToken, accountId] = await Promise.all([
+        loadWranglerOAuthToken(),
+        loadWranglerAccountId({ wranglerBin })
+      ]);
+      if (apiToken && accountId) {
+        return createCloudflareApiD1Client({
+          accountId,
+          databaseId,
+          apiToken
+        });
+      }
+    } catch {
+      // Fall back to wrangler subprocess mode if OAuth/config resolution fails.
+    }
+  }
+
+  return createWranglerD1Client({
+    databaseName,
+    remote,
+    wranglerBin,
+    fileSqlThreshold
+  });
+}
+
 async function fetchJson(url, init = {}) {
   const response = await fetch(url, {
     ...init,
@@ -741,6 +865,7 @@ function parseArgs(argv = []) {
     resume: true,
     remote: true,
     databaseName: DEFAULT_D1_DATABASE_NAME,
+    databaseId: DEFAULT_D1_DATABASE_ID,
     apiBaseUrl: DEFAULT_DIVINE_API_BASE_URL
   };
 
@@ -762,6 +887,9 @@ function parseArgs(argv = []) {
     } else if (arg === '--database' && next) {
       options.databaseName = next;
       index += 1;
+    } else if (arg === '--database-id' && next) {
+      options.databaseId = next;
+      index += 1;
     } else if (arg === '--api-base-url' && next) {
       options.apiBaseUrl = next;
       index += 1;
@@ -777,8 +905,9 @@ function parseArgs(argv = []) {
 
 async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
-  const d1 = await createWranglerD1Client({
+  const d1 = await createPreferredD1Client({
     databaseName: options.databaseName,
+    databaseId: options.databaseId,
     remote: options.remote
   });
   const apiBaseUrl = options.apiBaseUrl;
@@ -799,6 +928,18 @@ async function main(argv = process.argv.slice(2)) {
       });
       const users = Array.isArray(data?.users) ? data.users : [];
       return Object.fromEntries(users.map((user) => [user.pubkey, user.profile || null]));
+    },
+    async fetchBulkUsers(pubkeys) {
+      if (!pubkeys.length) {
+        return {};
+      }
+      const data = await fetchJson(`${apiBaseUrl}/api/users/bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pubkeys })
+      });
+      const users = Array.isArray(data?.users) ? data.users : [];
+      return Object.fromEntries(users.map((user) => [user.pubkey, user]));
     },
     async fetchUser(pubkey) {
       return fetchJson(`${apiBaseUrl}/api/users/${encodeURIComponent(pubkey)}`);

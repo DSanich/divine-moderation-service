@@ -6,7 +6,9 @@ import {
   buildWranglerExecuteArgs,
   buildPersistReplicaSqlChunks,
   buildSparseModerationRowsQuery,
+  createCloudflareApiD1Client,
   loadCheckpoint,
+  parseWranglerWhoamiAccountId,
   processReplicaBatch,
   runReplicaBackfill,
   saveCheckpoint,
@@ -28,6 +30,19 @@ describe('backfill-relay-replica', () => {
     expect(sql).toContain(`sha256 < '${'f'.repeat(64)}'`);
     expect(sql).toContain('ORDER BY moderated_at DESC, sha256 DESC');
     expect(sql).toContain('LIMIT 250');
+  });
+
+  it('parses the Cloudflare account id from wrangler whoami output', () => {
+    const accountId = parseWranglerWhoamiAccountId(`
+👋 You are logged in with an OAuth Token, associated with the email rabble@verse.app.
+┌──────────────┬──────────────────────────────────┐
+│ Account Name │ Account ID                       │
+├──────────────┼──────────────────────────────────┤
+│ Divine       │ c84e7a9bf7ed99cb41b8e73566568c75 │
+└──────────────┴──────────────────────────────────┘
+`);
+
+    expect(accountId).toBe('c84e7a9bf7ed99cb41b8e73566568c75');
   });
 
   it('saves and loads checkpoint state', async () => {
@@ -186,6 +201,84 @@ describe('backfill-relay-replica', () => {
     });
   });
 
+  it('fetches creator context in bulk once per batch instead of per repaired row', async () => {
+    const rows = [
+      { sha256: 'a'.repeat(64), moderated_at: '2026-04-16T02:00:00.000Z' },
+      { sha256: 'b'.repeat(64), moderated_at: '2026-04-16T01:00:00.000Z' },
+      { sha256: 'c'.repeat(64), moderated_at: '2026-04-16T00:00:00.000Z' }
+    ];
+    const sharedPubkey = 'f'.repeat(64);
+    const fetchBulkUsers = vi.fn(async (pubkeys) => Object.fromEntries(
+      pubkeys.map((pubkey) => [pubkey, {
+        pubkey,
+        profile: {
+          display_name: `Creator ${pubkey.slice(0, 4)}`,
+          name: `creator-${pubkey.slice(0, 4)}`,
+          picture: `https://cdn.divine.video/${pubkey}.jpg`
+        },
+        social: {
+          follower_count: 11,
+          following_count: 3
+        },
+        stats: {
+          video_count: 7,
+          total_events: 21,
+          first_activity: '2020-01-01T00:00:00.000Z',
+          last_activity: '2026-04-01T00:00:00.000Z'
+        },
+        engagement: {
+          total_reactions: 99
+        }
+      }])
+    ));
+    const fetchUser = vi.fn(async () => {
+      throw new Error('per-user fetch should not run');
+    });
+    const fetchUserSocial = vi.fn(async () => {
+      throw new Error('per-user social fetch should not run');
+    });
+
+    const result = await processReplicaBatch(rows, {
+      fetchVideoBySha: vi.fn(async (sha256) => ({
+        event: {
+          id: sha256.replace(/[abc]/g, 'e').slice(0, 64),
+          pubkey: sha256 === 'c'.repeat(64) ? '9'.repeat(64) : sharedPubkey,
+          created_at: 1700000000,
+          tags: [
+            ['d', `stable-${sha256[0]}`],
+            ['title', `Video ${sha256[0]}`],
+            ['published_at', '1389756506'],
+            ['imeta', `url https://media.divine.video/${sha256}.mp4`, `x ${sha256}`]
+          ],
+          content: `Body ${sha256[0]}`
+        },
+        stats: { author_name: `Author ${sha256[0]}` }
+      })),
+      fetchBulkUsers,
+      fetchUser,
+      fetchUserSocial,
+      persistReplicaBatch: vi.fn(async () => {}),
+      upsertRelayVideo: vi.fn(async () => {}),
+      upsertRelayCreator: vi.fn(async () => {}),
+      refreshModerationResult: vi.fn(async () => {}),
+      log: () => {}
+    });
+
+    expect(result.stats).toMatchObject({
+      scanned: 3,
+      repaired: 3,
+      unresolved: 0,
+      failed: 0
+    });
+    expect(fetchBulkUsers).toHaveBeenCalledTimes(1);
+    expect(fetchBulkUsers).toHaveBeenCalledWith([
+      sharedPubkey,
+      '9'.repeat(64)
+    ]);
+    expect(fetchUser).not.toHaveBeenCalled();
+    expect(fetchUserSocial).not.toHaveBeenCalled();
+  });
+
   it('builds chunked batched SQL for replica persistence', () => {
     const video = {
       sha256: 'a'.repeat(64),
@@ -284,6 +377,46 @@ describe('backfill-relay-replica', () => {
         longSql
       ]
     });
+  });
+
+  it('executes D1 SQL directly through the Cloudflare API when credentials are available', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      async json() {
+        return {
+          success: true,
+          result: [
+            {
+              success: true,
+              results: [{ x: 1 }]
+            }
+          ]
+        };
+      }
+    }));
+
+    const client = createCloudflareApiD1Client({
+      accountId: 'c84e7a9bf7ed99cb41b8e73566568c75',
+      databaseId: '829f06cf-294b-4491-8611-30fc53df2589',
+      apiToken: 'test-token',
+      fetchImpl
+    });
+
+    const rows = await client.querySparseRows({ limit: 1 });
+
+    expect(rows).toEqual([{ x: 1 }]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://api.cloudflare.com/client/v4/accounts/c84e7a9bf7ed99cb41b8e73566568c75/d1/database/829f06cf-294b-4491-8611-30fc53df2589/query',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json'
+        }),
+        body: expect.stringContaining('"sql"')
+      })
+    );
   });
 
   it('splits persistence chunks when rendered SQL exceeds the max size', () => {
