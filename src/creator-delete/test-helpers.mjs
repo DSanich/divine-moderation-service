@@ -45,8 +45,19 @@ export function makeFakeD1() {
         },
         async all() {
           if (this._sql.startsWith('SELECT')) {
-            // Return all rows matching the bound kind5_id (status-endpoint + cron use-case).
-            // The SQL shape we care about is: SELECT ... WHERE kind5_id = ? [AND ...]
+            // Pattern 1: cron transient-retry sweep
+            // SELECT ... WHERE status LIKE 'failed:transient:%' AND retry_count < ?
+            if (this._sql.includes("status LIKE 'failed:transient:%'") && this._sql.includes("retry_count <")) {
+              const maxRetry = this._binds[0];
+              const results = [];
+              for (const row of rows.values()) {
+                if (!row.status?.startsWith('failed:transient:')) continue;
+                if (row.retry_count >= maxRetry) continue;
+                results.push(row);
+              }
+              return { results };
+            }
+            // Pattern 2 (existing): SELECT ... WHERE kind5_id = ? [AND target_event_id = ?]
             const kind5_id = this._binds[0];
             const results = [];
             for (const row of rows.values()) {
