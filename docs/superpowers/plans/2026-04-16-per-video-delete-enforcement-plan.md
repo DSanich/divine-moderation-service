@@ -46,6 +46,79 @@ Each file has one clear responsibility. `process.mjs` is the hub; endpoints and 
 
 ---
 
+## Guardrails — do not do these things without checkpointing with Matt first
+
+### Scope
+
+- Do not add new dependencies beyond what's already in `package.json`.
+- Do not refactor files not named in the task's "Files" list.
+- Do not introduce new abstractions, helpers, or utilities beyond what the task specifies.
+- Do not modify existing routes, handlers, or modules outside the task's scope.
+- Do not change existing tests (add new ones; don't modify existing).
+- Do not add new env vars beyond those already present or explicitly named in the plan.
+- Do not modify `wrangler.toml` bindings except to add the new cron entry named in Task 11.
+- Do not touch migrations 001–005; only add `006-creator-deletions.sql`.
+
+### Error handling and complexity
+
+- Do not add error handling for scenarios the plan doesn't name.
+- Do not add defensive validation beyond what the plan specifies.
+- Do not add feature flags beyond `ENABLE_PHYSICAL_DELETE` (which lives in Blossom, not here).
+- Do not add retry logic beyond what the plan specifies (Funnelcake 0/100/500/1000/2000ms; Blossom exponential backoff bounded to `retry_count < 5`).
+
+### Logging and comments
+
+- Do not add `console.log`s beyond the structured logs specified in Task 12.
+- Do not add code comments that describe what the code does (well-named identifiers already do that).
+- Do add a one-line comment when the WHY is non-obvious (a hidden constraint, workaround, surprising behavior).
+
+### Safety measures — DO NOT REMOVE OR SIMPLIFY
+
+These are required by the spec and protect reliability, security, or compliance.
+If any appears redundant, STOP and ask Matt before removing:
+
+- NIP-98 author-only check on sync endpoint and status endpoint (caller pubkey must match kind 5 author).
+- NIP-98 ±60s timestamp tolerance window.
+- D1 `INSERT ON CONFLICT DO NOTHING` + `SELECT` idempotency claim.
+- `decideAction` guard for in-progress / success / permanent-failure states.
+- `failed:transient:*` vs `failed:permanent:*` status taxonomy.
+- Funnelcake read-after-write retry schedule in the sync endpoint.
+- Rate limiting per-pubkey and per-IP.
+- 8-second internal budget in sync endpoint (returns 202 beyond that).
+- Composite PRIMARY KEY `(kind5_id, target_event_id)` on `creator_deletions`.
+- `retry_count` bounded to `< 5` before promotion to `failed:permanent:max_retries_exceeded`.
+- Blossom call uses existing `webhook_secret` Bearer (do not propagate secret elsewhere).
+
+### When in doubt
+
+Stop and ask. A checkpoint question is cheaper than reverting a commit.
+
+---
+
+## Per-task review checklist (orchestrator uses this on every subagent output)
+
+- [ ] Tests were written before implementation (visible in git history: test commit precedes impl commit, or same commit includes both with failing test written first).
+- [ ] All tests pass (`npx vitest run <path>` shows green).
+- [ ] Eslint clean (`node scripts/lint.mjs` passes).
+- [ ] No new dependencies in `package.json`.
+- [ ] No files touched that aren't in the task's "Files" list.
+- [ ] No new abstractions, helpers, or utilities beyond what the plan specifies.
+- [ ] Safety measures from the Guardrails section are present and unaltered (spot-check the relevant ones for this task).
+- [ ] No `console.log`s left over from debugging (structured logs from Task 12 are exempt).
+- [ ] Commit message follows the repo's conventional format (`feat:` / `fix:` / `docs:` / `test:` / `refactor:` prefix; no Claude attribution footer).
+- [ ] File header `// ABOUTME:` comments present on new files (matches existing repo convention).
+- [ ] MPL license header present on new files (matches existing repo convention).
+
+### Red flags to escalate to Matt
+
+- Subagent added a dependency, refactored an existing file, or introduced a new abstraction.
+- Subagent removed or simplified any item from "Safety measures" in Guardrails.
+- Tests don't actually exercise the behavior they claim to test.
+- Implementation deviates from the plan's spec in any non-trivial way.
+- Subagent encountered an error and worked around it silently.
+
+---
+
 ## Staging Preflight
 
 Complete these BEFORE starting implementation. Failures here can redirect the design.
