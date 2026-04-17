@@ -78,6 +78,7 @@ export function extractMediaShaFromEvent(event) {
   const imeta = parseImetaParams(tags);
   return extractShaFromUrl(imeta.x)
     || extractShaFromUrl(getEventTagValue(tags, 'x'))
+    || extractShaFromUrl(getEventTagValue(tags, 'd'))
     || extractShaFromUrl(imeta.url)
     || extractShaFromUrl(getEventTagValue(tags, 'url'))
     || null;

@@ -287,6 +287,56 @@ describe('fetchNostrVideoEventsByDTag', () => {
 });
 
 describe('fetchNostrEventBySha256', () => {
+  it('falls back to d tag when the media sha is stored directly there', async () => {
+    const sha256 = 'c'.repeat(64);
+    const event = {
+      id: 'd'.repeat(64),
+      kind: 34236,
+      tags: [
+        ['d', sha256],
+        ['platform', 'vine']
+      ]
+    };
+
+    class FakeWebSocket {
+      constructor() {
+        this.listeners = {};
+        queueMicrotask(() => this.emit('open'));
+      }
+
+      addEventListener(type, handler) {
+        if (!this.listeners[type]) {
+          this.listeners[type] = [];
+        }
+        this.listeners[type].push(handler);
+      }
+
+      send(message) {
+        const [, subscriptionId, filter] = JSON.parse(message);
+        queueMicrotask(() => {
+          if (filter['#d']?.includes(sha256)) {
+            this.emit('message', { data: JSON.stringify(['EVENT', subscriptionId, event]) });
+          }
+          this.emit('message', { data: JSON.stringify(['EOSE', subscriptionId]) });
+        });
+      }
+
+      close() {
+        queueMicrotask(() => this.emit('close'));
+      }
+
+      emit(type, event = {}) {
+        for (const handler of this.listeners[type] || []) {
+          handler(event);
+        }
+      }
+    }
+
+    globalThis.WebSocket = FakeWebSocket;
+
+    await expect(fetchNostrEventBySha256(sha256)).resolves.toEqual(event);
+  });
+
   it('finds legacy Vine events by x tag when d is the Vine ID', async () => {
     const sha256 = 'a'.repeat(64);
     const event = {

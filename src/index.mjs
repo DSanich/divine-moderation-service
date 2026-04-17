@@ -23,6 +23,7 @@ import { formatForStorage, formatForGorse, formatForFunnelcake } from './classif
 import { topicsToLabels, topicsToWeightedFeatures } from './classification/topic-extractor.mjs';
 import { getKVThresholds, setKVThresholds, DEFAULT_THRESHOLDS } from './moderation/classifier.mjs';
 import { isValidSha256, isValidLookupIdentifier, isValidPubkey, parseMaybeJson, getEventTagValue, parseImetaParams, extractShaFromUrl, extractMediaShaFromEvent } from './validation.mjs';
+import { parseRetryAfterSeconds } from './http-utils.mjs';
 import { parseVttText } from './moderation/text-classifier.mjs';
 import { notifyAtprotoLabeler } from './atproto/label-webhook.mjs';
 import { buildDownstreamPublishContext } from './moderation/downstream-publishing.mjs';
@@ -313,15 +314,39 @@ function getAdminTranscriptProxyUrl(sha256) {
 async function fetchTranscriptAsset(sha256, env) {
   const sourceUrl = getTranscriptSourceUrl(sha256, env);
   const response = await fetch(sourceUrl);
+  const subtitleUrl = getAdminTranscriptProxyUrl(sha256);
 
   if (response.status === 404) {
     return {
       found: false,
+      pending: false,
       sha256,
       sourceUrl,
-      subtitleUrl: getAdminTranscriptProxyUrl(sha256),
+      subtitleUrl,
       vttContent: null,
       transcriptText: ''
+    };
+  }
+
+  if (response.status === 202) {
+    let pendingBody = null;
+    try {
+      pendingBody = await response.json();
+    } catch {
+      pendingBody = null;
+    }
+
+    return {
+      found: false,
+      pending: true,
+      sha256,
+      sourceUrl,
+      subtitleUrl,
+      vttContent: null,
+      transcriptText: '',
+      retryAfterSeconds: parseRetryAfterSeconds(response.headers.get('Retry-After')),
+      pendingStatus: typeof pendingBody?.status === 'string' ? pendingBody.status : null,
+      pendingMessage: typeof pendingBody?.message === 'string' ? pendingBody.message : null
     };
   }
 
@@ -332,9 +357,10 @@ async function fetchTranscriptAsset(sha256, env) {
   const vttContent = await response.text();
   return {
     found: true,
+    pending: false,
     sha256,
     sourceUrl,
-    subtitleUrl: getAdminTranscriptProxyUrl(sha256),
+    subtitleUrl,
     vttContent,
     transcriptText: parseVttText(vttContent).trim()
   };
@@ -516,6 +542,93 @@ async function enrichAdminLookupVideo(video, env) {
   }
 
   return enriched;
+}
+
+const UPLOADER_HISTORY_ACTIONS = ['SAFE', 'REVIEW', 'QUARANTINE', 'AGE_RESTRICTED', 'PERMANENT_BAN'];
+
+function extractReasonFromRow(row) {
+  if (row.review_notes) return row.review_notes;
+  if (row.raw_response) {
+    try {
+      const raw = typeof row.raw_response === 'string' ? JSON.parse(row.raw_response) : row.raw_response;
+      if (raw && typeof raw === 'object') {
+        if (typeof raw.reason === 'string' && raw.reason.trim()) return raw.reason;
+        if (Array.isArray(raw.categories) && raw.categories.length > 0) return raw.categories.join(', ');
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function resolveProfileWithTimeout(pubkey, env, timeoutMs = 250) {
+  if (env.SKIP_PROFILE_RESOLUTION === 'true') return null;
+  try {
+    const { resolveProfile } = await import('./nostr/profile-resolver.mjs');
+    return await Promise.race([
+      resolveProfile(pubkey, env).catch(() => null),
+      new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs))
+    ]);
+  } catch {
+    return null;
+  }
+}
+
+async function buildUploaderHistory(pubkey, env) {
+  const db = env.BLOSSOM_DB;
+  const actionBreakdown = Object.fromEntries(UPLOADER_HISTORY_ACTIONS.map((action) => [action, 0]));
+
+  const [totalsRow, breakdownRows, recentRows, dmRow, aiRow, enforcement, profile] = await Promise.all([
+    db.prepare(
+      `SELECT COUNT(*) AS videos, MIN(moderated_at) AS firstSeen, MAX(moderated_at) AS lastSeen
+       FROM moderation_results WHERE uploaded_by = ?`
+    ).bind(pubkey).first().catch(() => null),
+    db.prepare(
+      `SELECT action, COUNT(*) AS count FROM moderation_results WHERE uploaded_by = ? GROUP BY action`
+    ).bind(pubkey).all().catch(() => ({ results: [] })),
+    db.prepare(
+      `SELECT sha256, action, moderated_at, review_notes, raw_response
+       FROM moderation_results
+       WHERE uploaded_by = ? AND action IN ('REVIEW','QUARANTINE','AGE_RESTRICTED','PERMANENT_BAN')
+       ORDER BY moderated_at DESC LIMIT 10`
+    ).bind(pubkey).all().catch(() => ({ results: [] })),
+    db.prepare(
+      `SELECT COUNT(*) AS dmCount FROM dm_log WHERE sender_pubkey = ? OR recipient_pubkey = ?`
+    ).bind(pubkey, pubkey).first().catch(() => null),
+    db.prepare(
+      `SELECT COUNT(*) AS aiFlaggedCount FROM moderation_results
+       WHERE uploaded_by = ? AND (categories LIKE '%ai_generated%' OR categories LIKE '%deepfake%')`
+    ).bind(pubkey).first().catch(() => null),
+    getUploaderEnforcement(db, pubkey).catch(() => null),
+    resolveProfileWithTimeout(pubkey, env)
+  ]);
+
+  for (const row of (breakdownRows?.results || [])) {
+    if (row?.action && actionBreakdown[row.action] !== undefined) {
+      actionBreakdown[row.action] = Number(row.count) || 0;
+    }
+  }
+
+  const recentFlagged = (recentRows?.results || []).map((row) => ({
+    sha256: row.sha256,
+    action: row.action,
+    processedAt: row.moderated_at,
+    reason: extractReasonFromRow(row)
+  }));
+
+  return {
+    pubkey,
+    profile: profile || null,
+    totals: {
+      videos: Number(totalsRow?.videos) || 0,
+      firstSeen: totalsRow?.firstSeen || null,
+      lastSeen: totalsRow?.lastSeen || null
+    },
+    actionBreakdown,
+    recentFlagged,
+    aiFlaggedCount: Number(aiRow?.aiFlaggedCount) || 0,
+    dmCount: Number(dmRow?.dmCount) || 0,
+    enforcement: enforcement || null
+  };
 }
 
 async function getAdminLookupVideo(identifier, env, options = {}) {
@@ -2028,6 +2141,27 @@ export default {
 
       try {
         const transcript = await fetchTranscriptAsset(sha256, env);
+        if (transcript.pending) {
+          const headers = { ...JSON_HEADERS };
+          if (transcript.retryAfterSeconds !== null) {
+            headers['Retry-After'] = String(transcript.retryAfterSeconds);
+          }
+
+          return new Response(JSON.stringify({
+            sha256,
+            found: false,
+            pending: true,
+            subtitleUrl: transcript.subtitleUrl,
+            sourceUrl: transcript.sourceUrl,
+            retryAfterSeconds: transcript.retryAfterSeconds,
+            status: transcript.pendingStatus,
+            message: transcript.pendingMessage
+          }), {
+            status: 202,
+            headers
+          });
+        }
+
         if (!transcript.found) {
           return new Response(JSON.stringify({
             sha256,
@@ -2340,6 +2474,27 @@ export default {
 
       try {
         const transcript = await fetchTranscriptAsset(sha256, env);
+        if (transcript.pending) {
+          const headers = { ...JSON_HEADERS };
+          if (transcript.retryAfterSeconds !== null) {
+            headers['Retry-After'] = String(transcript.retryAfterSeconds);
+          }
+
+          return new Response(JSON.stringify({
+            sha256,
+            found: false,
+            pending: true,
+            subtitleUrl: transcript.subtitleUrl,
+            sourceUrl: transcript.sourceUrl,
+            retryAfterSeconds: transcript.retryAfterSeconds,
+            status: transcript.pendingStatus,
+            message: transcript.pendingMessage
+          }), {
+            status: 202,
+            headers
+          });
+        }
+
         if (!transcript.found || !transcript.vttContent) {
           return new Response('Transcript not found', { status: 404 });
         }
@@ -2837,6 +2992,29 @@ async function runMigration() {
         return new Response(JSON.stringify({ error: 'No realness verification found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (url.pathname.startsWith('/admin/api/uploader/')
+        && request.method === 'GET'
+        && !url.pathname.endsWith('/enforcement')) {
+      const authError = await requireAuth(request, env);
+      if (authError) return authError;
+
+      const parts = url.pathname.split('/');
+      const pubkey = parts[4];
+      if (!pubkey || parts.length !== 5) {
+        return jsonResponse(400, { error: 'pubkey required' });
+      }
+
+      try {
+        const body = await buildUploaderHistory(pubkey, env);
+        return new Response(JSON.stringify(body), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (err) {
+        console.error('[UPLOADER-HISTORY] Error:', err);
+        return jsonResponse(500, { error: err.message });
+      }
     }
 
     if (url.pathname === '/admin/api/classic-vines/rollback' && request.method === 'POST') {

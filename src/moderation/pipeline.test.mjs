@@ -440,7 +440,7 @@ describe('Moderation Pipeline', () => {
   });
 
   it('keeps imported original vines SAFE while retaining raw AI scores', async () => {
-    const sha256 = 'i'.repeat(64);
+    const sha256 = 'c'.repeat(64);
     globalThis.WebSocket = createNostrLookupWebSocket({
       id: 'evt-original-vine',
       content: 'classic archive vine',
@@ -556,7 +556,7 @@ describe('Moderation Pipeline', () => {
   });
 
   it('keeps downstream moderation signals for original vines when non-AI scores are high', async () => {
-    const sha256 = 'j'.repeat(64);
+    const sha256 = 'd'.repeat(64);
     globalThis.WebSocket = createNostrLookupWebSocket({
       id: 'evt-original-vine-signals',
       content: 'classic archive vine',
