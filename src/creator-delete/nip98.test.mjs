@@ -85,6 +85,20 @@ describe('validateNip98Header', () => {
     expect(result.error).toMatch(/method tag/);
   });
 
+  it('rejects event with missing tags array', async () => {
+    const event = finalizeEvent({
+      kind: 27235,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [['u', 'https://x/y'], ['method', 'POST']],
+      content: ''
+    }, sk);
+    delete event.tags;
+    const header = `Nostr ${btoa(JSON.stringify(event))}`;
+    const result = await validateNip98Header(header, 'https://x/y', 'POST');
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/missing tags/);
+  });
+
   it('rejects tampered signature', async () => {
     const realEvent = finalizeEvent({
       kind: 27235,

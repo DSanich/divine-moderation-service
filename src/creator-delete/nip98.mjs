@@ -33,6 +33,10 @@ export async function validateNip98Header(authorizationHeader, expectedUrl, expe
     return { valid: false, error: `created_at ${event.created_at} outside ±${CLOCK_DRIFT_SECONDS}s window (server now: ${now})` };
   }
 
+  if (!Array.isArray(event.tags)) {
+    return { valid: false, error: 'Event missing tags array' };
+  }
+
   const uTag = event.tags.find(t => t[0] === 'u')?.[1];
   const methodTag = event.tags.find(t => t[0] === 'method')?.[1];
 
