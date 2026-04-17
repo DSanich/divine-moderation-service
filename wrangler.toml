@@ -81,6 +81,10 @@ SELF_HARM_THRESHOLD_MEDIUM = "0.5"    # Human review
 AI_GENERATED_THRESHOLD_HIGH = "0.8"   # Age-restricted
 AI_GENERATED_THRESHOLD_MEDIUM = "0.6" # Human review
 
+# Divine-inquisitor C2PA/ProofMode verification service (github.com/divinevideo/divine-inquisitor)
+# Called from the pipeline before Hive — valid_ai_signed short-circuits Hive, valid_proofmode downgrades AI-QUARANTINE to REVIEW
+INQUISITOR_BASE_URL = "https://inquisitor.divine.video"
+
 # Relay Polling Configuration
 RELAY_POLLING_ENABLED = "true"                    # Enable/disable relay polling
 RELAY_POLLING_RELAY_URL = "wss://relay.divine.video"  # Relay to poll for new video events
