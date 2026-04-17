@@ -12,20 +12,20 @@ const MODERATION_CLASS_MAP = {
   // Nudity/Sexual
   'general_nsfw': 'nudity',
   'general_suggestive': 'nudity',
-  'yes_sexual_activity': 'nudity',
-  'yes_sexual_display': 'nudity',
   'yes_female_nudity': 'nudity',
   'yes_male_nudity': 'nudity',
   'yes_sheer_see-through': 'nudity',
-  'yes_sex_toy': 'nudity',
   'yes_male_underwear': 'nudity',
   'yes_female_underwear': 'nudity',
   'yes_female_swimwear': 'nudity',
   'yes_male_swimwear': 'nudity',
-  'animated_explicit_sexual_content': 'nudity',
   'animated_female_nudity': 'nudity',
   'animated_male_nudity': 'nudity',
   'animated_suggestive': 'nudity',
+  'yes_sexual_display': 'sexual',
+  'yes_sex_toy': 'sexual',
+  'yes_sexual_activity': 'porn',
+  'animated_explicit_sexual_content': 'porn',
 
   // Violence
   'yes_violence': 'violence',
@@ -112,6 +112,8 @@ function extractRawClassifierData(output, source) {
 function normalizeModerationResponse(moderationResult) {
   const scores = {
     nudity: 0,
+    sexual: 0,
+    porn: 0,
     violence: 0,
     gore: 0,
     offensive: 0,
@@ -171,7 +173,9 @@ function normalizeModerationResponse(moderationResult) {
     }
   }
 
-  console.log(`[HiveAI] Moderation scores - nudity: ${scores.nudity.toFixed(3)}, violence: ${scores.violence.toFixed(3)}, weapons: ${scores.weapons.toFixed(3)}`);
+  console.log(
+    `[HiveAI] Moderation scores - nudity: ${scores.nudity.toFixed(3)}, sexual: ${scores.sexual.toFixed(3)}, porn: ${scores.porn.toFixed(3)}, violence: ${scores.violence.toFixed(3)}, weapons: ${scores.weapons.toFixed(3)}`
+  );
 
   return { scores, details, flaggedFrames };
 }
@@ -307,6 +311,8 @@ export function normalizeHiveAIResponse(hiveResult) {
   // Initialize with all categories at 0
   const scores = {
     nudity: 0,
+    sexual: 0,
+    porn: 0,
     violence: 0,
     gore: 0,
     offensive: 0,

@@ -33,7 +33,7 @@ const DEFAULT_TEXT_PROFANITY_MEDIUM = 0.5;
 const PERMANENT_BAN_CATEGORIES = ['self_harm', 'offensive', 'ai_generated', 'deepfake'];
 
 // Categories that warrant age restriction
-const AGE_RESTRICTED_CATEGORIES = ['nudity', 'violence', 'gore', 'weapon', 'recreational_drug', 'alcohol', 'tobacco', 'gambling', 'destruction'];
+const AGE_RESTRICTED_CATEGORIES = ['violence', 'gore', 'weapon', 'recreational_drug', 'alcohol', 'tobacco', 'gambling', 'destruction'];
 
 // Categories that are informational only (lower threshold for review)
 const INFORMATIONAL_CATEGORIES = ['medical', 'money', 'military', 'text_profanity', 'qr_unsafe'];
@@ -142,6 +142,8 @@ export function classifyModerationResult(moderationData, env = {}) {
   // Default values for all categories
   const defaultScores = {
     nudity: 0,
+    sexual: 0,
+    porn: 0,
     violence: 0,
     ai_generated: 0,
     gore: 0,
@@ -169,6 +171,14 @@ export function classifyModerationResult(moderationData, env = {}) {
   // Load thresholds from env or use defaults
   const thresholds = {
     nudity: {
+      high: parseFloat(env.NSFW_THRESHOLD_HIGH || DEFAULT_NSFW_HIGH),
+      medium: parseFloat(env.NSFW_THRESHOLD_MEDIUM || DEFAULT_NSFW_MEDIUM)
+    },
+    sexual: {
+      high: parseFloat(env.NSFW_THRESHOLD_HIGH || DEFAULT_NSFW_HIGH),
+      medium: parseFloat(env.NSFW_THRESHOLD_MEDIUM || DEFAULT_NSFW_MEDIUM)
+    },
+    porn: {
       high: parseFloat(env.NSFW_THRESHOLD_HIGH || DEFAULT_NSFW_HIGH),
       medium: parseFloat(env.NSFW_THRESHOLD_MEDIUM || DEFAULT_NSFW_MEDIUM)
     },
@@ -245,6 +255,12 @@ export function classifyModerationResult(moderationData, env = {}) {
     category = 'extreme_gore';
     reason = 'Extreme gore content detected - immediate removal required';
   }
+  else if (scores.porn >= (thresholds.porn?.high || DEFAULT_NSFW_HIGH)) {
+    action = 'PERMANENT_BAN';
+    severity = 'critical';
+    category = 'porn';
+    reason = `Porn content detected (score: ${scores.porn.toFixed(2)}) - immediate removal required`;
+  }
   else if (scores.ai_generated >= (thresholds.ai_generated?.high || DEFAULT_AI_GENERATED_HIGH)) {
     action = 'QUARANTINE';
     severity = 'high';
@@ -271,6 +287,12 @@ export function classifyModerationResult(moderationData, env = {}) {
     severity = 'critical';
     category = 'threats';
     reason = `Threatening content detected in transcript (score: ${text_scores.threats.toFixed(2)}) - immediate removal required`;
+  }
+  else if (scores.sexual >= (thresholds.sexual?.high || DEFAULT_NSFW_HIGH)) {
+    action = 'AGE_RESTRICTED';
+    severity = 'high';
+    category = 'sexual';
+    reason = `Sexual content detected (score: ${scores.sexual.toFixed(2)}) - requires age verification`;
   }
   // Check for AGE_RESTRICTED categories
   else if (AGE_RESTRICTED_CATEGORIES.some(cat => {
@@ -341,6 +363,8 @@ export function classifyModerationResult(moderationData, env = {}) {
 function getCategoryLabel(category) {
   const labels = {
     nudity: 'Adult',
+    sexual: 'Sexual',
+    porn: 'Porn',
     violence: 'Violent',
     ai_generated: 'AI-generated',
     gore: 'Gore',

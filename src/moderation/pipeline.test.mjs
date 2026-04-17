@@ -168,7 +168,7 @@ describe('Moderation Pipeline', () => {
     expect(result.topicProfile).toBeNull();
   });
 
-  it('retains downstream signals for Hive nudity classifications', async () => {
+  it('keeps benign Hive nudity SAFE while retaining downstream nudity signals', async () => {
     const mockFetch = vi.fn(async (url) => {
       if (typeof url === 'string' && url.endsWith('.vtt')) {
         return {
@@ -215,18 +215,16 @@ describe('Moderation Pipeline', () => {
     }, env, mockFetch);
 
     expect(result.provider).toBe('hiveai');
-    expect(result.action).toBe('AGE_RESTRICTED');
-    expect(result.category).toBe('nudity');
+    expect(result.action).toBe('SAFE');
     expect(result.scores.nudity).toBe(0.91);
+    expect(result.scores.sexual).toBe(0);
+    expect(result.scores.porn).toBe(0);
     expect(result.downstreamSignals?.hasSignals).toBe(true);
     expect(result.downstreamSignals?.scores?.nudity).toBe(0.91);
     expect(result.downstreamSignals?.primaryConcern).toBe('nudity');
-    expect(result.rawClassifierData?.allClassMaxScores?.yes_male_nudity).toBe(0.91);
-    expect(result.rawClassifierData?.allClassMaxScores?.yes_male_swimwear).toBe(0.88);
-    expect(result.rawClassifierData?.allClassMaxScores?.yes_male_underwear).toBe(0.83);
   });
 
-  it('maps Hive sexual display into the current nudity category', async () => {
+  it('should detect Hive sexual content and return AGE_RESTRICTED', async () => {
     const mockFetch = vi.fn(async (url) => {
       if (typeof url === 'string' && url.endsWith('.vtt')) {
         return {
@@ -273,10 +271,9 @@ describe('Moderation Pipeline', () => {
 
     expect(result.provider).toBe('hiveai');
     expect(result.action).toBe('AGE_RESTRICTED');
-    expect(result.category).toBe('nudity');
-    expect(result.scores.nudity).toBe(0.9);
-    expect(result.rawClassifierData?.allClassMaxScores?.yes_sexual_display).toBe(0.9);
-    expect(result.rawClassifierData?.allClassMaxScores?.yes_sex_toy).toBe(0.82);
+    expect(result.category).toBe('sexual');
+    expect(result.scores.sexual).toBe(0.9);
+    expect(result.scores.porn).toBe(0);
   });
 
   it('should detect borderline violence and return REVIEW', async () => {
@@ -443,7 +440,7 @@ describe('Moderation Pipeline', () => {
   });
 
   it('keeps imported original vines SAFE while retaining raw AI scores', async () => {
-    const sha256 = 'i'.repeat(64);
+    const sha256 = 'c'.repeat(64);
     globalThis.WebSocket = createNostrLookupWebSocket({
       id: 'evt-original-vine',
       content: 'classic archive vine',
@@ -559,7 +556,7 @@ describe('Moderation Pipeline', () => {
   });
 
   it('keeps downstream moderation signals for original vines when non-AI scores are high', async () => {
-    const sha256 = 'j'.repeat(64);
+    const sha256 = 'd'.repeat(64);
     globalThis.WebSocket = createNostrLookupWebSocket({
       id: 'evt-original-vine-signals',
       content: 'classic archive vine',
@@ -613,5 +610,306 @@ describe('Moderation Pipeline', () => {
     expect(result.downstreamSignals?.scores?.nudity).toBe(0.86);
     expect(result.downstreamSignals?.scores?.ai_generated ?? 0).toBe(0);
     expect(result.downstreamSignals?.primaryConcern).toBe('nudity');
+  });
+});
+
+describe('Moderation Pipeline — C2PA / ProofMode enforcement', () => {
+  function buildMockFetch({ inquisitor, hive = null, vtt404 = true }) {
+    return vi.fn(async (url) => {
+      const urlStr = String(url);
+
+      if (urlStr.includes('inquisitor.divine.video/verify')) {
+        return {
+          ok: true,
+          json: async () => inquisitor,
+          text: async () => JSON.stringify(inquisitor),
+        };
+      }
+
+      if (vtt404 && urlStr.endsWith('.vtt')) {
+        return { ok: false, status: 404, text: async () => '' };
+      }
+
+      if (urlStr.includes('api.thehive.ai') && hive) {
+        return {
+          ok: true,
+          json: async () => hive,
+        };
+      }
+
+      throw new Error(`Unexpected fetch call: ${urlStr}`);
+    });
+  }
+
+  const baseEnv = {
+    HIVE_MODERATION_API_KEY: 'mod-key',
+    HIVE_AI_DETECTION_API_KEY: 'ai-key',
+    CDN_DOMAIN: 'cdn.divine.video',
+    INQUISITOR_BASE_URL: 'https://inquisitor.divine.video',
+  };
+
+  it('short-circuits to QUARANTINE on valid_ai_signed and never calls Hive', async () => {
+    const mockFetch = buildMockFetch({
+      inquisitor: {
+        has_c2pa: true,
+        valid: true,
+        validation_state: 'valid',
+        is_proofmode: false,
+        claim_generator: 'Adobe Firefly 2.0',
+        assertions: ['c2pa.hash.data'],
+        actions: [],
+        ingredients: [],
+        verified_at: '2026-04-17T10:00:00Z',
+      },
+    });
+
+    const result = await moderateVideo({
+      sha256: 'a'.repeat(64),
+      uploadedAt: Date.now(),
+    }, baseEnv, mockFetch);
+
+    expect(result.action).toBe('QUARANTINE');
+    expect(result.category).toBe('ai_generated');
+    expect(result.provider).toBe('inquisitor-c2pa');
+    expect(result.reason).toContain('c2pa-ai-signed');
+    expect(result.reason).toContain('Adobe Firefly');
+    expect(result.requiresSecondaryVerification).toBe(false);
+    expect(result.c2pa?.state).toBe('valid_ai_signed');
+    expect(result.policyContext?.overrideReason).toBe('c2pa-ai-signed-short-circuit');
+
+    const hiveCalls = mockFetch.mock.calls.filter(([url]) => String(url).includes('api.thehive.ai'));
+    expect(hiveCalls).toHaveLength(0);
+  });
+
+  it('downgrades AI-driven QUARANTINE to REVIEW on valid_proofmode', async () => {
+    const mockFetch = buildMockFetch({
+      inquisitor: {
+        has_c2pa: true,
+        valid: true,
+        validation_state: 'valid',
+        is_proofmode: true,
+        claim_generator: 'ProofMode/1.1.9 Android/14',
+        capture_device: 'Google Pixel 8 Pro',
+        capture_time: '2024:07:22 14:33:51',
+        assertions: ['stds.exif', 'org.proofmode.location'],
+        actions: [],
+        ingredients: [],
+        verified_at: '2026-04-17T10:00:00Z',
+      },
+      hive: {
+        status: [{
+          response: {
+            output: [
+              {
+                time: 0,
+                classes: [
+                  { class: 'ai_generated', score: 0.92 },
+                ],
+              },
+            ],
+          },
+        }],
+      },
+    });
+
+    const result = await moderateVideo({
+      sha256: 'b'.repeat(64),
+      uploadedAt: Date.now(),
+    }, baseEnv, mockFetch);
+
+    expect(result.action).toBe('REVIEW');
+    expect(result.policyContext?.originalAction).toBe('QUARANTINE');
+    expect(result.policyContext?.overrideReason).toBe('proofmode-capture-authenticated');
+    expect(result.reason).toContain('proofmode-capture-authenticated');
+    expect(result.c2pa?.state).toBe('valid_proofmode');
+
+    const hiveCalls = mockFetch.mock.calls.filter(([url]) => String(url).includes('api.thehive.ai'));
+    expect(hiveCalls.length).toBeGreaterThan(0);
+  });
+
+  it('leaves action unchanged on valid_proofmode when Hive does not flag AI', async () => {
+    const mockFetch = buildMockFetch({
+      inquisitor: {
+        has_c2pa: true,
+        valid: true,
+        validation_state: 'valid',
+        is_proofmode: true,
+        claim_generator: 'ProofMode/1.1.9 Android/14',
+        assertions: [],
+        actions: [],
+        ingredients: [],
+        verified_at: '2026-04-17T10:00:00Z',
+      },
+      hive: {
+        status: [{
+          response: {
+            output: [
+              {
+                time: 0,
+                classes: [
+                  { class: 'ai_generated', score: 0.1 },
+                  { class: 'general_nsfw', score: 0.05 },
+                ],
+              },
+            ],
+          },
+        }],
+      },
+    });
+
+    const result = await moderateVideo({
+      sha256: 'c'.repeat(64),
+      uploadedAt: Date.now(),
+    }, baseEnv, mockFetch);
+
+    expect(result.action).toBe('SAFE');
+    expect(result.c2pa?.state).toBe('valid_proofmode');
+    expect(result.policyContext?.overrideReason).toBeFalsy();
+  });
+
+  it('does not downgrade valid_c2pa + AI flag — remains QUARANTINE', async () => {
+    const mockFetch = buildMockFetch({
+      inquisitor: {
+        has_c2pa: true,
+        valid: true,
+        validation_state: 'valid',
+        is_proofmode: false,
+        claim_generator: 'Adobe Photoshop 24.0',
+        assertions: ['c2pa.hash.data'],
+        actions: [],
+        ingredients: [],
+        verified_at: '2026-04-17T10:00:00Z',
+      },
+      hive: {
+        status: [{
+          response: {
+            output: [
+              {
+                time: 0,
+                classes: [
+                  { class: 'ai_generated', score: 0.92 },
+                ],
+              },
+            ],
+          },
+        }],
+      },
+    });
+
+    const result = await moderateVideo({
+      sha256: 'd'.repeat(64),
+      uploadedAt: Date.now(),
+    }, baseEnv, mockFetch);
+
+    expect(result.action).toBe('QUARANTINE');
+    expect(result.c2pa?.state).toBe('valid_c2pa');
+  });
+
+  it('falls through to Hive flow when inquisitor returns unchecked (timeout)', async () => {
+    const mockFetch = vi.fn(async (url) => {
+      const urlStr = String(url);
+      if (urlStr.includes('inquisitor.divine.video/verify')) {
+        throw new Error('ECONNREFUSED');
+      }
+      if (urlStr.endsWith('.vtt')) {
+        return { ok: false, status: 404, text: async () => '' };
+      }
+      if (urlStr.includes('api.thehive.ai')) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: [{
+              response: {
+                output: [
+                  {
+                    time: 0,
+                    classes: [{ class: 'ai_generated', score: 0.92 }],
+                  },
+                ],
+              },
+            }],
+          }),
+        };
+      }
+      throw new Error(`Unexpected fetch call: ${urlStr}`);
+    });
+
+    const result = await moderateVideo({
+      sha256: 'e'.repeat(64),
+      uploadedAt: Date.now(),
+    }, baseEnv, mockFetch);
+
+    expect(result.action).toBe('QUARANTINE');
+    expect(result.c2pa?.state).toBe('unchecked');
+  });
+
+  it('falls through to Hive flow when absent C2PA + AI flag → QUARANTINE', async () => {
+    const mockFetch = buildMockFetch({
+      inquisitor: {
+        has_c2pa: false,
+        valid: false,
+        validation_state: 'unknown',
+        is_proofmode: false,
+        assertions: [],
+        actions: [],
+        ingredients: [],
+        verified_at: '2026-04-17T10:00:00Z',
+      },
+      hive: {
+        status: [{
+          response: {
+            output: [
+              {
+                time: 0,
+                classes: [{ class: 'ai_generated', score: 0.92 }],
+              },
+            ],
+          },
+        }],
+      },
+    });
+
+    const result = await moderateVideo({
+      sha256: 'f'.repeat(64),
+      uploadedAt: Date.now(),
+    }, baseEnv, mockFetch);
+
+    expect(result.action).toBe('QUARANTINE');
+    expect(result.c2pa?.state).toBe('absent');
+  });
+
+  it('skips inquisitor and falls through when INQUISITOR_BASE_URL not set', async () => {
+    const envWithoutInquisitor = { ...baseEnv };
+    delete envWithoutInquisitor.INQUISITOR_BASE_URL;
+
+    const mockFetch = vi.fn(async (url) => {
+      const urlStr = String(url);
+      if (urlStr.includes('inquisitor.divine.video')) {
+        throw new Error('inquisitor must not be called when INQUISITOR_BASE_URL missing');
+      }
+      if (urlStr.endsWith('.vtt')) {
+        return { ok: false, status: 404, text: async () => '' };
+      }
+      if (urlStr.includes('api.thehive.ai')) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: [{ response: { output: [{ time: 0, classes: [{ class: 'general_nsfw', score: 0.1 }] }] } }],
+          }),
+        };
+      }
+      throw new Error(`Unexpected fetch: ${urlStr}`);
+    });
+
+    const result = await moderateVideo({
+      sha256: '1'.repeat(64),
+      uploadedAt: Date.now(),
+    }, envWithoutInquisitor, mockFetch);
+
+    expect(result.action).toBe('SAFE');
+    expect(result.c2pa?.state).toBe('unchecked');
+
+    const inquisitorCalls = mockFetch.mock.calls.filter(([url]) => String(url).includes('inquisitor.divine.video'));
+    expect(inquisitorCalls).toHaveLength(0);
   });
 });

@@ -121,6 +121,86 @@ describe('Hive.AI Response Normalizer', () => {
       expect(result.scores.nudity).toBe(0.92);
     });
 
+    it('treats male-coded swimwear and shirtless classes as label-only nudity', () => {
+      const hiveResponse = {
+        moderation: {
+          status: [{
+            response: {
+              output: [
+                {
+                  time: 0,
+                  classes: [
+                    { class: 'yes_male_nudity', score: 0.91 },
+                    { class: 'yes_male_swimwear', score: 0.88 },
+                    { class: 'yes_male_underwear', score: 0.83 }
+                  ]
+                }
+              ]
+            }
+          }]
+        },
+        aiDetection: null
+      };
+
+      const result = normalizeHiveAIResponse(hiveResponse);
+
+      expect(result.scores.nudity).toBe(0.91);
+      expect(result.scores.sexual).toBe(0);
+      expect(result.scores.porn).toBe(0);
+    });
+
+    it('maps sex-toy and sexual-display classes to warning-grade sexual content', () => {
+      const hiveResponse = {
+        moderation: {
+          status: [{
+            response: {
+              output: [
+                {
+                  time: 0,
+                  classes: [
+                    { class: 'yes_sexual_display', score: 0.9 },
+                    { class: 'yes_sex_toy', score: 0.82 }
+                  ]
+                }
+              ]
+            }
+          }]
+        },
+        aiDetection: null
+      };
+
+      const result = normalizeHiveAIResponse(hiveResponse);
+
+      expect(result.scores.sexual).toBe(0.9);
+      expect(result.scores.porn).toBe(0);
+    });
+
+    it('maps explicit sexual activity classes to ban-grade porn content', () => {
+      const hiveResponse = {
+        moderation: {
+          status: [{
+            response: {
+              output: [
+                {
+                  time: 0,
+                  classes: [
+                    { class: 'yes_sexual_activity', score: 0.94 },
+                    { class: 'animated_explicit_sexual_content', score: 0.97 }
+                  ]
+                }
+              ]
+            }
+          }]
+        },
+        aiDetection: null
+      };
+
+      const result = normalizeHiveAIResponse(hiveResponse);
+
+      expect(result.scores.sexual).toBe(0);
+      expect(result.scores.porn).toBe(0.97);
+    });
+
     it('should normalize violence and gore detection', () => {
       const hiveResponse = {
         moderation: {

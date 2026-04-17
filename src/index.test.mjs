@@ -9,15 +9,7 @@ import worker from './index.mjs';
 
 const SHA256 = 'a'.repeat(64);
 
-function createDbMock({
-  moderationResults = new Map(),
-  webhookEvents = new Map(),
-  videoMetadata = new Map(),
-  relayVideos = new Map(),
-  relayCreators = new Map(),
-  uploaderEnforcements = new Map(),
-  uploaderStats = new Map(),
-} = {}) {
+function createDbMock({ moderationResults = new Map(), moderationListRows = [], webhookEvents = new Map() } = {}) {
   return {
     prepare(sql) {
       let bindings = [];
@@ -28,98 +20,6 @@ function createDbMock({
           return this;
         },
         async run() {
-          if (sql.includes('UPDATE moderation_results') && sql.includes('WHERE sha256 = ?')) {
-            const [uploaded_by, title, author, event_id, content_url, published_at, raw_response, sha256] = bindings;
-            const existing = moderationResults.get(sha256) || { sha256 };
-            moderationResults.set(sha256, {
-              ...existing,
-              uploaded_by,
-              title,
-              author,
-              event_id,
-              content_url,
-              published_at,
-              raw_response
-            });
-          }
-          if (sql.includes('INSERT INTO relay_videos')) {
-            const [
-              sha256,
-              event_id,
-              stable_id,
-              pubkey,
-              title,
-              content,
-              summary,
-              video_url,
-              thumbnail_url,
-              published_at,
-              created_at,
-              author_name,
-              author_avatar,
-              raw_json,
-              synced_at,
-              source_updated_at
-            ] = bindings;
-            const existing = relayVideos.get(sha256) || { sha256 };
-            relayVideos.set(sha256, {
-              ...existing,
-              sha256,
-              event_id,
-              stable_id,
-              pubkey,
-              title,
-              content,
-              summary,
-              video_url,
-              thumbnail_url,
-              published_at,
-              created_at,
-              author_name,
-              author_avatar,
-              raw_json,
-              synced_at,
-              source_updated_at
-            });
-          }
-          if (sql.includes('INSERT INTO relay_creators')) {
-            const [
-              pubkey,
-              display_name,
-              username,
-              avatar_url,
-              bio,
-              website,
-              nip05,
-              follower_count,
-              following_count,
-              video_count,
-              event_count,
-              first_activity,
-              last_activity,
-              raw_json,
-              synced_at
-            ] = bindings;
-            const existing = relayCreators.get(pubkey) || { pubkey };
-            relayCreators.set(pubkey, {
-              ...existing,
-              pubkey,
-              display_name,
-              username,
-              avatar_url,
-              bio,
-              website,
-              nip05,
-              follower_count,
-              following_count,
-              video_count,
-              event_count,
-              first_activity,
-              last_activity,
-              raw_json,
-              synced_at
-            });
-          }
           return { success: true };
         },
         async first() {
@@ -129,57 +29,11 @@ function createDbMock({
           if (sql.includes('FROM bunny_webhook_events')) {
             return webhookEvents.get(bindings[0]) ?? null;
           }
-          if (sql.includes('FROM video_metadata')) {
-            return videoMetadata.get(bindings[0]) ?? null;
-          }
-          if (sql.includes('FROM relay_videos')) {
-            return relayVideos.get(bindings[0]) ?? null;
-          }
-          if (sql.includes('FROM relay_creators')) {
-            return relayCreators.get(bindings[0]) ?? null;
-          }
-          if (sql.includes('FROM uploader_enforcement')) {
-            return uploaderEnforcements.get(bindings[0]) ?? null;
-          }
-          if (sql.includes('FROM uploader_stats')) {
-            return uploaderStats.get(bindings[0]) ?? null;
-          }
           return null;
         },
         async all() {
-          if (sql.includes('COUNT(*) as total FROM moderation_results')) {
-            return { results: [{ total: moderationResults.size }] };
-          }
-          if (sql.includes('FROM moderation_results')) {
-            let results = Array.from(moderationResults.values());
-
-            if (sql.includes("reviewed_by IS NULL")) {
-              results = results.filter((row) => row.reviewed_by == null);
-            }
-
-            if (sql.includes("action IN ('REVIEW', 'AGE_RESTRICTED', 'PERMANENT_BAN')")) {
-              const allowed = new Set(['REVIEW', 'AGE_RESTRICTED', 'PERMANENT_BAN']);
-              results = results.filter((row) => allowed.has(row.action));
-            }
-
-            if (sql.includes("action IN ('AGE_RESTRICTED', 'PERMANENT_BAN')")) {
-              const allowed = new Set(['AGE_RESTRICTED', 'PERMANENT_BAN']);
-              results = results.filter((row) => allowed.has(row.action));
-            }
-
-            if (sql.includes('moderated_at >= ?')) {
-              const since = bindings[0];
-              results = results.filter((row) => row.moderated_at >= since);
-            }
-
-            const limit = bindings[bindings.length - 2];
-            const offset = bindings[bindings.length - 1];
-            results = results
-              .sort((a, b) => a.moderated_at.localeCompare(b.moderated_at))
-              .reverse()
-              .slice(offset, offset + limit);
-
-            return { results };
+          if (sql.includes('FROM moderation_results') && sql.includes('ORDER BY moderated_at')) {
+            return { results: moderationListRows };
           }
           return { results: [] };
         }
@@ -401,227 +255,45 @@ describe('HTTP hostname routing', () => {
 });
 
 describe('Admin video lookup', () => {
-  it('returns quick review queue rows with persisted metadata fields', async () => {
+  it('returns a moderated video and merges KV override fields', async () => {
     const env = createEnv({
       BLOSSOM_DB: createDbMock({
         moderationResults: new Map([[SHA256, {
           sha256: SHA256,
           action: 'REVIEW',
           provider: 'hiveai',
-          scores: JSON.stringify({ ai_generated: 0.9 }),
-          categories: JSON.stringify(['ai_generated']),
-          moderated_at: '2026-03-11T00:00:00.000Z',
-          reviewed_by: null,
-          reviewed_at: null,
-          uploaded_by: 'f'.repeat(64),
-          title: 'Airport dance',
-          author: 'Creator Name',
-          event_id: 'e'.repeat(64),
-          content_url: 'https://media.divine.video/airport-dance.mp4',
-          published_at: '2026-03-10T12:00:00.000Z'
-        }]])
-      })
-    });
-
-    const response = await worker.fetch(
-      new Request('https://moderation.admin.divine.video/admin/api/videos?action=FLAGGED&limit=100', {
-        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-      }),
-      env
-    );
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      videos: [{
-        sha256: SHA256,
-        title: 'Airport dance',
-        author: 'Creator Name',
-        event_id: 'e'.repeat(64),
-        content_url: 'https://media.divine.video/airport-dance.mp4',
-        published_at: '2026-03-10T12:00:00.000Z'
-      }]
-    });
-  });
-
-  it('returns a moderated video and merges KV override fields', async () => {
-    const pubkey = 'f'.repeat(64);
-    const eventId = 'e'.repeat(64);
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (url) => {
-      if (String(url) === `https://api.divine.video/api/videos/${eventId}`) {
-        return new Response('not found', { status: 404 });
-      }
-
-      if (String(url) === `https://api.divine.video/api/users/${pubkey}`) {
-        return new Response(JSON.stringify({
-          pubkey,
-          profile: {
-            display_name: 'Alice',
-            name: 'alice',
-            picture: 'https://cdn.example.com/alice.png',
-          },
-          social: {
-            follower_count: 100,
-            following_count: 20,
-          },
-          stats: {
-            video_count: 12,
-            total_events: 88,
-            first_activity: '2019-01-01T00:00:00.000Z',
-            last_activity: '2026-04-14T00:00:00.000Z',
-          },
-          engagement: {}
-        }), {
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      if (String(url) === `https://api.divine.video/api/users/${pubkey}/social`) {
-        return new Response(JSON.stringify({
-          follower_count: 100,
-          following_count: 20,
-        }), {
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const env = createEnv({
-        BLOSSOM_DB: createDbMock({
-          moderationResults: new Map([[SHA256, {
-            sha256: SHA256,
-            action: 'REVIEW',
-            provider: 'hiveai',
-            scores: JSON.stringify({ nudity: 0.4 }),
-            categories: JSON.stringify(['nudity']),
-            moderated_at: '2026-03-07T00:00:00.000Z',
-            reviewed_by: 'admin',
-            reviewed_at: '2026-03-07T01:00:00.000Z',
-            review_notes: 'legacy note',
-            uploaded_by: pubkey,
-            title: 'Imported clip',
-            author: 'Alice',
-            event_id: eventId,
-            content_url: `https://blossom.primal.net/${SHA256}.mp4`,
-            published_at: 1408579200
-          }]]),
-          uploaderStats: new Map([[pubkey, {
-            pubkey,
-            total_scanned: 5,
-            flagged_count: 2,
-            banned_count: 0,
-            restricted_count: 1,
-            review_count: 1,
-            last_flagged_at: '2026-03-10T00:00:00.000Z',
-            risk_level: 'elevated'
-          }]]),
-          uploaderEnforcements: new Map([[pubkey, {
-            pubkey,
-            approval_required: 0,
-            relay_banned: 1
-          }]])
-        }),
-        MODERATION_KV: {
-          async get(key) {
-            if (key === `moderation:${SHA256}`) {
-              return JSON.stringify({
-                action: 'AGE_RESTRICTED',
-                cdnUrl: `https://blossom.primal.net/${SHA256}.mp4`,
-                scores: { nudity: 0.91, ai_generated: 0.2 },
-                manualOverride: true,
-                previousAction: 'REVIEW',
-                overriddenAt: 1741305600000,
-                reason: 'Manual override'
-              });
-            }
-            return null;
-          },
-          async put() {},
-          async delete() {},
-          async list() { return { keys: [], list_complete: true, cursor: null }; }
-        }
-      });
-
-      const response = await worker.fetch(
-        new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
-          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-        }),
-        env
-      );
-
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
-        video: {
-          sha256: SHA256,
-          action: 'AGE_RESTRICTED',
-          cdnUrl: `https://blossom.primal.net/${SHA256}.mp4`,
-          manualOverride: true,
-          previousAction: 'REVIEW',
-          reason: 'Manual override',
-          scores: {
-            nudity: 0.91
-          },
-          nostrContext: {
-            title: 'Imported clip',
-            author: 'Alice',
-            url: `https://blossom.primal.net/${SHA256}.mp4`,
-            publishedAt: 1408579200
-          },
-          eventId,
-          divineUrl: `https://divine.video/video/${eventId}`,
-          creatorContext: {
-            name: 'Alice',
-            stats: {
-              totalScanned: 5
-            },
-            social: {
-              followerCount: 100
-            },
-            enforcement: {
-              relayBanned: true
-            }
-          },
-          provenance: {
-            status: 'pre_2022_legacy',
-            dateSource: 'published_at',
-            isPre2022: true,
-            reasons: expect.arrayContaining(['published_at:2014-08-21T00:00:00.000Z'])
-          }
-        }
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('returns provenance in admin video list payloads', async () => {
-    const pubkey = '1'.repeat(64);
-    const env = createEnv({
-      BLOSSOM_DB: createDbMock({
-        moderationResults: new Map([[SHA256, {
-          sha256: SHA256,
-          action: 'AGE_RESTRICTED',
-          provider: 'hiveai',
-          scores: JSON.stringify({ ai_generated: 0.92 }),
-          categories: JSON.stringify(['ai_generated']),
+          scores: JSON.stringify({ nudity: 0.4 }),
+          categories: JSON.stringify(['nudity']),
           moderated_at: '2026-03-07T00:00:00.000Z',
-          reviewed_by: null,
-          reviewed_at: null,
-          uploaded_by: pubkey,
-          title: 'Old archive upload',
-          author: 'Archivist',
-          event_id: '2'.repeat(64),
-          content_url: `https://blossom.primal.net/${SHA256}.mp4`,
-          published_at: 1514678400
+          reviewed_by: 'admin',
+          reviewed_at: '2026-03-07T01:00:00.000Z',
+          review_notes: 'legacy note',
+          uploaded_by: 'npub123'
         }]])
-      })
+      }),
+      MODERATION_KV: {
+        async get(key) {
+          if (key === `moderation:${SHA256}`) {
+            return JSON.stringify({
+              action: 'AGE_RESTRICTED',
+              cdnUrl: `https://blossom.primal.net/${SHA256}.mp4`,
+              scores: { nudity: 0.91, ai_generated: 0.2 },
+              manualOverride: true,
+              previousAction: 'REVIEW',
+              overriddenAt: 1741305600000,
+              reason: 'Manual override'
+            });
+          }
+          return null;
+        },
+        async put() {},
+        async delete() {},
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      }
     });
 
     const response = await worker.fetch(
-      new Request('https://moderation.admin.divine.video/admin/api/videos?action=FLAGGED&limit=10', {
+      new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
         headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
       }),
       env
@@ -629,16 +301,17 @@ describe('Admin video lookup', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      videos: [
-        {
-          sha256: SHA256,
-          provenance: {
-            status: 'pre_2022_legacy',
-            dateSource: 'published_at',
-            isPre2022: true
-          }
+      video: {
+        sha256: SHA256,
+        action: 'AGE_RESTRICTED',
+        cdnUrl: `https://blossom.primal.net/${SHA256}.mp4`,
+        manualOverride: true,
+        previousAction: 'REVIEW',
+        reason: 'Manual override',
+        scores: {
+          nudity: 0.91
         }
-      ]
+      }
     });
   });
 
@@ -699,138 +372,6 @@ describe('Admin video lookup', () => {
     }
   });
 
-  it('prefers mirrored relay video and creator rows without upstream fetch', async () => {
-    const pubkey = 'f'.repeat(64);
-    const eventId = 'e'.repeat(64);
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (url) => {
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const env = createEnv({
-        BLOSSOM_DB: createDbMock({
-          moderationResults: new Map([[SHA256, {
-            sha256: SHA256,
-            action: 'REVIEW',
-            provider: 'hiveai',
-            scores: JSON.stringify({ nudity: 0.4 }),
-            categories: JSON.stringify(['nudity']),
-            moderated_at: '2026-03-07T00:00:00.000Z',
-            reviewed_by: null,
-            reviewed_at: null,
-            uploaded_by: null,
-            title: null,
-            author: null,
-            event_id: null,
-            content_url: null,
-            published_at: null
-          }]]),
-          relayVideos: new Map([[SHA256, {
-            sha256: SHA256,
-            event_id: eventId,
-            stable_id: 'mirror-stable-id',
-            pubkey,
-            title: 'Mirrored title',
-            content: 'Mirrored content',
-            summary: 'Mirrored summary',
-            video_url: 'https://media.divine.video/mirrored.mp4',
-            thumbnail_url: 'https://media.divine.video/mirrored.jpg',
-            published_at: '2026-03-06T12:00:00.000Z',
-            created_at: '2026-03-06T11:00:00.000Z',
-            author_name: 'Mirror Author',
-            author_avatar: 'https://cdn.example.com/author.png',
-            raw_json: JSON.stringify({ id: eventId }),
-            synced_at: '2026-04-16T00:00:00.000Z',
-            source_updated_at: '2026-04-15T23:59:00.000Z'
-          }]]),
-          relayCreators: new Map([[pubkey, {
-            pubkey,
-            display_name: 'Mirror Creator',
-            username: 'mirror',
-            avatar_url: 'https://cdn.example.com/creator.png',
-            bio: 'Mirrored creator bio',
-            website: 'https://divine.video/profile/mirror',
-            nip05: 'mirror@divine.video',
-            follower_count: 123,
-            following_count: 45,
-            video_count: 67,
-            event_count: 89,
-            first_activity: '2020-01-01T00:00:00.000Z',
-            last_activity: '2026-04-15T00:00:00.000Z',
-            raw_json: JSON.stringify({ pubkey }),
-            synced_at: '2026-04-16T00:00:00.000Z'
-          }]]),
-          uploaderStats: new Map([[pubkey, {
-            pubkey,
-            total_scanned: 5,
-            flagged_count: 2,
-            banned_count: 0,
-            restricted_count: 1,
-            review_count: 1,
-            last_flagged_at: '2026-03-10T00:00:00.000Z',
-            risk_level: 'elevated'
-          }]]),
-          uploaderEnforcements: new Map([[pubkey, {
-            pubkey,
-            approval_required: 0,
-            relay_banned: 1
-          }]])
-        })
-      });
-
-      const response = await worker.fetch(
-        new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
-          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-        }),
-        env
-      );
-
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
-        video: {
-          sha256: SHA256,
-          title: 'Mirrored title',
-          author: 'Mirror Author',
-          uploaded_by: pubkey,
-          eventId,
-          stableId: 'mirror-stable-id',
-          divineUrl: 'https://divine.video/video/mirror-stable-id',
-          content_url: 'https://media.divine.video/mirrored.mp4',
-          nostrContext: {
-            title: 'Mirrored title',
-            author: 'Mirror Author',
-            content: 'Mirrored content',
-            url: 'https://media.divine.video/mirrored.mp4',
-            publishedAt: '2026-03-06T12:00:00.000Z',
-            eventId,
-            stableId: 'mirror-stable-id'
-          },
-          publisherProfile: {
-            display_name: 'Mirror Creator',
-            name: 'mirror',
-            picture: 'https://cdn.example.com/creator.png'
-          },
-          creatorContext: {
-            name: 'Mirror Creator',
-            avatarUrl: 'https://cdn.example.com/creator.png',
-            social: {
-              followerCount: 123,
-              followingCount: 45,
-              videoCount: 67,
-              totalEvents: 89
-            },
-            enforcement: {
-              relayBanned: true
-            }
-          }
-        }
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
   it('uses FunnelCake REST instead of WebSocket when moderated metadata is missing', async () => {
     const originalFetch = globalThis.fetch;
     const originalWebSocket = globalThis.WebSocket;
@@ -844,7 +385,7 @@ describe('Admin video lookup', () => {
 
     globalThis.fetch = async (url) => {
       restCalls.push(String(url));
-      if (String(url) === `https://api.divine.video/api/videos/${SHA256}`) {
+      if (String(url) === `https://relay.divine.video/api/videos/${SHA256}`) {
         return new Response(JSON.stringify({
           event: {
             id: 'd'.repeat(64),
@@ -863,49 +404,6 @@ describe('Admin video lookup', () => {
           stats: {
             author_name: 'REST author'
           }
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      if (String(url) === 'https://api.divine.video/api/users/bulk') {
-        return new Response(JSON.stringify({
-          users: [{
-            pubkey: 'b'.repeat(64),
-            profile: {
-              display_name: 'REST display name',
-              picture: 'https://cdn.divine.video/rest-avatar.jpg'
-            }
-          }],
-          missing: []
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      if (String(url) === `https://api.divine.video/api/users/${'b'.repeat(64)}`) {
-        return new Response(JSON.stringify({
-          pubkey: 'b'.repeat(64),
-          profile: {
-            display_name: 'REST display name',
-            picture: 'https://cdn.divine.video/rest-avatar.jpg'
-          },
-          stats: {
-            video_count: 3,
-            total_events: 11
-          }
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      if (String(url) === `https://api.divine.video/api/users/${'b'.repeat(64)}/social`) {
-        return new Response(JSON.stringify({
-          follower_count: 7,
-          following_count: 2
         }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -941,13 +439,8 @@ describe('Admin video lookup', () => {
       await expect(response.json()).resolves.toMatchObject({
         video: {
           sha256: SHA256,
-          uploaded_by: 'b'.repeat(64),
           eventId: 'd'.repeat(64),
           divineUrl: `https://divine.video/video/${SHA256}`,
-          publisherProfile: {
-            display_name: 'REST display name',
-            picture: 'https://cdn.divine.video/rest-avatar.jpg'
-          },
           nostrContext: {
             title: 'REST title',
             author: 'REST author',
@@ -958,62 +451,45 @@ describe('Admin video lookup', () => {
           }
         }
       });
-      expect(restCalls).toEqual([
-        `https://api.divine.video/api/videos/${SHA256}`,
-        'https://api.divine.video/api/users/bulk',
-        `https://api.divine.video/api/users/${'b'.repeat(64)}`,
-        `https://api.divine.video/api/users/${'b'.repeat(64)}/social`
-      ]);
+      expect(restCalls).toEqual([`https://relay.divine.video/api/videos/${SHA256}`]);
     } finally {
       globalThis.fetch = originalFetch;
       globalThis.WebSocket = originalWebSocket;
     }
   });
 
-  it('prefers api.divine.video context over stored metadata for moderated videos', async () => {
-    const eventId = '1'.repeat(64);
-    const uploaderPubkey = '9'.repeat(64);
+  it('returns mirrored relay context fields in the admin video list payload', async () => {
     const originalFetch = globalThis.fetch;
+    const originalWebSocket = globalThis.WebSocket;
+    const restCalls = [];
+
+    globalThis.WebSocket = class {
+      constructor() {
+        throw new Error('WebSocket should not be used for dashboard list metadata');
+      }
+    };
+
     globalThis.fetch = async (url) => {
-      if (String(url) === `https://api.divine.video/api/videos/${eventId}`) {
+      restCalls.push(String(url));
+      if (String(url) === `https://relay.divine.video/api/videos/${SHA256}`) {
         return new Response(JSON.stringify({
           event: {
-            id: eventId,
-            pubkey: uploaderPubkey,
-            created_at: 1773503656,
+            id: 'd'.repeat(64),
+            pubkey: 'b'.repeat(64),
+            created_at: 1700000000,
             kind: 34236,
             tags: [
-              ['d', 'relay-stable-id'],
-              ['title', 'Relay title'],
-              ['client', 'divine-web'],
-              ['platform', 'vine'],
-              ['published_at', '1773503656'],
-              ['imeta', `url https://cdn.divine.video/${SHA256}.mp4`, `x ${SHA256}`, 'image https://cdn.divine.video/thumb.jpg']
+              ['d', SHA256],
+              ['title', 'REST title'],
+              ['published_at', '1389756506'],
+              ['imeta', 'url https://media.divine.video/rest-content.mp4', `x ${SHA256}`]
             ],
-            content: 'Relay description',
-            sig: 'd'.repeat(128)
+            content: 'REST description',
+            sig: 'e'.repeat(128)
           },
           stats: {
-            author_name: 'Relay Author',
-            author_avatar: 'https://cdn.divine.video/avatar.jpg'
+            author_name: 'REST author'
           }
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      if (String(url) === 'https://api.divine.video/api/users/bulk') {
-        return new Response(JSON.stringify({
-          users: [{
-            pubkey: uploaderPubkey,
-            profile: {
-              display_name: 'Relay Display Name',
-              picture: 'https://cdn.divine.video/avatar.jpg',
-              nip05: 'relay@example.com'
-            }
-          }],
-          missing: []
         }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
@@ -1024,302 +500,51 @@ describe('Admin video lookup', () => {
     };
 
     try {
+      const moderationRow = {
+        sha256: SHA256,
+        action: 'REVIEW',
+        provider: 'hiveai',
+        scores: JSON.stringify({ nudity: 0.4 }),
+        categories: JSON.stringify(['nudity']),
+        moderated_at: '2026-03-07T00:00:00.000Z',
+        reviewed_by: null,
+        reviewed_at: null,
+        uploaded_by: null
+      };
+
       const response = await worker.fetch(
-        new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
+        new Request('https://moderation.admin.divine.video/admin/api/videos', {
           headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
         }),
         createEnv({
           BLOSSOM_DB: createDbMock({
-            moderationResults: new Map([[SHA256, {
-              sha256: SHA256,
-              action: 'REVIEW',
-              provider: 'hiveai',
-              scores: JSON.stringify({ nudity: 0.82 }),
-              categories: JSON.stringify(['nudity']),
-              moderated_at: '2026-03-07T00:00:00.000Z',
-              reviewed_by: null,
-              reviewed_at: null,
-              review_notes: 'legacy note',
-              uploaded_by: 'f'.repeat(64),
-              title: 'Stored title',
-              author: 'Stored author',
-              event_id: eventId,
-              content_url: 'https://media.divine.video/stored.mp4',
-              published_at: '2026-03-06T00:00:00.000Z'
-            }]])
+            moderationResults: new Map([[SHA256, moderationRow]]),
+            moderationListRows: [moderationRow]
           })
         })
       );
 
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({
-        video: {
+        videos: [{
           sha256: SHA256,
-          uploaded_by: uploaderPubkey,
-          eventId,
-          divineUrl: 'https://divine.video/video/relay-stable-id',
-          title: 'Relay title',
-          author: 'Relay Author',
-          content_url: `https://cdn.divine.video/${SHA256}.mp4`,
+          uploaded_by: 'b'.repeat(64),
+          eventId: 'd'.repeat(64),
+          divineUrl: `https://divine.video/video/${SHA256}`,
           nostrContext: {
-            title: 'Relay title',
-            author: 'Relay Author',
-            content: 'Relay description',
-            client: 'divine-web',
-            platform: 'vine',
-            url: `https://cdn.divine.video/${SHA256}.mp4`
+            title: 'REST title',
+            author: 'REST author',
+            url: 'https://media.divine.video/rest-content.mp4',
+            publishedAt: 1389756506,
+            content: 'REST description',
+            eventId: 'd'.repeat(64)
           }
-        }
+        }]
       });
+      expect(restCalls).toEqual([`https://relay.divine.video/api/videos/${SHA256}`]);
     } finally {
       globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('falls back to stored admin metadata when api.divine.video lookup misses', async () => {
-    const eventId = '2'.repeat(64);
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (url) => {
-      if (String(url) === `https://api.divine.video/api/videos/${eventId}`) {
-        return new Response('not found', { status: 404 });
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const response = await worker.fetch(
-        new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
-          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-        }),
-        createEnv({
-          BLOSSOM_DB: createDbMock({
-            moderationResults: new Map([[SHA256, {
-              sha256: SHA256,
-              action: 'REVIEW',
-              provider: 'hiveai',
-              scores: JSON.stringify({ nudity: 0.82 }),
-              categories: JSON.stringify(['nudity']),
-              moderated_at: '2026-03-07T00:00:00.000Z',
-              reviewed_by: null,
-              reviewed_at: null,
-              review_notes: 'legacy note',
-              uploaded_by: 'f'.repeat(64),
-              title: 'Stored title',
-              author: 'Stored author',
-              event_id: eventId,
-              content_url: 'https://media.divine.video/stored.mp4',
-              published_at: '2026-03-06T00:00:00.000Z'
-            }]])
-          })
-        })
-      );
-
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
-        video: {
-          sha256: SHA256,
-          uploaded_by: 'f'.repeat(64),
-          eventId,
-          title: 'Stored title',
-          author: 'Stored author',
-          content_url: 'https://media.divine.video/stored.mp4',
-          nostrContext: {
-            title: 'Stored title',
-            author: 'Stored author',
-            url: 'https://media.divine.video/stored.mp4',
-            publishedAt: '2026-03-06T00:00:00.000Z'
-          }
-        }
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('uses stored stable post id from raw_response snapshot when event_id is missing', async () => {
-    const stableId = 'relay-stable-id';
-    const uploaderPubkey = '9'.repeat(64);
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (url) => {
-      if (String(url) === `https://api.divine.video/api/videos/${stableId}`) {
-        return new Response(JSON.stringify({
-          event: {
-            id: '3'.repeat(64),
-            pubkey: uploaderPubkey,
-            created_at: 1773503656,
-            kind: 34236,
-            tags: [
-              ['d', stableId],
-              ['title', 'Stable relay title'],
-              ['published_at', '1773503656'],
-              ['imeta', `url https://cdn.divine.video/${SHA256}.mp4`, `x ${SHA256}`]
-            ],
-            content: 'Stable relay description',
-            sig: 'd'.repeat(128)
-          },
-          stats: {
-            author_name: 'Stable Relay Author',
-            author_avatar: 'https://cdn.divine.video/avatar.jpg'
-          }
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      if (String(url) === 'https://api.divine.video/api/users/bulk') {
-        return new Response(JSON.stringify({
-          users: [{
-            pubkey: uploaderPubkey,
-            profile: {
-              display_name: 'Stable Relay Display Name',
-              picture: 'https://cdn.divine.video/avatar.jpg'
-            }
-          }],
-          missing: []
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const response = await worker.fetch(
-        new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
-          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-        }),
-        createEnv({
-          BLOSSOM_DB: createDbMock({
-            moderationResults: new Map([[SHA256, {
-              sha256: SHA256,
-              action: 'REVIEW',
-              provider: 'hiveai',
-              scores: JSON.stringify({ nudity: 0.82 }),
-              categories: JSON.stringify(['nudity']),
-              raw_response: JSON.stringify({
-                nostrSnapshot: {
-                  stableId,
-                  content: 'Stored snapshot body'
-                }
-              }),
-              moderated_at: '2026-03-07T00:00:00.000Z',
-              reviewed_by: null,
-              reviewed_at: null,
-              uploaded_by: 'f'.repeat(64),
-              title: null,
-              author: null,
-              event_id: null,
-              content_url: 'https://media.divine.video/stored.mp4',
-              published_at: null
-            }]])
-          })
-        })
-      );
-
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
-        video: {
-          sha256: SHA256,
-          uploaded_by: uploaderPubkey,
-          divineUrl: 'https://divine.video/video/relay-stable-id',
-          title: 'Stable relay title',
-          author: 'Stable Relay Author',
-          content_url: `https://cdn.divine.video/${SHA256}.mp4`,
-          nostrContext: {
-            title: 'Stable relay title',
-            author: 'Stable Relay Author',
-            content: 'Stable relay description',
-            url: `https://cdn.divine.video/${SHA256}.mp4`
-          }
-        }
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('falls back to summary tag when relay event content is empty', async () => {
-    const eventId = '4'.repeat(64);
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (url) => {
-      if (String(url) === `https://api.divine.video/api/videos/${eventId}`) {
-        return new Response(JSON.stringify({
-          event: {
-            id: eventId,
-            pubkey: '6'.repeat(64),
-            created_at: 1773503656,
-            kind: 34236,
-            tags: [
-              ['d', 'summary-stable-id'],
-              ['title', 'Summary title'],
-              ['summary', 'Summary body text'],
-              ['published_at', '1773503656'],
-              ['imeta', `url https://cdn.divine.video/${SHA256}.mp4`, `x ${SHA256}`]
-            ],
-            content: '',
-            sig: 'd'.repeat(128)
-          },
-          stats: {
-            author_name: 'Summary Author'
-          }
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      if (String(url) === 'https://api.divine.video/api/users/bulk') {
-        return new Response(JSON.stringify({ users: [], missing: ['6'.repeat(64)] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const response = await worker.fetch(
-        new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
-          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-        }),
-        createEnv({
-          BLOSSOM_DB: createDbMock({
-            moderationResults: new Map([[SHA256, {
-              sha256: SHA256,
-              action: 'REVIEW',
-              provider: 'hiveai',
-              scores: JSON.stringify({ nudity: 0.82 }),
-              categories: JSON.stringify(['nudity']),
-              moderated_at: '2026-03-07T00:00:00.000Z',
-              reviewed_by: null,
-              reviewed_at: null,
-              uploaded_by: 'f'.repeat(64),
-              title: null,
-              author: null,
-              event_id: eventId,
-              content_url: null,
-              published_at: null
-            }]])
-          })
-        })
-      );
-
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
-        video: {
-          title: 'Summary title',
-          author: 'Summary Author',
-          nostrContext: {
-            content: 'Summary body text'
-          }
-        }
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
+      globalThis.WebSocket = originalWebSocket;
     }
   });
 
@@ -1501,45 +726,6 @@ describe('Admin video lookup', () => {
     });
   });
 
-  it('includes uploader identity keys (nostrContext, eventId, uploaded_by, divineUrl) for moderated rows', async () => {
-    const env = createEnv({
-      BLOSSOM_DB: createDbMock({
-        moderationResults: new Map([[SHA256, {
-          sha256: SHA256,
-          action: 'REVIEW',
-          provider: 'hiveai',
-          scores: JSON.stringify({ nudity: 0.2 }),
-          categories: JSON.stringify([]),
-          moderated_at: '2026-04-01T00:00:00.000Z',
-          uploaded_by: 'c'.repeat(64),
-          title: 'Clip title',
-          author: 'Alice',
-          event_id: '2'.repeat(64),
-          content_url: 'https://media.divine.video/clip.mp4',
-          published_at: '2026-04-01T00:00:00.000Z'
-        }]])
-      })
-    });
-
-    const response = await worker.fetch(
-      new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
-        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-      }),
-      env
-    );
-
-    expect(response.status).toBe(200);
-    const body = await response.json();
-    expect(body.video).toHaveProperty('nostrContext');
-    expect(body.video).toHaveProperty('eventId');
-    expect(body.video).toHaveProperty('uploaded_by');
-    expect(body.video).toHaveProperty('divineUrl');
-    expect(body.video.uploaded_by).toBe('c'.repeat(64));
-    expect(body.video.eventId).toBe('2'.repeat(64));
-    expect(body.video.divineUrl).toBe(`https://divine.video/video/${'2'.repeat(64)}`);
-    expect(body.video.nostrContext).toMatchObject({ title: 'Clip title', author: 'Alice' });
-  });
-
   it('returns 404 when the lookup identifier is unknown', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => new Response('not found', { status: 404 });
@@ -1556,641 +742,6 @@ describe('Admin video lookup', () => {
       await expect(response.json()).resolves.toEqual({
         error: 'Video not found',
         identifier: SHA256
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('recovers legacy context from raw_response and video_metadata when persisted columns are empty', async () => {
-    const uploaderPubkey = 'd'.repeat(64);
-    const eventId = 'e'.repeat(64);
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (url) => {
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const response = await worker.fetch(
-        new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
-          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-        }),
-        createEnv({
-          BLOSSOM_DB: createDbMock({
-            moderationResults: new Map([[SHA256, {
-              sha256: SHA256,
-              action: 'REVIEW',
-              provider: 'hiveai',
-              scores: JSON.stringify({ nudity: 0.71 }),
-              categories: JSON.stringify(['nudity']),
-              raw_response: JSON.stringify({
-                uploadedBy: uploaderPubkey,
-                nostrEventId: eventId,
-                nostrContext: {
-                  title: 'Legacy title',
-                  author: 'Legacy author',
-                  content: 'Legacy description',
-                  publishedAt: 1389756506,
-                  sourceUrl: 'https://vine.co/v/abc123',
-                  platform: 'vine',
-                  client: 'vine-archive-importer'
-                }
-              }),
-              moderated_at: '2026-02-17T20:32:58.616Z',
-              reviewed_by: null,
-              reviewed_at: null,
-              uploaded_by: null,
-              title: null,
-              author: null,
-              event_id: null,
-              content_url: null,
-              published_at: null
-            }]]),
-            videoMetadata: new Map([[SHA256, {
-              sha256: SHA256,
-              uploaded_by: uploaderPubkey,
-              current_status: 'ready',
-              current_mp4_url: 'https://media.divine.video/legacy.mp4',
-              current_hls_url: 'https://media.divine.video/legacy.m3u8'
-            }]])
-          })
-        })
-      );
-
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
-        video: {
-          sha256: SHA256,
-          uploaded_by: uploaderPubkey,
-          title: 'Legacy title',
-          author: 'Legacy author',
-          eventId,
-          divineUrl: `https://divine.video/video/${eventId}`,
-          content_url: 'https://media.divine.video/legacy.mp4',
-          nostrContext: {
-            title: 'Legacy title',
-            author: 'Legacy author',
-            content: 'Legacy description',
-            url: 'https://media.divine.video/legacy.mp4',
-            sourceUrl: 'https://vine.co/v/abc123',
-            publishedAt: 1389756506,
-            eventId,
-            platform: 'vine',
-            client: 'vine-archive-importer',
-            pubkey: `${uploaderPubkey.substring(0, 16)}...`
-          }
-        }
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('marks unrecoverable legacy moderation rows as orphaned context', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (url) => {
-      if (String(url) === `https://api.divine.video/api/videos/${SHA256}`) {
-        return new Response('not found', { status: 404 });
-      }
-      if (String(url) === `https://relay.divine.video/api/videos/${SHA256}`) {
-        return new Response('not found', { status: 404 });
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const response = await worker.fetch(
-        new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
-          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-        }),
-        createEnv({
-          BLOSSOM_DB: createDbMock({
-            moderationResults: new Map([[SHA256, {
-              sha256: SHA256,
-              action: 'REVIEW',
-              provider: 'hiveai',
-              scores: JSON.stringify({ nudity: 0.93 }),
-              categories: JSON.stringify(['nudity']),
-              raw_response: '{}',
-              moderated_at: '2026-02-17T20:32:58.616Z',
-              reviewed_by: null,
-              reviewed_at: null,
-              uploaded_by: null,
-              title: null,
-              author: null,
-              event_id: null,
-              content_url: null,
-              published_at: null
-            }]])
-          })
-        })
-      );
-
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
-        video: {
-          sha256: SHA256,
-          contextStatus: {
-            state: 'orphaned',
-            reason: 'legacy_moderation_row_without_context'
-          }
-        }
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('caches relay-resolved admin context into moderation_results during lookup', async () => {
-    const eventId = 'f'.repeat(64);
-    const uploaderPubkey = 'b'.repeat(64);
-    const moderationResults = new Map([[SHA256, {
-      sha256: SHA256,
-      action: 'REVIEW',
-      provider: 'hiveai',
-      scores: JSON.stringify({ nudity: 0.91 }),
-      categories: JSON.stringify(['nudity']),
-      raw_response: '{}',
-      moderated_at: '2026-02-17T20:32:58.616Z',
-      reviewed_by: null,
-      reviewed_at: null,
-      uploaded_by: null,
-      title: null,
-      author: null,
-      event_id: null,
-      content_url: null,
-      published_at: null
-    }]]);
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (url) => {
-      if (String(url) === `https://api.divine.video/api/videos/${SHA256}`) {
-        return new Response(JSON.stringify({
-          event: {
-            id: eventId,
-            pubkey: uploaderPubkey,
-            created_at: 1700000000,
-            kind: 34236,
-            tags: [
-              ['d', 'cacheable-stable-id'],
-              ['title', 'Cached title'],
-              ['published_at', '1389756506'],
-              ['imeta', 'url https://media.divine.video/cached-content.mp4', `x ${SHA256}`]
-            ],
-            content: 'Cached body text',
-            sig: 'e'.repeat(128)
-          },
-          stats: {
-            author_name: 'Cached author',
-            author_avatar: 'https://cdn.divine.video/avatar.jpg'
-          }
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const env = createEnv({
-        BLOSSOM_DB: createDbMock({ moderationResults })
-      });
-
-      const response = await worker.fetch(
-        new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
-          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-        }),
-        env
-      );
-
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
-        video: {
-          sha256: SHA256,
-          uploaded_by: uploaderPubkey,
-          title: 'Cached title',
-          author: 'Cached author',
-          eventId,
-          content_url: 'https://media.divine.video/cached-content.mp4'
-        }
-      });
-
-      expect(moderationResults.get(SHA256)).toMatchObject({
-        uploaded_by: uploaderPubkey,
-        title: 'Cached title',
-        author: 'Cached author',
-        event_id: eventId,
-        content_url: 'https://media.divine.video/cached-content.mp4',
-        published_at: 1389756506
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('writes through relay mirror tables during admin lookup cache miss', async () => {
-    const eventId = 'f'.repeat(64);
-    const uploaderPubkey = 'b'.repeat(64);
-    const moderationResults = new Map([[SHA256, {
-      sha256: SHA256,
-      action: 'REVIEW',
-      provider: 'hiveai',
-      scores: JSON.stringify({ nudity: 0.91 }),
-      categories: JSON.stringify(['nudity']),
-      raw_response: '{}',
-      moderated_at: '2026-02-17T20:32:58.616Z',
-      reviewed_by: null,
-      reviewed_at: null,
-      uploaded_by: null,
-      title: null,
-      author: null,
-      event_id: null,
-      content_url: null,
-      published_at: null
-    }]]);
-    const relayVideos = new Map();
-    const relayCreators = new Map();
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (url, init = {}) => {
-      if (String(url) === `https://api.divine.video/api/videos/${SHA256}`) {
-        return new Response(JSON.stringify({
-          event: {
-            id: eventId,
-            pubkey: uploaderPubkey,
-            created_at: 1700000000,
-            kind: 34236,
-            tags: [
-              ['d', 'cacheable-stable-id'],
-              ['title', 'Cached title'],
-              ['published_at', '1389756506'],
-              ['imeta', 'url https://media.divine.video/cached-content.mp4', `x ${SHA256}`]
-            ],
-            content: 'Cached body text',
-            sig: 'e'.repeat(128)
-          },
-          stats: {
-            author_name: 'Cached author',
-            author_avatar: 'https://cdn.divine.video/avatar.jpg'
-          }
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      if (String(url) === 'https://api.divine.video/api/users/bulk') {
-        expect(init.method).toBe('POST');
-        return new Response(JSON.stringify({
-          users: [{
-            pubkey: uploaderPubkey,
-            profile: {
-              display_name: 'Bulk cached creator',
-              name: 'bulk-cached',
-              picture: 'https://cdn.divine.video/bulk-avatar.jpg'
-            }
-          }]
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      if (String(url) === `https://api.divine.video/api/users/${uploaderPubkey}`) {
-        return new Response(JSON.stringify({
-          pubkey: uploaderPubkey,
-          profile: {
-            display_name: 'Creator profile name',
-            name: 'creator-handle',
-            picture: 'https://cdn.divine.video/profile-avatar.jpg'
-          },
-          stats: {
-            video_count: 12,
-            total_events: 88,
-            first_activity: '2019-01-01T00:00:00.000Z',
-            last_activity: '2026-04-14T00:00:00.000Z'
-          },
-          social: {
-            follower_count: 100,
-            following_count: 20
-          }
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      if (String(url) === `https://api.divine.video/api/users/${uploaderPubkey}/social`) {
-        return new Response(JSON.stringify({
-          follower_count: 100,
-          following_count: 20
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const env = createEnv({
-        BLOSSOM_DB: createDbMock({ moderationResults, relayVideos, relayCreators })
-      });
-
-      const response = await worker.fetch(
-        new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
-          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-        }),
-        env
-      );
-
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
-        video: {
-          sha256: SHA256,
-          uploaded_by: uploaderPubkey,
-          title: 'Cached title',
-          author: 'Cached author',
-          eventId,
-          content_url: 'https://media.divine.video/cached-content.mp4'
-        }
-      });
-
-      expect(relayVideos.get(SHA256)).toMatchObject({
-        sha256: SHA256,
-        event_id: eventId,
-        stable_id: 'cacheable-stable-id',
-        pubkey: uploaderPubkey,
-        title: 'Cached title',
-        content: 'Cached body text',
-        video_url: 'https://media.divine.video/cached-content.mp4',
-        author_name: 'Cached author'
-      });
-
-      expect(relayCreators.get(uploaderPubkey)).toMatchObject({
-        pubkey: uploaderPubkey,
-        display_name: 'Bulk cached creator',
-        username: 'bulk-cached',
-        avatar_url: 'https://cdn.divine.video/bulk-avatar.jpg',
-        follower_count: 100,
-        following_count: 20,
-        video_count: 12,
-        event_count: 88
-      });
-
-      expect(moderationResults.get(SHA256)).toMatchObject({
-        uploaded_by: uploaderPubkey,
-        title: 'Cached title',
-        author: 'Cached author',
-        event_id: eventId,
-        content_url: 'https://media.divine.video/cached-content.mp4',
-        published_at: 1389756506
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-});
-
-describe('Quick review HTML', () => {
-  it('serves metadata-first quick review sections', async () => {
-    const response = await worker.fetch(
-      new Request('https://moderation.admin.divine.video/admin/review', {
-        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-      }),
-      createEnv()
-    );
-
-    expect(response.status).toBe(200);
-    const html = await response.text();
-    expect(html).toContain('review-primary-layout');
-    expect(html).toContain('Publisher');
-    expect(html).toContain('Post Context');
-    expect(html).toContain('Timeline');
-    expect(html).toContain('Technical Metadata');
-  });
-
-  it('includes labeled timestamps and full-context field wiring', async () => {
-    const response = await worker.fetch(
-      new Request('https://moderation.admin.divine.video/admin/review', {
-        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-      }),
-      createEnv()
-    );
-
-    expect(response.status).toBe(200);
-    const html = await response.text();
-    expect(html).toContain('Published');
-    expect(html).toContain('Received');
-    expect(html).toContain('Moderated');
-    expect(html).toContain('Reviewed');
-    expect(html).toContain('published_at');
-    expect(html).toContain('content_url');
-    expect(html).toContain('event_id');
-  });
-
-  it('includes publisher profile wiring for quick review metadata rendering', async () => {
-    const response = await worker.fetch(
-      new Request('https://moderation.admin.divine.video/admin/review', {
-        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-      }),
-      createEnv()
-    );
-
-    expect(response.status).toBe(200);
-    const html = await response.text();
-    expect(html).toContain('publisherProfile');
-    expect(html).toContain('display_name');
-  });
-
-  it('uses neutral empty-state copy instead of internal fallback labels', async () => {
-    const response = await worker.fetch(
-      new Request('https://moderation.admin.divine.video/admin/review', {
-        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-      }),
-      createEnv()
-    );
-
-    expect(response.status).toBe(200);
-    const html = await response.text();
-    expect(html).not.toContain('legacy_moderation_row_without_context');
-    expect(html).not.toContain('Legacy moderation row');
-    expect(html).not.toContain('Unknown provenance');
-    expect(html).not.toContain('Unknown Creator');
-    expect(html).toContain('Post details unavailable');
-    expect(html).toContain('Creator details unavailable');
-  });
-});
-
-describe('Admin context backfill', () => {
-  it('repairs sparse review rows via admin context backfill endpoint', async () => {
-    const sparseSha = '1'.repeat(64);
-    const repairedEventId = '2'.repeat(64);
-    const repairedPubkey = '3'.repeat(64);
-    const moderationResults = new Map([[sparseSha, {
-      sha256: sparseSha,
-      action: 'REVIEW',
-      provider: 'hiveai',
-      scores: JSON.stringify({ nudity: 0.84 }),
-      categories: JSON.stringify(['nudity']),
-      raw_response: '{}',
-      moderated_at: '2026-02-17T20:32:58.616Z',
-      reviewed_by: null,
-      reviewed_at: null,
-      uploaded_by: null,
-      title: null,
-      author: null,
-      event_id: null,
-      content_url: null,
-      published_at: null
-    }]]);
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (url) => {
-      if (String(url) === `https://api.divine.video/api/videos/${sparseSha}`) {
-        return new Response(JSON.stringify({
-          event: {
-            id: repairedEventId,
-            pubkey: repairedPubkey,
-            created_at: 1700000100,
-            kind: 34236,
-            tags: [
-              ['d', 'repaired-stable-id'],
-              ['title', 'Repaired title'],
-              ['published_at', '1389756507'],
-              ['imeta', `url https://media.divine.video/${sparseSha}.mp4`, `x ${sparseSha}`]
-            ],
-            content: 'Recovered by backfill',
-            sig: 'e'.repeat(128)
-          },
-          stats: {
-            author_name: 'Repaired author'
-          }
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const env = createEnv({
-        BLOSSOM_DB: createDbMock({ moderationResults })
-      });
-
-      const response = await worker.fetch(
-        new Request('https://moderation.admin.divine.video/admin/api/backfill-review-context?limit=10', {
-          method: 'POST',
-          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-        }),
-        env
-      );
-
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
-        scanned: 1,
-        repaired: 1,
-        skipped: 0,
-        repairs: [{
-          sha256: sparseSha,
-          status: 'repaired'
-        }]
-      });
-
-      expect(moderationResults.get(sparseSha)).toMatchObject({
-        uploaded_by: repairedPubkey,
-        title: 'Repaired title',
-        author: 'Repaired author',
-        event_id: repairedEventId,
-        content_url: `https://media.divine.video/${sparseSha}.mp4`,
-        published_at: 1389756507
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('supports GET for admin context backfill endpoint', async () => {
-    const sparseSha = 'c'.repeat(64);
-    const repairedPubkey = 'f'.repeat(64);
-    const repairedEventId = 'g'.repeat(64);
-    const moderationResults = new Map([[sparseSha, {
-      sha256: sparseSha,
-      action: 'REVIEW',
-      provider: 'hiveai',
-      scores: '{}',
-      categories: '[]',
-      raw_response: '{}',
-      moderated_at: '2026-04-15T00:00:00.000Z',
-      reviewed_by: null,
-      reviewed_at: null,
-      uploaded_by: null,
-      title: null,
-      author: null,
-      event_id: null,
-      content_url: null,
-      published_at: null
-    }]]);
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (url) => {
-      if (String(url) === `https://api.divine.video/api/videos/${sparseSha}`) {
-        return new Response(JSON.stringify({
-          event: {
-            id: repairedEventId,
-            pubkey: repairedPubkey,
-            created_at: 1700000200,
-            kind: 34236,
-            tags: [
-              ['d', 'repaired-stable-id-get'],
-              ['title', 'Recovered title via GET'],
-              ['published_at', '1389756607'],
-              ['imeta', `url https://media.divine.video/${sparseSha}.mp4`, `x ${sparseSha}`]
-            ],
-            content: 'Recovered by GET backfill',
-            sig: 'h'.repeat(128)
-          },
-          stats: {
-            author_name: 'Recovered author via GET'
-          }
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const env = createEnv({
-        BLOSSOM_DB: createDbMock({ moderationResults })
-      });
-
-      const response = await worker.fetch(
-        new Request('https://moderation.admin.divine.video/admin/api/backfill-review-context?limit=10', {
-          method: 'GET',
-          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-        }),
-        env
-      );
-
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
-        scanned: 1,
-        repaired: 1,
-        skipped: 0,
-        repairs: [{
-          sha256: sparseSha,
-          status: 'repaired'
-        }]
-      });
-
-      expect(moderationResults.get(sparseSha)).toMatchObject({
-        uploaded_by: repairedPubkey,
-        title: 'Recovered title via GET',
-        author: 'Recovered author via GET',
-        event_id: repairedEventId,
-        content_url: `https://media.divine.video/${sparseSha}.mp4`,
-        published_at: 1389756607
       });
     } finally {
       globalThis.fetch = originalFetch;
@@ -2252,9 +803,7 @@ describe('Admin nostr context lookup', () => {
           vineUserId: null,
           content: null,
           eventId: 'c'.repeat(64),
-          stableId: null,
-          createdAt: null,
-          proofmode: null
+          createdAt: null
         }
       });
     } finally {
@@ -2275,10 +824,6 @@ describe('Admin nostr context lookup', () => {
 
     globalThis.fetch = async (url) => {
       restCalls.push(String(url));
-      if (String(url) === `https://api.divine.video/api/videos/${SHA256}`) {
-        return new Response('not found', { status: 404 });
-      }
-
       if (String(url) === `https://relay.divine.video/api/videos/${SHA256}`) {
         return new Response(JSON.stringify({
           event: {
@@ -2333,17 +878,12 @@ describe('Admin nostr context lookup', () => {
           importedAt: null,
           vineHashId: null,
           vineUserId: null,
-          proofmode: null,
           content: 'REST description',
           eventId: 'd'.repeat(64),
-          stableId: SHA256,
           createdAt: 1700000000
         }
       });
-      expect(restCalls).toEqual([
-        `https://api.divine.video/api/videos/${SHA256}`,
-        `https://relay.divine.video/api/videos/${SHA256}`
-      ]);
+      expect(restCalls).toEqual([`https://relay.divine.video/api/videos/${SHA256}`]);
     } finally {
       globalThis.fetch = originalFetch;
       globalThis.WebSocket = originalWebSocket;
@@ -2545,6 +1085,49 @@ describe('admin video proxy format fallback', () => {
     }
   });
 
+  it('preserves byte-range streaming headers for browser playback', async () => {
+    const originalFetch = globalThis.fetch;
+    let receivedRange = null;
+
+    globalThis.fetch = async (url, init = {}) => {
+      if (String(url) === `https://media.divine.video/${SHA256}`) {
+        receivedRange = init.headers?.get?.('Range') || init.headers?.Range || null;
+        return new Response('partial-mp4-bytes', {
+          status: 206,
+          headers: {
+            'Content-Type': 'video/mp4',
+            'Content-Range': 'bytes 0-1023/4096',
+            'Accept-Ranges': 'bytes',
+            'Content-Length': '1024'
+          }
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
+          headers: {
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video',
+            'Range': 'bytes=0-1023'
+          }
+        }),
+        createEnv()
+      );
+
+      expect(receivedRange).toBe('bytes=0-1023');
+      expect(response.status).toBe(206);
+      expect(response.headers.get('Content-Type')).toBe('video/mp4');
+      expect(response.headers.get('Content-Range')).toBe('bytes 0-1023/4096');
+      expect(response.headers.get('Accept-Ranges')).toBe('bytes');
+      expect(response.headers.get('Content-Length')).toBe('1024');
+      expect(response.headers.get('X-Admin-Proxy')).toBe('cdn');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('falls back to transcoded 720p MP4 when CDN returns video/3gpp', async () => {
     const originalFetch = globalThis.fetch;
     const fetchedUrls = [];
@@ -2618,18 +1201,17 @@ describe('admin video proxy format fallback', () => {
     }
   });
 
-  it('falls back to stored moderation content_url when CDN and admin bypass miss', async () => {
+  it('falls back to stored moderation content URL when CDN fetch fails and admin bypass is unavailable', async () => {
     const originalFetch = globalThis.fetch;
-    const storedUrl = 'https://blossom.primal.net/imported-video.mp4';
-    const fetchedUrls = [];
+    const fetchCalls = [];
 
     globalThis.fetch = async (url) => {
-      fetchedUrls.push(String(url));
+      fetchCalls.push(String(url));
       if (String(url) === `https://media.divine.video/${SHA256}`) {
         return new Response('not found', { status: 404 });
       }
-      if (String(url) === storedUrl) {
-        return new Response('stored-source-bytes', {
+      if (String(url) === 'https://archive.example.com/original-vine.mp4') {
+        return new Response('archive-bytes', {
           status: 200,
           headers: { 'Content-Type': 'video/mp4' }
         });
@@ -2648,13 +1230,10 @@ describe('admin video proxy format fallback', () => {
               sha256: SHA256,
               action: 'REVIEW',
               provider: 'hiveai',
-              scores: JSON.stringify({ nudity: 0.4 }),
+              scores: JSON.stringify({ nudity: 0.92 }),
               categories: JSON.stringify(['nudity']),
               moderated_at: '2026-03-07T00:00:00.000Z',
-              reviewed_by: null,
-              reviewed_at: null,
-              uploaded_by: 'b'.repeat(64),
-              content_url: storedUrl
+              content_url: 'https://archive.example.com/original-vine.mp4'
             }]])
           })
         })
@@ -2663,9 +1242,9 @@ describe('admin video proxy format fallback', () => {
       expect(response.status).toBe(200);
       expect(response.headers.get('Content-Type')).toBe('video/mp4');
       expect(response.headers.get('X-Admin-Proxy')).toBe('stored-content-url');
-      expect(fetchedUrls).toEqual([
+      expect(fetchCalls).toEqual([
         `https://media.divine.video/${SHA256}`,
-        storedUrl
+        'https://archive.example.com/original-vine.mp4'
       ]);
     } finally {
       globalThis.fetch = originalFetch;
@@ -2701,155 +1280,6 @@ describe('admin video proxy format fallback', () => {
       expect(response.status).toBe(200);
       expect(response.headers.get('Content-Type')).toBe('video/mp4');
       expect(response.headers.get('X-Admin-Proxy')).toBe('cdn-transcode');
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-});
-
-describe('admin video proxy range forwarding', () => {
-  it('forwards Range header to CDN and returns 206 with Content-Range', async () => {
-    const originalFetch = globalThis.fetch;
-    let receivedInit = null;
-    globalThis.fetch = async (url, init) => {
-      if (String(url) === `https://media.divine.video/${SHA256}`) {
-        receivedInit = init;
-        return new Response('partial-bytes', {
-          status: 206,
-          headers: {
-            'Content-Type': 'video/mp4',
-            'Content-Range': 'bytes 0-1023/5000000',
-            'Accept-Ranges': 'bytes',
-            'Content-Length': '1024'
-          }
-        });
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const response = await worker.fetch(
-        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
-          headers: {
-            'Cf-Access-Authenticated-User-Email': 'mod@divine.video',
-            'Range': 'bytes=0-1023'
-          }
-        }),
-        createEnv()
-      );
-
-      expect(response.status).toBe(206);
-      expect(response.headers.get('Content-Range')).toBe('bytes 0-1023/5000000');
-      expect(response.headers.get('Accept-Ranges')).toBe('bytes');
-      expect(response.headers.get('Content-Length')).toBe('1024');
-      expect(response.headers.get('X-Admin-Proxy')).toBe('cdn');
-
-      const upstreamHeaders = new Headers(receivedInit?.headers || {});
-      expect(upstreamHeaders.get('Range')).toBe('bytes=0-1023');
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('forwards Range header to admin bypass branch and returns 206', async () => {
-    const originalFetch = globalThis.fetch;
-    let bypassInit = null;
-    globalThis.fetch = async (url, init) => {
-      if (String(url) === `https://media.divine.video/${SHA256}`) {
-        return new Response('nope', { status: 404 });
-      }
-      if (String(url) === `https://media.divine.video/admin/api/blob/${SHA256}/content`) {
-        bypassInit = init;
-        return new Response('partial-bytes', {
-          status: 206,
-          headers: {
-            'Content-Type': 'video/mp4',
-            'Content-Range': 'bytes 0-1023/5000000',
-            'Accept-Ranges': 'bytes',
-            'Content-Length': '1024'
-          }
-        });
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const response = await worker.fetch(
-        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
-          headers: {
-            'Cf-Access-Authenticated-User-Email': 'mod@divine.video',
-            'Range': 'bytes=0-1023'
-          }
-        }),
-        createEnv({ BLOSSOM_WEBHOOK_SECRET: 'test-secret' })
-      );
-
-      expect(response.status).toBe(206);
-      expect(response.headers.get('Content-Range')).toBe('bytes 0-1023/5000000');
-      expect(response.headers.get('Accept-Ranges')).toBe('bytes');
-      expect(response.headers.get('Content-Length')).toBe('1024');
-      expect(response.headers.get('X-Admin-Proxy')).toBe('blossom-admin');
-
-      const upstreamHeaders = new Headers(bypassInit?.headers || {});
-      expect(upstreamHeaders.get('Range')).toBe('bytes=0-1023');
-      expect(upstreamHeaders.get('Authorization')).toBe('Bearer test-secret');
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('serves 200 from CDN when no Range header is present', async () => {
-    const originalFetch = globalThis.fetch;
-    let receivedInit = null;
-    globalThis.fetch = async (url, init) => {
-      if (String(url) === `https://media.divine.video/${SHA256}`) {
-        receivedInit = init;
-        return new Response('full-bytes', {
-          status: 200,
-          headers: { 'Content-Type': 'video/mp4' }
-        });
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const response = await worker.fetch(
-        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
-          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-        }),
-        createEnv()
-      );
-
-      expect(response.status).toBe(200);
-      expect(response.headers.get('X-Admin-Proxy')).toBe('cdn');
-      const upstreamHeaders = new Headers(receivedInit?.headers || {});
-      expect(upstreamHeaders.get('Range')).toBeNull();
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('returns 404 when CDN and admin bypass both miss', async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (url) => {
-      if (String(url) === `https://media.divine.video/${SHA256}`) {
-        return new Response('nope', { status: 404 });
-      }
-      if (String(url) === `https://media.divine.video/admin/api/blob/${SHA256}/content`) {
-        return new Response('nope', { status: 404 });
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    };
-
-    try {
-      const response = await worker.fetch(
-        new Request(`https://moderation.admin.divine.video/admin/video/${SHA256}.mp4`, {
-          headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
-        }),
-        createEnv({ BLOSSOM_WEBHOOK_SECRET: 'test-secret' })
-      );
-
-      expect(response.status).toBe(404);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -3051,68 +1481,6 @@ describe('notifyBlossom integration via admin moderate endpoint', () => {
       expect(data.success).toBe(false);
       expect(data.blossom_notified).toBe(false);
       expect(data.action).toBe('AGE_RESTRICTED');
-    } finally {
-      globalThis.fetch = origFetch;
-    }
-  });
-
-  it('sets reviewed_by to source on /api/v1/moderate', async () => {
-    const kvStore = new Map();
-    let capturedSql = null;
-    let capturedBindings = null;
-    const env = {
-      ALLOW_DEV_ACCESS: 'true',
-      SERVICE_API_TOKEN: 'test-service-token',
-      BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/admin/moderate',
-      BLOSSOM_WEBHOOK_SECRET: 'test-webhook-secret',
-      BLOSSOM_DB: {
-        prepare(sql) {
-          let bindings = [];
-          return {
-            bind(...args) { bindings = args; return this; },
-            async run() {
-              capturedSql = sql;
-              capturedBindings = bindings;
-              return { success: true };
-            },
-            async first() { return null; },
-            async all() { return { results: [] }; },
-          };
-        },
-        async batch() { return []; },
-      },
-      MODERATION_KV: {
-        store: kvStore,
-        async get(key) { return kvStore.get(key) ?? null; },
-        async put(key, value) { kvStore.set(key, value); },
-        async delete(key) { kvStore.delete(key); },
-        async list() { return { keys: [], list_complete: true, cursor: null }; }
-      },
-      MODERATION_QUEUE: { async send() {} },
-    };
-
-    const origFetch = globalThis.fetch;
-    globalThis.fetch = async (url) => {
-      if (url === 'https://mock-blossom.test/admin/moderate') {
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
-      }
-      return origFetch(url);
-    };
-
-    try {
-      const response = await worker.fetch(
-        new Request('https://moderation-api.divine.video/api/v1/moderate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-service-token' },
-          body: JSON.stringify({ sha256: 'abc123', action: 'PERMANENT_BAN', source: 'relay-manager' }),
-        }),
-        env
-      );
-
-      expect(response.status).toBe(200);
-      expect(capturedSql).toContain('reviewed_by');
-      // reviewed_by binding should be 'relay-manager' (same as source)
-      expect(capturedBindings).toContain('relay-manager');
     } finally {
       globalThis.fetch = origFetch;
     }
@@ -4701,5 +3069,1454 @@ describe('POST /api/v1/notify', () => {
     // dm_sent may be true or false depending on relay connectivity,
     // but the endpoint should not error
     expect(typeof body.dm_sent).toBe('boolean');
+  });
+});
+
+// --- Age-Restricted reconcile helper tests (Chunk 1) ---
+
+import {
+  listAgeRestrictedCandidates,
+  fetchBlossomBlobDetail,
+  classifyAgeRestrictedCandidate,
+  buildPreviewResponse,
+  applyAgeRestrictedRepairs
+} from './moderation/age-restricted-reconcile.mjs';
+
+function createCandidateDbMock(rows) {
+  const captured = { sql: null, bindings: null };
+  return {
+    captured,
+    prepare(sql) {
+      let bindings = [];
+      return {
+        bind(...args) {
+          bindings = args;
+          return this;
+        },
+        async all() {
+          captured.sql = sql;
+          captured.bindings = bindings;
+
+          // Filter by action and cursor; sort by sha256 asc; respect limit.
+          // Bindings order: [cursor?, limit]
+          let cursor = null;
+          let limit = bindings[bindings.length - 1];
+          if (bindings.length === 2) cursor = bindings[0];
+
+          const selected = rows
+            .filter((r) => r.action === 'AGE_RESTRICTED')
+            .filter((r) => (cursor === null ? true : r.sha256 > cursor))
+            .sort((a, b) => (a.sha256 < b.sha256 ? -1 : a.sha256 > b.sha256 ? 1 : 0))
+            .slice(0, limit);
+
+          return { results: selected };
+        }
+      };
+    }
+  };
+}
+
+describe('age restricted reconcile candidate paging', () => {
+  const shaA = 'a'.repeat(64);
+  const shaB = 'b'.repeat(64);
+  const shaC = 'c'.repeat(64);
+  const shaD = 'd'.repeat(64);
+  const shaE = 'e'.repeat(64);
+
+  const baseRows = [
+    { sha256: shaC, action: 'AGE_RESTRICTED' },
+    { sha256: shaA, action: 'AGE_RESTRICTED' },
+    { sha256: shaB, action: 'SAFE' },
+    { sha256: shaD, action: 'QUARANTINE' },
+    { sha256: shaE, action: 'PERMANENT_BAN' }
+  ];
+
+  it('selects only AGE_RESTRICTED rows sorted by sha256 ascending', async () => {
+    const db = createCandidateDbMock(baseRows);
+    const { rows, nextCursor } = await listAgeRestrictedCandidates(db, { limit: 10 });
+    expect(rows.map((r) => r.sha256)).toEqual([shaA, shaC]);
+    expect(nextCursor).toBeNull();
+
+    // Verify the SQL restricts on AGE_RESTRICTED
+    expect(db.captured.sql).toMatch(/action\s*=\s*'AGE_RESTRICTED'/);
+    expect(db.captured.sql).toMatch(/ORDER BY\s+sha256\s+ASC/i);
+  });
+
+  it('uses keyset pagination via sha256 > ? when cursor given', async () => {
+    const db = createCandidateDbMock(baseRows);
+    const { rows, nextCursor } = await listAgeRestrictedCandidates(db, {
+      cursorSha: shaA,
+      limit: 10
+    });
+    expect(rows.map((r) => r.sha256)).toEqual([shaC]);
+    expect(nextCursor).toBeNull();
+    // Bindings should include the cursor value
+    expect(db.captured.bindings[0]).toBe(shaA);
+    // SQL should contain sha256 > ?
+    expect(db.captured.sql).toMatch(/sha256\s*>\s*\?/);
+  });
+
+  it('fetches limit+1 rows so nextCursor is exact when more remain', async () => {
+    // 4 AGE_RESTRICTED rows, limit = 2
+    const many = [
+      { sha256: shaA, action: 'AGE_RESTRICTED' },
+      { sha256: shaB, action: 'AGE_RESTRICTED' },
+      { sha256: shaC, action: 'AGE_RESTRICTED' },
+      { sha256: shaD, action: 'AGE_RESTRICTED' }
+    ];
+    const db = createCandidateDbMock(many);
+    const { rows, nextCursor } = await listAgeRestrictedCandidates(db, { limit: 2 });
+    // Only 2 rows returned, but cursor points to the last returned sha
+    expect(rows.map((r) => r.sha256)).toEqual([shaA, shaB]);
+    expect(nextCursor).toBe(shaB);
+
+    // The internal LIMIT should be limit + 1 = 3
+    const lastBinding = db.captured.bindings[db.captured.bindings.length - 1];
+    expect(lastBinding).toBe(3);
+  });
+
+  it('returns null nextCursor when fewer than limit+1 rows are available', async () => {
+    const rowsInput = [
+      { sha256: shaA, action: 'AGE_RESTRICTED' },
+      { sha256: shaB, action: 'AGE_RESTRICTED' }
+    ];
+    const db = createCandidateDbMock(rowsInput);
+    const { rows, nextCursor } = await listAgeRestrictedCandidates(db, { limit: 5 });
+    expect(rows.map((r) => r.sha256)).toEqual([shaA, shaB]);
+    expect(nextCursor).toBeNull();
+  });
+});
+
+describe('age restricted reconcile classification', () => {
+  const sha = 'f'.repeat(64);
+
+  it('classifies Blossom status age_restricted as aligned', () => {
+    const result = classifyAgeRestrictedCandidate({
+      sha256: sha,
+      blossomDetail: { status: 200, body: { status: 'age_restricted' } },
+      blossomError: null
+    });
+    expect(result).toEqual({
+      sha256: sha,
+      category: 'aligned',
+      blossomStatus: 'age_restricted',
+      error: null
+    });
+  });
+
+  it('classifies Blossom status restricted as repairable_mismatch', () => {
+    const result = classifyAgeRestrictedCandidate({
+      sha256: sha,
+      blossomDetail: { status: 200, body: { status: 'restricted' } },
+      blossomError: null
+    });
+    expect(result.category).toBe('repairable_mismatch');
+    expect(result.blossomStatus).toBe('restricted');
+    expect(result.error).toBeNull();
+  });
+
+  it('classifies Blossom status deleted as skip_deleted', () => {
+    const result = classifyAgeRestrictedCandidate({
+      sha256: sha,
+      blossomDetail: { status: 200, body: { status: 'deleted' } },
+      blossomError: null
+    });
+    expect(result.category).toBe('skip_deleted');
+    expect(result.blossomStatus).toBe('deleted');
+  });
+
+  it('classifies Blossom 404 (null detail) as skip_missing', () => {
+    const result = classifyAgeRestrictedCandidate({
+      sha256: sha,
+      blossomDetail: null,
+      blossomError: null
+    });
+    expect(result.category).toBe('skip_missing');
+    expect(result.blossomStatus).toBeNull();
+    expect(result.error).toBeNull();
+  });
+
+  it('classifies Blossom status active as unexpected_state', () => {
+    const result = classifyAgeRestrictedCandidate({
+      sha256: sha,
+      blossomDetail: { status: 200, body: { status: 'active' } },
+      blossomError: null
+    });
+    expect(result.category).toBe('unexpected_state');
+    expect(result.blossomStatus).toBe('active');
+  });
+
+  it('classifies other unexpected statuses (pending, banned) as unexpected_state', () => {
+    const pending = classifyAgeRestrictedCandidate({
+      sha256: sha,
+      blossomDetail: { status: 200, body: { status: 'pending' } },
+      blossomError: null
+    });
+    expect(pending.category).toBe('unexpected_state');
+
+    const banned = classifyAgeRestrictedCandidate({
+      sha256: sha,
+      blossomDetail: { status: 200, body: { status: 'banned' } },
+      blossomError: null
+    });
+    expect(banned.category).toBe('unexpected_state');
+  });
+
+  it('classifies fetch error (thrown) as read_failed', () => {
+    const err = new Error('boom');
+    const result = classifyAgeRestrictedCandidate({
+      sha256: sha,
+      blossomDetail: null,
+      blossomError: err
+    });
+    expect(result.category).toBe('read_failed');
+    expect(result.error).toBe('boom');
+  });
+
+  it('fetchBlossomBlobDetail returns { status, body } for 2xx', async () => {
+    const payload = { sha256: sha, status: 'restricted' };
+    const fakeFetch = async (url, init) => {
+      expect(url).toBe(`https://media.divine.video/admin/api/blob/${sha}`);
+      expect(init.headers.Authorization).toBe('Bearer test-secret');
+      expect(init.headers.Accept).toBe('application/json');
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    };
+    const env = { CDN_DOMAIN: 'media.divine.video', BLOSSOM_WEBHOOK_SECRET: 'test-secret' };
+    const detail = await fetchBlossomBlobDetail(sha, env, fakeFetch);
+    expect(detail.status).toBe(200);
+    expect(detail.body).toEqual(payload);
+  });
+
+  it('fetchBlossomBlobDetail returns { status: 404 } for 404 with no body', async () => {
+    const fakeFetch = async () => new Response('', { status: 404 });
+    const env = { BLOSSOM_WEBHOOK_SECRET: 'test-secret' };
+    const detail = await fetchBlossomBlobDetail(sha, env, fakeFetch);
+    expect(detail.status).toBe(404);
+  });
+
+  it('fetchBlossomBlobDetail throws for non-2xx/404', async () => {
+    const fakeFetch = async () => new Response('server err', { status: 500 });
+    const env = { BLOSSOM_WEBHOOK_SECRET: 'test-secret' };
+    await expect(fetchBlossomBlobDetail(sha, env, fakeFetch)).rejects.toThrow();
+  });
+
+  it('fetchBlossomBlobDetail throws on network error', async () => {
+    const fakeFetch = async () => { throw new Error('net down'); };
+    const env = { BLOSSOM_WEBHOOK_SECRET: 'test-secret' };
+    await expect(fetchBlossomBlobDetail(sha, env, fakeFetch)).rejects.toThrow(/net down/);
+  });
+});
+
+describe('age restricted reconcile buildPreviewResponse', () => {
+  it('aggregates counts and samples with repairableShas list', () => {
+    const rows = [
+      { sha256: 'aa' }, { sha256: 'bb' }, { sha256: 'cc' },
+      { sha256: 'dd' }, { sha256: 'ee' }
+    ];
+    const classifications = [
+      { sha256: 'aa', category: 'aligned', blossomStatus: 'age_restricted', error: null },
+      { sha256: 'bb', category: 'repairable_mismatch', blossomStatus: 'restricted', error: null },
+      { sha256: 'cc', category: 'skip_deleted', blossomStatus: 'deleted', error: null },
+      { sha256: 'dd', category: 'skip_missing', blossomStatus: null, error: null },
+      { sha256: 'ee', category: 'unexpected_state', blossomStatus: 'active', error: null }
+    ];
+    const resp = buildPreviewResponse({ rows, classifications, limit: 10, nextCursor: 'ee' });
+    expect(resp.success).toBe(true);
+    expect(resp.limit).toBe(10);
+    expect(resp.nextCursor).toBe('ee');
+    expect(resp.counts).toEqual({
+      aligned: 1,
+      repairable_mismatch: 1,
+      skip_deleted: 1,
+      skip_missing: 1,
+      unexpected_state: 1,
+      read_failed: 0
+    });
+    expect(resp.repairableShas).toEqual(['bb']);
+    expect(resp.samples.skip_deleted).toEqual([{ sha256: 'cc', blossomStatus: 'deleted', error: null }]);
+    expect(resp.samples.skip_missing).toEqual([{ sha256: 'dd', blossomStatus: null, error: null }]);
+    expect(resp.samples.unexpected_state).toEqual([{ sha256: 'ee', blossomStatus: 'active', error: null }]);
+    expect(resp.samples.read_failed).toEqual([]);
+  });
+
+  it('caps samples at 5 per bucket', () => {
+    const rows = [];
+    const classifications = [];
+    for (let i = 0; i < 8; i += 1) {
+      const sha = `sha${i}`;
+      rows.push({ sha256: sha });
+      classifications.push({ sha256: sha, category: 'skip_missing', blossomStatus: null, error: null });
+    }
+    const resp = buildPreviewResponse({ rows, classifications, limit: 50, nextCursor: null });
+    expect(resp.counts.skip_missing).toBe(8);
+    expect(resp.samples.skip_missing).toHaveLength(5);
+  });
+});
+
+describe('age restricted reconcile applyAgeRestrictedRepairs stub', () => {
+  it('counts all shas as skip_missing when fetchBlossomBlobDetail returns null', async () => {
+    const result = await applyAgeRestrictedRepairs({
+      shas: ['aa', 'bb'],
+      env: {},
+      fetchBlossomBlobDetail: async () => null,
+      notifyBlossom: async () => ({ success: true })
+    });
+    expect(result.success).toBe(true);
+    expect(result.attempted).toBe(2);
+    expect(result.notified).toBe(0);
+    expect(result.failed).toBe(0);
+    expect(result.failures).toEqual([]);
+    expect(result.skipped).toEqual({
+      aligned: 0,
+      skip_deleted: 0,
+      skip_missing: 2,
+      unexpected_state: 0,
+      read_failed: 0
+    });
+  });
+});
+
+describe('admin age restricted reconcile preview endpoint', () => {
+  // Exercises POST /admin/api/reconcile/age-restricted/preview end-to-end:
+  // D1 paging (keyset on sha256) + per-SHA Blossom admin detail lookup +
+  // classification into aligned / repairable_mismatch / skip_deleted /
+  // skip_missing / unexpected_state / read_failed buckets.
+
+  const CDN_DOMAIN = 'media.divine.video';
+  const WEBHOOK_SECRET = 'test-webhook-secret';
+
+  function sha(index) {
+    return String(index).padStart(64, '0');
+  }
+
+  function createReconcileDbMock(ageRestrictedShas) {
+    // Seed a mixed-action set so we can prove the query filters to AGE_RESTRICTED only.
+    // ageRestrictedShas is an ordered array of hashes we want returned by the paging query.
+    return {
+      prepare(sql) {
+        let bindings = [];
+        return {
+          bind(...args) {
+            bindings = args;
+            return this;
+          },
+          async run() { return { success: true }; },
+          async first() { return null; },
+          async all() {
+            if (
+              sql.includes("FROM moderation_results") &&
+              sql.includes("action = 'AGE_RESTRICTED'") &&
+              sql.includes("ORDER BY sha256 ASC")
+            ) {
+              const hasCursor = sql.includes('sha256 > ?');
+              let cursorSha = null;
+              let limit;
+              if (hasCursor) {
+                [cursorSha, limit] = bindings;
+              } else {
+                [limit] = bindings;
+              }
+
+              const filtered = cursorSha
+                ? ageRestrictedShas.filter((s) => s > cursorSha)
+                : ageRestrictedShas.slice();
+              const sliced = filtered.slice(0, limit);
+              return { results: sliced.map((s) => ({ sha256: s, action: 'AGE_RESTRICTED' })) };
+            }
+            return { results: [] };
+          }
+        };
+      },
+      async batch() { return []; }
+    };
+  }
+
+  function createReconcileEnv({ ageRestrictedShas, blossomStatuses, overrides = {} } = {}) {
+    return {
+      ALLOW_DEV_ACCESS: 'true',
+      CDN_DOMAIN,
+      BLOSSOM_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      BLOSSOM_DB: createReconcileDbMock(ageRestrictedShas),
+      MODERATION_KV: {
+        async get() { return null; },
+        async put() {},
+        async delete() {},
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      },
+      MODERATION_QUEUE: { async send() {} },
+      __blossomStatuses: blossomStatuses,
+      ...overrides
+    };
+  }
+
+  function installBlossomFetchInterceptor(env) {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.startsWith(`https://${CDN_DOMAIN}/admin/api/blob/`)) {
+        const sha256 = url.split('/admin/api/blob/')[1];
+        const entry = env.__blossomStatuses[sha256];
+        if (!entry) {
+          return new Response('not found', { status: 404 });
+        }
+        if (entry.throw) {
+          throw new Error(entry.throw);
+        }
+        if (entry.status === 404) {
+          return new Response('not found', { status: 404 });
+        }
+        if (entry.status >= 500) {
+          return new Response('boom', { status: entry.status });
+        }
+        return new Response(JSON.stringify({ sha256, status: entry.status }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return origFetch(url, init);
+    };
+    return () => { globalThis.fetch = origFetch; };
+  }
+
+  it('requires admin auth', async () => {
+    const env = createReconcileEnv({
+      ageRestrictedShas: [],
+      blossomStatuses: {},
+      overrides: { ALLOW_DEV_ACCESS: 'false' }
+    });
+
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      }),
+      env
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it('returns preview with default limit 50 when limit omitted', async () => {
+    const shas = Array.from({ length: 3 }, (_, i) => sha(i + 1));
+    const env = createReconcileEnv({
+      ageRestrictedShas: shas,
+      blossomStatuses: {
+        [shas[0]]: { status: 'restricted' },
+        [shas[1]]: { status: 'age_restricted' },
+        [shas[2]]: { status: 'restricted' }
+      }
+    });
+
+    const restore = installBlossomFetchInterceptor(env);
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/preview', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({})
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.success).toBe(true);
+      expect(body.limit).toBe(50);
+      expect(body.nextCursor).toBeNull();
+      expect(body.counts).toEqual({
+        aligned: 1,
+        repairable_mismatch: 2,
+        skip_deleted: 0,
+        skip_missing: 0,
+        unexpected_state: 0,
+        read_failed: 0
+      });
+      expect(body.repairableShas).toEqual([shas[0], shas[2]]);
+      expect(body.samples).toEqual({
+        skip_deleted: [],
+        skip_missing: [],
+        unexpected_state: [],
+        read_failed: []
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it('supports GET preview with browser-style query params', async () => {
+    const shas = Array.from({ length: 3 }, (_, i) => sha(i + 1));
+    const env = createReconcileEnv({
+      ageRestrictedShas: shas,
+      blossomStatuses: {
+        [shas[0]]: { status: 'age_restricted' },
+        [shas[1]]: { status: 'restricted' },
+        [shas[2]]: { status: 'deleted' }
+      }
+    });
+
+    const restore = installBlossomFetchInterceptor(env);
+    try {
+      const response = await worker.fetch(
+        new Request(`https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/preview?limit=2&cursor=${shas[0]}`, {
+          method: 'GET',
+          headers: {
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          }
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.success).toBe(true);
+      expect(body.limit).toBe(2);
+      expect(body.nextCursor).toBeNull();
+      expect(body.counts).toEqual({
+        aligned: 0,
+        repairable_mismatch: 1,
+        skip_deleted: 1,
+        skip_missing: 0,
+        unexpected_state: 0,
+        read_failed: 0
+      });
+      expect(body.repairableShas).toEqual([shas[1]]);
+      expect(body.samples.skip_deleted[0].sha256).toBe(shas[2]);
+    } finally {
+      restore();
+    }
+  });
+
+  it('caps limit at 100 when caller requests a higher value', async () => {
+    // Build 105 AGE_RESTRICTED rows; with max limit=100 we should get 100 classified
+    // rows plus a nextCursor equal to the 100th sha.
+    const shas = Array.from({ length: 105 }, (_, i) => sha(i + 1));
+    const blossomStatuses = Object.fromEntries(shas.map((s) => [s, { status: 'restricted' }]));
+    const env = createReconcileEnv({ ageRestrictedShas: shas, blossomStatuses });
+
+    const restore = installBlossomFetchInterceptor(env);
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/preview', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({ limit: 1000 })
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.limit).toBe(100);
+      expect(body.counts.repairable_mismatch).toBe(100);
+      expect(body.repairableShas).toHaveLength(100);
+      expect(body.nextCursor).toBe(shas[99]);
+    } finally {
+      restore();
+    }
+  });
+
+  it('honors cursor and populates non-repairable buckets and samples', async () => {
+    // Set up 6 AGE_RESTRICTED rows so, with cursor=sha(1), the paging skips sha(1)
+    // and classifies sha(2)..sha(6). Each bucket except aligned gets exactly one entry.
+    const shas = Array.from({ length: 6 }, (_, i) => sha(i + 1));
+    const blossomStatuses = {
+      [shas[0]]: { status: 'age_restricted' },  // skipped by cursor
+      [shas[1]]: { status: 'age_restricted' },  // aligned
+      [shas[2]]: { status: 'restricted' },      // repairable_mismatch
+      [shas[3]]: { status: 'deleted' },         // skip_deleted
+      [shas[4]]: { status: 404 },               // skip_missing
+      [shas[5]]: { status: 'active' }           // unexpected_state
+    };
+    const env = createReconcileEnv({ ageRestrictedShas: shas, blossomStatuses });
+
+    const restore = installBlossomFetchInterceptor(env);
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/preview', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({ limit: 10, cursor: shas[0] })
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.limit).toBe(10);
+      expect(body.nextCursor).toBeNull();  // only 5 rows remain, less than limit
+      expect(body.counts).toEqual({
+        aligned: 1,
+        repairable_mismatch: 1,
+        skip_deleted: 1,
+        skip_missing: 1,
+        unexpected_state: 1,
+        read_failed: 0
+      });
+      expect(body.repairableShas).toEqual([shas[2]]);
+      expect(body.samples.skip_deleted).toHaveLength(1);
+      expect(body.samples.skip_deleted[0].sha256).toBe(shas[3]);
+      expect(body.samples.skip_missing[0].sha256).toBe(shas[4]);
+      expect(body.samples.unexpected_state[0].sha256).toBe(shas[5]);
+      expect(body.samples.unexpected_state[0].blossomStatus).toBe('active');
+      expect(body.samples.read_failed).toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  it('classifies read failures as read_failed', async () => {
+    const shas = [sha(1), sha(2)];
+    const blossomStatuses = {
+      [shas[0]]: { status: 500 },
+      [shas[1]]: { throw: 'network down' }
+    };
+    const env = createReconcileEnv({ ageRestrictedShas: shas, blossomStatuses });
+
+    const restore = installBlossomFetchInterceptor(env);
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/preview', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({ limit: 10 })
+        }),
+        env
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.counts.read_failed).toBe(2);
+      expect(body.repairableShas).toEqual([]);
+      expect(body.samples.read_failed).toHaveLength(2);
+      expect(body.samples.read_failed[0].error).toBeTruthy();
+    } finally {
+      restore();
+    }
+  });
+
+  it('rejects non-numeric limit', async () => {
+    const env = createReconcileEnv({ ageRestrictedShas: [], blossomStatuses: {} });
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/preview', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+        },
+        body: JSON.stringify({ limit: 'fifty' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('preview logs age restricted mismatch counts', () => {
+  const CDN_DOMAIN = 'media.divine.video';
+  const WEBHOOK_SECRET = 'test-webhook-secret';
+
+  function sha(index) {
+    return String(index).padStart(64, '0');
+  }
+
+  function createReconcileDbMock(ageRestrictedShas) {
+    return {
+      prepare(sql) {
+        let bindings = [];
+        return {
+          bind(...args) {
+            bindings = args;
+            return this;
+          },
+          async run() { return { success: true }; },
+          async first() { return null; },
+          async all() {
+            if (
+              sql.includes("FROM moderation_results") &&
+              sql.includes("action = 'AGE_RESTRICTED'") &&
+              sql.includes("ORDER BY sha256 ASC")
+            ) {
+              const hasCursor = sql.includes('sha256 > ?');
+              let cursorSha = null;
+              let limit;
+              if (hasCursor) {
+                [cursorSha, limit] = bindings;
+              } else {
+                [limit] = bindings;
+              }
+              const filtered = cursorSha
+                ? ageRestrictedShas.filter((s) => s > cursorSha)
+                : ageRestrictedShas.slice();
+              return {
+                results: filtered.slice(0, limit).map((s) => ({ sha256: s, action: 'AGE_RESTRICTED' }))
+              };
+            }
+            return { results: [] };
+          }
+        };
+      },
+      async batch() { return []; }
+    };
+  }
+
+  it('emits one structured log line with limit, cursor, nextCursor, and counts', async () => {
+    const shas = Array.from({ length: 3 }, (_, i) => sha(i + 10));
+    const blossomStatuses = {
+      [shas[0]]: { status: 'restricted' },
+      [shas[1]]: { status: 'age_restricted' },
+      [shas[2]]: { status: 'deleted' }
+    };
+    const env = {
+      ALLOW_DEV_ACCESS: 'true',
+      CDN_DOMAIN,
+      BLOSSOM_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      BLOSSOM_DB: createReconcileDbMock(shas),
+      MODERATION_KV: {
+        async get() { return null; },
+        async put() {},
+        async delete() {},
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      },
+      MODERATION_QUEUE: { async send() {} }
+    };
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (typeof url === 'string' && url.startsWith(`https://${CDN_DOMAIN}/admin/api/blob/`)) {
+        const sha256 = url.split('/admin/api/blob/')[1];
+        const entry = blossomStatuses[sha256];
+        return new Response(JSON.stringify({ sha256, status: entry.status }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      return origFetch(url);
+    };
+
+    const logs = [];
+    const origLog = console.log;
+    console.log = (...args) => {
+      logs.push(args);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/preview', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({ limit: 50, cursor: null })
+        }),
+        env
+      );
+      expect(response.status).toBe(200);
+    } finally {
+      console.log = origLog;
+      globalThis.fetch = origFetch;
+    }
+
+    // Find the structured reconcile log line — printed as a single JSON string.
+    let parsed = null;
+    for (const args of logs) {
+      for (const arg of args) {
+        if (typeof arg !== 'string') continue;
+        try {
+          const obj = JSON.parse(arg);
+          if (obj && obj.event === 'age_restricted_reconcile.preview') {
+            parsed = obj;
+            break;
+          }
+        } catch (_) {
+          // not json
+        }
+      }
+      if (parsed) break;
+    }
+
+    expect(parsed).not.toBeNull();
+    expect(parsed.limit).toBe(50);
+    expect(parsed.cursor).toBeNull();
+    expect(parsed.nextCursor).toBeNull();
+    expect(parsed.counts).toEqual({
+      aligned: 1,
+      repairable_mismatch: 1,
+      skip_deleted: 1,
+      skip_missing: 0,
+      unexpected_state: 0,
+      read_failed: 0
+    });
+  });
+});
+describe('admin age restricted reconcile apply endpoint', () => {
+  const SHA_A = 'a'.repeat(64);
+  const SHA_B = 'b'.repeat(64);
+  const SHA_C = 'c'.repeat(64);
+
+  function buildApplyEnv({ blossomStatusBySha = new Map(), blossomResponseBySha = new Map(), webhookPayloads = [], webhookResponseStatus = 200 } = {}) {
+    return {
+      ALLOW_DEV_ACCESS: 'false',
+      SERVICE_API_TOKEN: 'test-service-token',
+      BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/webhook',
+      BLOSSOM_WEBHOOK_SECRET: 'test-webhook-secret',
+      BLOSSOM_ADMIN_URL: 'https://mock-blossom.test',
+      BLOSSOM_ADMIN_TOKEN: 'test-admin-token',
+      BLOSSOM_DB: createDbMock(),
+      MODERATION_KV: {
+        async get() { return null; },
+        async put() {},
+        async delete() {},
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      },
+      MODERATION_QUEUE: { async send() {} },
+      __blossomStatusBySha: blossomStatusBySha,
+      __blossomResponseBySha: blossomResponseBySha,
+      __webhookPayloads: webhookPayloads,
+      __webhookResponseStatus: webhookResponseStatus
+    };
+  }
+
+  function installApplyFetchMock(env) {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      const urlStr = String(url);
+      if (urlStr === env.BLOSSOM_WEBHOOK_URL) {
+        env.__webhookPayloads.push(JSON.parse(init.body));
+        const status = env.__webhookResponseStatus ?? 200;
+        if (status >= 400) {
+          return new Response(JSON.stringify({ error: 'webhook failed' }), { status });
+        }
+        return new Response(JSON.stringify({ success: true }), { status });
+      }
+      // /admin/api/blob/{sha}
+      const match = urlStr.match(/\/admin\/api\/blob\/([0-9a-f]{64})$/i);
+      if (match) {
+        const sha = match[1];
+        if (env.__blossomResponseBySha.has(sha)) {
+          const custom = env.__blossomResponseBySha.get(sha);
+          if (custom === 'throw') {
+            throw new Error('network blew up');
+          }
+          return custom;
+        }
+        if (env.__blossomStatusBySha.has(sha)) {
+          const status = env.__blossomStatusBySha.get(sha);
+          if (status === null) {
+            return new Response('not found', { status: 404 });
+          }
+          return new Response(JSON.stringify({ sha256: sha, status }), { status: 200 });
+        }
+        return new Response('not found', { status: 404 });
+      }
+      throw new Error(`Unexpected fetch: ${urlStr}`);
+    };
+    return () => { globalThis.fetch = origFetch; };
+  }
+
+  it('requires admin auth', async () => {
+    const env = buildApplyEnv();
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shas: [SHA_A] })
+      }),
+      env
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it('rejects empty sha list', async () => {
+    const env = buildApplyEnv();
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/apply', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+        },
+        body: JSON.stringify({ shas: [] })
+      }),
+      env
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects missing shas field', async () => {
+    const env = buildApplyEnv();
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/apply', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+        },
+        body: JSON.stringify({})
+      }),
+      env
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects oversized sha list (>100)', async () => {
+    const env = buildApplyEnv();
+    const tooMany = Array.from({ length: 101 }, (_, i) => i.toString(16).padStart(64, '0'));
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/apply', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+        },
+        body: JSON.stringify({ shas: tooMany })
+      }),
+      env
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects malformed SHAs', async () => {
+    const env = buildApplyEnv();
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/apply', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+        },
+        body: JSON.stringify({ shas: ['not-a-sha', SHA_A] })
+      }),
+      env
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it('notifies Blossom with AGE_RESTRICTED for currently-restricted shas', async () => {
+    const env = buildApplyEnv({
+      blossomStatusBySha: new Map([[SHA_A, 'restricted']])
+    });
+    const restore = installApplyFetchMock(env);
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/apply', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({ shas: [SHA_A] })
+        }),
+        env
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        success: true,
+        attempted: 1,
+        notified: 1,
+        failed: 0,
+        failures: []
+      });
+      expect(env.__webhookPayloads).toHaveLength(1);
+      expect(env.__webhookPayloads[0]).toMatchObject({
+        sha256: SHA_A,
+        action: 'AGE_RESTRICTED'
+      });
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe('age restricted apply revalidates blossom state', () => {
+  const SHA_REST = 'a'.repeat(64);
+  const SHA_AR = 'b'.repeat(64);
+  const SHA_DEL = 'c'.repeat(64);
+  const SHA_READ_FAIL = 'd'.repeat(64);
+  const SHA_MISSING = 'e'.repeat(64);
+  const SHA_UNEXPECTED = 'f'.repeat(64);
+
+  function env() {
+    const webhookPayloads = [];
+    return {
+      env: {
+        ALLOW_DEV_ACCESS: 'false',
+        SERVICE_API_TOKEN: 'test-service-token',
+        BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/webhook',
+        BLOSSOM_WEBHOOK_SECRET: 'test-webhook-secret',
+        BLOSSOM_ADMIN_URL: 'https://mock-blossom.test',
+        BLOSSOM_ADMIN_TOKEN: 'test-admin-token',
+        BLOSSOM_DB: createDbMock(),
+        MODERATION_KV: {
+          async get() { return null; },
+          async put() {},
+          async delete() {},
+          async list() { return { keys: [], list_complete: true, cursor: null }; }
+        },
+        MODERATION_QUEUE: { async send() {} },
+        __webhookPayloads: webhookPayloads
+      },
+      webhookPayloads
+    };
+  }
+
+  function installMixedFetchMock({ env, statuses }) {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      const urlStr = String(url);
+      if (urlStr === env.BLOSSOM_WEBHOOK_URL) {
+        env.__webhookPayloads.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      const match = urlStr.match(/\/admin\/api\/blob\/([0-9a-f]{64})$/i);
+      if (match) {
+        const sha = match[1];
+        if (!statuses.has(sha)) {
+          return new Response('not found', { status: 404 });
+        }
+        const entry = statuses.get(sha);
+        if (entry === 'throw') {
+          throw new Error('simulated read failure');
+        }
+        if (entry === '404') {
+          return new Response('not found', { status: 404 });
+        }
+        return new Response(JSON.stringify({ sha256: sha, status: entry }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${urlStr}`);
+    };
+    return () => { globalThis.fetch = origFetch; };
+  }
+
+  it('skips shas whose blossom state is already age_restricted without calling notifyBlossom', async () => {
+    const { env: e, webhookPayloads } = env();
+    const restore = installMixedFetchMock({
+      env: e,
+      statuses: new Map([[SHA_AR, 'age_restricted']])
+    });
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/apply', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({ shas: [SHA_AR] })
+        }),
+        e
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.notified).toBe(0);
+      expect(body.skipped.aligned).toBe(1);
+      expect(webhookPayloads).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it('skips shas whose blossom state is deleted without calling notifyBlossom', async () => {
+    const { env: e, webhookPayloads } = env();
+    const restore = installMixedFetchMock({
+      env: e,
+      statuses: new Map([[SHA_DEL, 'deleted']])
+    });
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/apply', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({ shas: [SHA_DEL] })
+        }),
+        e
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.notified).toBe(0);
+      expect(body.skipped.skip_deleted).toBe(1);
+      expect(webhookPayloads).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it('replays notifyBlossom for shas whose blossom state is still restricted', async () => {
+    const { env: e, webhookPayloads } = env();
+    const restore = installMixedFetchMock({
+      env: e,
+      statuses: new Map([[SHA_REST, 'restricted']])
+    });
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/apply', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({ shas: [SHA_REST] })
+        }),
+        e
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.notified).toBe(1);
+      expect(webhookPayloads).toHaveLength(1);
+      expect(webhookPayloads[0].action).toBe('AGE_RESTRICTED');
+      expect(webhookPayloads[0].sha256).toBe(SHA_REST);
+    } finally {
+      restore();
+    }
+  });
+
+  it('counts blossom read failures as failure with stage read and skips notifyBlossom', async () => {
+    const { env: e, webhookPayloads } = env();
+    const restore = installMixedFetchMock({
+      env: e,
+      statuses: new Map([[SHA_READ_FAIL, 'throw']])
+    });
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/apply', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({ shas: [SHA_READ_FAIL] })
+        }),
+        e
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.failed).toBe(1);
+      expect(body.skipped.read_failed).toBe(1);
+      expect(body.failures).toHaveLength(1);
+      expect(body.failures[0]).toMatchObject({
+        sha256: SHA_READ_FAIL,
+        stage: 'read'
+      });
+      expect(webhookPayloads).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it('counts missing (404) blossom blobs as skip_missing without calling notifyBlossom', async () => {
+    const { env: e, webhookPayloads } = env();
+    const restore = installMixedFetchMock({
+      env: e,
+      statuses: new Map([[SHA_MISSING, '404']])
+    });
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/apply', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({ shas: [SHA_MISSING] })
+        }),
+        e
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.notified).toBe(0);
+      expect(body.skipped.skip_missing).toBe(1);
+      expect(webhookPayloads).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it('counts unexpected active state as unexpected_state without calling notifyBlossom', async () => {
+    const { env: e, webhookPayloads } = env();
+    const restore = installMixedFetchMock({
+      env: e,
+      statuses: new Map([[SHA_UNEXPECTED, 'active']])
+    });
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/apply', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({ shas: [SHA_UNEXPECTED] })
+        }),
+        e
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.notified).toBe(0);
+      expect(body.skipped.unexpected_state).toBe(1);
+      expect(webhookPayloads).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe('age restricted apply returns exact failed shas', () => {
+  const SHA_REST = 'a'.repeat(64);
+  const SHA_NOTIFY_FAIL = 'b'.repeat(64);
+  const SHA_READ_FAIL = 'c'.repeat(64);
+
+  it('preserves failed shas with error and stage for retry', async () => {
+    const webhookPayloads = [];
+    const e = {
+      ALLOW_DEV_ACCESS: 'false',
+      SERVICE_API_TOKEN: 'test-service-token',
+      BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/webhook',
+      BLOSSOM_WEBHOOK_SECRET: 'test-webhook-secret',
+      BLOSSOM_ADMIN_URL: 'https://mock-blossom.test',
+      BLOSSOM_ADMIN_TOKEN: 'test-admin-token',
+      BLOSSOM_DB: createDbMock(),
+      MODERATION_KV: {
+        async get() { return null; },
+        async put() {},
+        async delete() {},
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      },
+      MODERATION_QUEUE: { async send() {} },
+      __webhookPayloads: webhookPayloads
+    };
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      const urlStr = String(url);
+      if (urlStr === e.BLOSSOM_WEBHOOK_URL) {
+        const payload = JSON.parse(init.body);
+        webhookPayloads.push(payload);
+        if (payload.sha256 === SHA_NOTIFY_FAIL) {
+          return new Response('boom', { status: 500 });
+        }
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      const match = urlStr.match(/\/admin\/api\/blob\/([0-9a-f]{64})$/i);
+      if (match) {
+        const sha = match[1];
+        if (sha === SHA_READ_FAIL) {
+          throw new Error('read exploded');
+        }
+        return new Response(JSON.stringify({ sha256: sha, status: 'restricted' }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${urlStr}`);
+    };
+
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/apply', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({ shas: [SHA_REST, SHA_NOTIFY_FAIL, SHA_READ_FAIL] })
+        }),
+        e
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.attempted).toBe(3);
+      expect(body.notified).toBe(1);
+      expect(body.failed).toBe(2);
+      expect(body.success).toBe(false);
+
+      const failureShas = body.failures.map(f => f.sha256).sort();
+      expect(failureShas).toEqual([SHA_NOTIFY_FAIL, SHA_READ_FAIL].sort());
+
+      const notifyFailure = body.failures.find(f => f.sha256 === SHA_NOTIFY_FAIL);
+      expect(notifyFailure.stage).toBe('notify');
+      expect(typeof notifyFailure.error).toBe('string');
+      expect(notifyFailure.error.length).toBeGreaterThan(0);
+
+      const readFailure = body.failures.find(f => f.sha256 === SHA_READ_FAIL);
+      expect(readFailure.stage).toBe('read');
+      expect(typeof readFailure.error).toBe('string');
+      expect(readFailure.error.length).toBeGreaterThan(0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+// Chunk 4 Step 1: regression coverage for exact write semantics.
+// Apply must call notifyBlossom with 'AGE_RESTRICTED' and never 'RESTRICT'.
+describe('age restricted reconcile writes AGE_RESTRICTED', () => {
+  const SHA = 'd'.repeat(64);
+
+  it('apply always calls notifyBlossom with AGE_RESTRICTED, never RESTRICT', async () => {
+    const webhookPayloads = [];
+    const e = {
+      ALLOW_DEV_ACCESS: 'false',
+      SERVICE_API_TOKEN: 'test-service-token',
+      BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/webhook',
+      BLOSSOM_WEBHOOK_SECRET: 'test-webhook-secret',
+      CDN_DOMAIN: 'media.divine.video',
+      BLOSSOM_DB: createDbMock(),
+      MODERATION_KV: {
+        async get() { return null; },
+        async put() {},
+        async delete() {},
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      },
+      MODERATION_QUEUE: { async send() {} }
+    };
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      const urlStr = String(url);
+      if (urlStr === e.BLOSSOM_WEBHOOK_URL) {
+        webhookPayloads.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      const match = urlStr.match(/\/admin\/api\/blob\/([0-9a-f]{64})$/i);
+      if (match) {
+        return new Response(JSON.stringify({ sha256: match[1], status: 'restricted' }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${urlStr}`);
+    };
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/apply', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({ shas: [SHA] })
+        }),
+        e
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.notified).toBe(1);
+      expect(webhookPayloads).toHaveLength(1);
+      // Every single payload must be AGE_RESTRICTED — never RESTRICT.
+      for (const payload of webhookPayloads) {
+        expect(payload.action).toBe('AGE_RESTRICTED');
+        expect(payload.action).not.toBe('RESTRICT');
+      }
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+// Chunk 5 Step 1: drift reporting — preview must report mismatch categories
+// distinctly, not collapse them into a single population total.
+describe('age restricted preview reports real blossom drift', () => {
+  function sha(n) { return String(n).padStart(64, '0'); }
+
+  function mockDbWith(shas) {
+    return {
+      prepare(sql) {
+        let bindings = [];
+        return {
+          bind(...args) { bindings = args; return this; },
+          async run() { return { success: true }; },
+          async first() { return null; },
+          async all() {
+            if (sql.includes("action = 'AGE_RESTRICTED'") && sql.includes('ORDER BY sha256 ASC')) {
+              const hasCursor = sql.includes('sha256 > ?');
+              const limit = hasCursor ? bindings[1] : bindings[0];
+              const filtered = hasCursor ? shas.filter(s => s > bindings[0]) : shas.slice();
+              return { results: filtered.slice(0, limit).map(s => ({ sha256: s, action: 'AGE_RESTRICTED' })) };
+            }
+            return { results: [] };
+          }
+        };
+      },
+      async batch() { return []; }
+    };
+  }
+
+  it('reports each bucket distinctly rather than a single collapsed total', async () => {
+    const shas = [sha(1), sha(2), sha(3), sha(4)];
+    // Mix: 1 aligned + 1 repairable + 1 skip_deleted + 1 unexpected_state
+    const statusBySha = new Map([
+      [shas[0], 'age_restricted'],
+      [shas[1], 'restricted'],
+      [shas[2], 'deleted'],
+      [shas[3], 'active']
+    ]);
+
+    const env = {
+      ALLOW_DEV_ACCESS: 'true',
+      CDN_DOMAIN: 'media.divine.video',
+      BLOSSOM_WEBHOOK_SECRET: 'test-webhook-secret',
+      BLOSSOM_DB: mockDbWith(shas),
+      MODERATION_KV: {
+        async get() { return null; },
+        async put() {},
+        async delete() {},
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      },
+      MODERATION_QUEUE: { async send() {} }
+    };
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      const match = String(url).match(/\/admin\/api\/blob\/([0-9a-f]{64})$/i);
+      if (match) {
+        const sha = match[1];
+        const status = statusBySha.get(sha);
+        if (!status) return new Response('not found', { status: 404 });
+        return new Response(JSON.stringify({ sha256: sha, status }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    };
+    try {
+      const response = await worker.fetch(
+        new Request('https://moderation.admin.divine.video/admin/api/reconcile/age-restricted/preview', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cf-Access-Authenticated-User-Email': 'mod@divine.video'
+          },
+          body: JSON.stringify({ limit: 10 })
+        }),
+        env
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      // Each bucket distinct — not collapsed into a single total.
+      expect(body.counts.aligned).toBe(1);
+      expect(body.counts.repairable_mismatch).toBe(1);
+      expect(body.counts.skip_deleted).toBe(1);
+      expect(body.counts.unexpected_state).toBe(1);
+      expect(body.counts.skip_missing).toBe(0);
+      expect(body.counts.read_failed).toBe(0);
+      // Total across buckets equals total classified rows.
+      const total = Object.values(body.counts).reduce((a, b) => a + b, 0);
+      expect(total).toBe(4);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });

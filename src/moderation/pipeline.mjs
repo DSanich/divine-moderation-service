@@ -10,11 +10,82 @@ import { classifyText, parseVttText } from './text-classifier.mjs';
 import { fetchNostrEventBySha256, parseVideoEventMetadata, isOriginalVine, hasStrongOriginalVineEvidence } from '../nostr/relay-client.mjs';
 import { classifyVideo } from '../classification/pipeline.mjs';
 import { extractTopics } from '../classification/topic-extractor.mjs';
-import { getRetryAfterSecondsFromResponse } from '../http-utils.mjs';
+import { verifyC2pa } from './inquisitor-client.mjs';
 
 const ORIGINAL_VINE_SUPPRESSED_CATEGORIES = new Set(['ai_generated', 'deepfake']);
 const DOWNSTREAM_SIGNAL_THRESHOLD = 0.5;
 const ARCHIVE_ORIGINAL_VINE_SOURCES = new Set(['archive-export', 'incident-backfill', 'sha-list']);
+const C2PA_CACHE_PREFIX = 'c2pa:';
+const C2PA_CACHE_TTL = 30 * 86400;
+
+async function getCachedC2paOrVerify({ sha256, videoUrl, env, fetchFn }) {
+  if (env.MODERATION_KV) {
+    try {
+      const cached = await env.MODERATION_KV.get(`${C2PA_CACHE_PREFIX}${sha256}`);
+      if (cached) return JSON.parse(cached);
+    } catch (err) {
+      console.warn(`[C2PA] KV read failed for ${sha256}: ${err.message}`);
+    }
+  }
+
+  const result = await verifyC2pa({ url: videoUrl, mimeType: 'video/mp4' }, env, { fetchFn });
+
+  if (env.MODERATION_KV && result.state !== 'unchecked') {
+    try {
+      await env.MODERATION_KV.put(`${C2PA_CACHE_PREFIX}${sha256}`, JSON.stringify(result), {
+        expirationTtl: C2PA_CACHE_TTL,
+      });
+    } catch (err) {
+      console.warn(`[C2PA] KV write failed for ${sha256}: ${err.message}`);
+    }
+  }
+
+  return result;
+}
+
+function buildSignedAiShortCircuitResult({ sha256, uploadedBy, uploadedAt, metadata, videoUrl, nostrContext, nostrEventId, c2pa }) {
+  const claimGenerator = c2pa.claimGenerator || 'unknown';
+  const reason = `c2pa-ai-signed:${claimGenerator} — quarantined pending moderator review`;
+  return {
+    action: 'QUARANTINE',
+    severity: 'high',
+    category: 'ai_generated',
+    reason,
+    requiresSecondaryVerification: false,
+    scores: { ai_generated: 1.0, deepfake: 0 },
+    provider: 'inquisitor-c2pa',
+    processingTime: 0,
+    detailedCategories: null,
+    sha256,
+    uploadedBy,
+    uploadedAt,
+    metadata,
+    cdnUrl: videoUrl,
+    nostrEventId,
+    nostrContext,
+    policyContext: {
+      originalVine: false,
+      originalVineLegacyFallback: false,
+      enforcementOverridden: true,
+      overrideReason: 'c2pa-ai-signed-short-circuit',
+      originalAction: 'QUARANTINE',
+    },
+    downstreamSignals: {
+      hasSignals: true,
+      scores: { ai_generated: 1.0 },
+      primaryConcern: 'ai_generated',
+      category: 'ai_generated',
+      severity: 'high',
+      reason: `C2PA signature declares AI origin (claim_generator=${claimGenerator})`,
+    },
+    text_scores: null,
+    providerRaw: null,
+    rawClassifierData: null,
+    sceneClassification: null,
+    topicProfile: null,
+    c2pa,
+  };
+}
 
 function parseOptionalString(value) {
   return typeof value === 'string' && value.length > 0 ? value : null;
@@ -31,6 +102,20 @@ function parseOptionalInteger(value) {
   }
 
   return null;
+}
+
+function getRetryAfterSeconds(response) {
+  if (typeof response?.headers?.get !== 'function') {
+    return null;
+  }
+
+  const value = response.headers.get('Retry-After');
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function buildQueueMetadataNostrContext(metadata) {
@@ -174,12 +259,7 @@ export async function classifyVideoOnly(sha256, env, options = {}) {
         const vttUrl = `https://media.divine.video/${sha256}.vtt`;
         const vttResponse = await fetchFn(vttUrl);
         if (vttResponse.status === 202) {
-          // Transcript is still generating. We treat this as a terminal skip
-          // for this classification run — the moderation result persists
-          // without transcript text/topic analysis. A reprocess once the
-          // transcript lands is tracked separately (see follow-up issue); we
-          // do not block the pipeline waiting for Blossom here.
-          const retryAfterSeconds = getRetryAfterSecondsFromResponse(vttResponse);
+          const retryAfterSeconds = getRetryAfterSeconds(vttResponse);
           console.log(`[CLASSIFY-ONLY] VTT transcript for ${sha256} is still pending${retryAfterSeconds !== null ? ` (retry after ${retryAfterSeconds}s)` : ''}`);
           return null;
         }
@@ -278,6 +358,18 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     console.log(`[MODERATION] Original Vine detected - skipping AI detection for ${sha256}`);
   }
 
+  // Step 2.5: Call divine-inquisitor first so valid_ai_signed content can short-circuit Hive
+  const c2pa = await getCachedC2paOrVerify({ sha256, videoUrl, env, fetchFn });
+  console.log(`[MODERATION] ${sha256} - C2PA state: ${c2pa.state}${c2pa.claimGenerator ? ` (claim=${c2pa.claimGenerator})` : ''}`);
+
+  if (c2pa.state === 'valid_ai_signed') {
+    console.log(`[MODERATION] ${sha256} - signed-AI short-circuit, skipping Hive and Reality Defender`);
+    return buildSignedAiShortCircuitResult({
+      sha256, uploadedBy, uploadedAt, metadata,
+      videoUrl, nostrContext, nostrEventId, c2pa,
+    });
+  }
+
   // Step 3: Run moderation and scene classification in parallel
   let moderationResult;
   let combinedScores = {};
@@ -342,11 +434,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     console.log(`[MODERATION] Fetching VTT transcript: ${vttUrl}`);
     const vttResponse = await fetchFn(vttUrl);
     if (vttResponse.status === 202) {
-      // Transcript is still generating. We proceed with video-only moderation
-      // and persist the result without transcript text/topic analysis.
-      // Reprocessing once the transcript lands is tracked separately (see
-      // follow-up issue); blocking the pipeline on Blossom is not acceptable.
-      const retryAfterSeconds = getRetryAfterSecondsFromResponse(vttResponse);
+      const retryAfterSeconds = getRetryAfterSeconds(vttResponse);
       console.log(`[MODERATION] VTT transcript for ${sha256} is still pending${retryAfterSeconds !== null ? ` (retry after ${retryAfterSeconds}s)` : ''} - skipping text analysis`);
     } else if (vttResponse.status === 404) {
       console.log(`[MODERATION] No VTT transcript found for ${sha256} (404) - skipping text analysis`);
@@ -402,7 +490,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
 
   const downstreamSignals = deriveDownstreamSignals(classification, { originalVine: shouldForceServeable });
 
-  const finalClassification = shouldForceServeable
+  let finalClassification = shouldForceServeable
     ? (() => {
       const overridden = applyOriginalVineEnforcementOverride(classification);
       if (classification.action !== overridden.action) {
@@ -412,6 +500,25 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
       return overridden;
     })()
     : classification;
+
+  // Step 4.25: ProofMode downgrade rule — valid ProofMode capture attestation
+  // downgrades an AI-driven QUARANTINE to REVIEW so humans decide (content stays visible).
+  if (
+    c2pa.state === 'valid_proofmode'
+    && finalClassification.action === 'QUARANTINE'
+    && (finalClassification.category === 'ai_generated' || finalClassification.category === 'deepfake')
+  ) {
+    console.log(`[MODERATION] ${sha256} - ProofMode downgrade: QUARANTINE → REVIEW`);
+    policyContext.originalAction = finalClassification.action;
+    policyContext.enforcementOverridden = true;
+    policyContext.overrideReason = 'proofmode-capture-authenticated';
+    finalClassification = {
+      ...finalClassification,
+      action: 'REVIEW',
+      reason: `${finalClassification.reason} | proofmode-capture-authenticated`,
+      requiresSecondaryVerification: false,
+    };
+  }
 
   // Step 4.5: If AI-flagged, submit to Reality Defender for secondary verification (fire-and-forget)
   if (finalClassification.requiresSecondaryVerification && env.REALITY_DEFENDER_API_KEY) {
@@ -478,6 +585,12 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     // Topic profile extracted from VTT transcript text
     // Contains topics with confidence scores, primary_topic, has_speech, language_hint
     // null if no VTT transcript is available
-    topicProfile: topicProfile || null
+    topicProfile: topicProfile || null,
+
+    // C2PA / ProofMode verification result from divine-inquisitor.
+    // state ∈ {valid_proofmode, valid_c2pa, valid_ai_signed, invalid, absent, unchecked}.
+    // valid_ai_signed is handled earlier via short-circuit; valid_proofmode may have
+    // downgraded the action above.
+    c2pa,
   };
 }

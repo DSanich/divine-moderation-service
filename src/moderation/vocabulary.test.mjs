@@ -110,6 +110,14 @@ describe('classifierCategoryToLabels', () => {
     expect(classifierCategoryToLabels('nudity')).toEqual(['nudity']);
   });
 
+  it('should map sexual to sexual', () => {
+    expect(classifierCategoryToLabels('sexual')).toEqual(['sexual']);
+  });
+
+  it('should map porn to porn', () => {
+    expect(classifierCategoryToLabels('porn')).toEqual(['porn']);
+  });
+
   it('should map gore to graphic-media', () => {
     expect(classifierCategoryToLabels('gore')).toEqual(['graphic-media']);
   });

@@ -1428,7 +1428,7 @@
     function createVideoCard(video) {
       const { sha256, scores, detailedCategories, isUntriaged, classifierSummary } = video;
       const videoUrl = '/admin/video/' + sha256 + '.mp4';
-      const provenanceHTML = renderProvenanceSummary(video.provenance);
+      const provenanceHTML = renderProvenanceSummary(video.provenance, video.c2pa);
 
       const scoreEntries = Object.entries(scores || {})
         .filter(([, value]) => typeof value === 'number' && value > 0)
@@ -1920,6 +1920,37 @@
       return `<div style="display:inline-flex;align-items:center;gap:6px;background:${palette.bg};border:1px solid ${palette.border};color:${palette.text};padding:4px 8px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:0.02em;text-transform:uppercase;">${escapeHtml(provenance.label || 'Source Unavailable')}</div>`;
     }
 
+    function renderC2paBadge(c2pa) {
+      if (!c2pa || !c2pa.state || c2pa.state === 'absent' || c2pa.state === 'unchecked') return '';
+      const configByState = {
+        valid_proofmode: { label: 'Valid ProofMode', bg: '#064e3b', border: '#10b981', text: '#ecfdf5' },
+        valid_c2pa: { label: 'Valid C2PA', bg: '#1e3a8a', border: '#3b82f6', text: '#eff6ff' },
+        valid_ai_signed: { label: 'Valid but AI-signed', bg: '#7c2d12', border: '#f97316', text: '#fff7ed' },
+        invalid: { label: 'Invalid Proof', bg: '#374151', border: '#6b7280', text: '#f3f4f6' }
+      };
+      const conf = configByState[c2pa.state];
+      if (!conf) return '';
+      const title = c2pa.claimGenerator ? `claim_generator: ${c2pa.claimGenerator}` : c2pa.state;
+      return `<div class="c2pa-badge" data-state="${escapeHtml(c2pa.state)}" title="${escapeHtml(title)}" style="display:inline-flex;align-items:center;gap:6px;background:${conf.bg};border:1px solid ${conf.border};color:${conf.text};padding:4px 8px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:0.02em;text-transform:uppercase;margin-left:6px;">${escapeHtml(conf.label)}</div>`;
+    }
+
+    function formatC2paSupportLine(c2pa) {
+      if (!c2pa || c2pa.state === 'absent' || c2pa.state === 'unchecked') return '';
+      if (c2pa.state === 'valid_proofmode' && c2pa.captureDevice && c2pa.captureTime) {
+        return `ProofMode captured ${c2pa.captureTime} on ${c2pa.captureDevice}`;
+      }
+      if (c2pa.state === 'valid_ai_signed' && c2pa.claimGenerator) {
+        return `AI-signed by ${c2pa.claimGenerator}`;
+      }
+      if (c2pa.state === 'valid_c2pa' && c2pa.claimGenerator) {
+        return `C2PA signed by ${c2pa.claimGenerator}`;
+      }
+      if (c2pa.state === 'invalid') {
+        return 'C2PA manifest present but signature invalid (often transcoding or clock skew)';
+      }
+      return '';
+    }
+
     function formatProvenanceSupportLine(provenance) {
       if (!provenance || !provenance.date || provenance.dateSource === 'none') {
         return 'Source details unavailable';
@@ -1940,11 +1971,14 @@
       return `${dateLabel} via ${sourceLabel}`;
     }
 
-    function renderProvenanceSummary(provenance) {
+    function renderProvenanceSummary(provenance, c2pa) {
+      const c2paBadge = renderC2paBadge(c2pa);
+      const c2paLine = formatC2paSupportLine(c2pa);
       return `
         <div style="margin-bottom: 12px;">
-          ${renderProvenanceBadge(provenance)}
+          ${renderProvenanceBadge(provenance)}${c2paBadge}
           <div style="font-size: 12px; color: #9ca3af; margin-top: 6px;">${escapeHtml(formatProvenanceSupportLine(provenance))}</div>
+          ${c2paLine ? `<div style="font-size: 12px; color: #9ca3af; margin-top: 4px;">${escapeHtml(c2paLine)}</div>` : ''}
         </div>
       `;
     }
@@ -1976,6 +2010,7 @@
 
     function renderCreatorInfoModal(video) {
       const provenance = video.provenance || null;
+      const c2pa = video.c2pa || null;
       const creator = video.creatorContext || null;
       const stats = creator?.stats || null;
       const social = creator?.social || null;
@@ -1984,9 +2019,11 @@
       return `
         <div style="display:flex;flex-direction:column;gap:14px;">
           <div>
-            ${renderProvenanceBadge(provenance)}
+            ${renderProvenanceBadge(provenance)}${renderC2paBadge(c2pa)}
             <div style="font-size:13px;color:#cbd5e1;margin-top:8px;">${escapeHtml(formatProvenanceSupportLine(provenance))}</div>
+            ${formatC2paSupportLine(c2pa) ? `<div style="font-size:12px;color:#94a3b8;margin-top:4px;">${escapeHtml(formatC2paSupportLine(c2pa))}</div>` : ''}
             ${Array.isArray(provenance?.reasons) && provenance.reasons.length > 0 ? `<div style="font-size:12px;color:#94a3b8;margin-top:6px;">Evidence: ${escapeHtml(provenance.reasons.join(' · '))}</div>` : ''}
+            ${c2pa?.signer ? `<div style="font-size:11px;color:#64748b;margin-top:4px;">Signer: ${escapeHtml(c2pa.signer)}</div>` : ''}
           </div>
           <div>
             <div style="font-size:16px;font-weight:700;color:#f8fafc;">${escapeHtml(creator?.name || 'Creator details unavailable')}</div>

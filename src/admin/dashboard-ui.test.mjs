@@ -11,4 +11,14 @@ describe('dashboard provenance UI hooks', () => {
     expect(dashboardHTML).toContain('renderProvenanceBadge');
     expect(dashboardHTML).toContain('creator-info-modal');
   });
+
+  it('contains C2PA/ProofMode badge rendering', () => {
+    expect(dashboardHTML).toContain('renderC2paBadge');
+    expect(dashboardHTML).toContain('formatC2paSupportLine');
+    expect(dashboardHTML).toContain('Valid ProofMode');
+    expect(dashboardHTML).toContain('Valid C2PA');
+    expect(dashboardHTML).toContain('Valid but AI-signed');
+    expect(dashboardHTML).toContain('Invalid Proof');
+    expect(dashboardHTML).toContain('c2pa-badge');
+  });
 });
