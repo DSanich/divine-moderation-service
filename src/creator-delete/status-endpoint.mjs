@@ -16,8 +16,8 @@ export async function handleStatusQuery(request, deps) {
   const url = new URL(request.url);
   const kind5_id = url.pathname.split('/').pop();
 
-  if (!kind5_id) {
-    return jsonResponse(400, { error: 'Missing kind5_id' });
+  if (!kind5_id || !/^[a-f0-9]{64}$/i.test(kind5_id)) {
+    return jsonResponse(400, { error: 'Invalid kind5_id' });
   }
 
   const auth = await validateNip98Header(request.headers.get('Authorization'), url.toString(), 'GET');

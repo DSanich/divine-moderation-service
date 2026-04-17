@@ -19,9 +19,3 @@ export async function checkRateLimit(kv, { key, limit, windowSeconds }) {
   return { allowed: true, remaining: limit - next };
 }
 
-export function buildRateLimitKeys({ pubkey, clientIp }) {
-  return {
-    pubkeyKey: pubkey ? `pubkey:${pubkey}` : null,
-    ipKey: clientIp ? `ip:${clientIp}` : null
-  };
-}

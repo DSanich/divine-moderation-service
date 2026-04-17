@@ -47,7 +47,7 @@ describe('runCreatorDeleteCron', () => {
       target_event_id: 't1',
       creator_pubkey: 'pub1',
       status: 'failed:transient:blossom_5xx',
-      accepted_at: new Date(Date.now() - 60_000).toISOString(),
+      accepted_at: new Date(1700000000000 - 300_000).toISOString(),
       blob_sha256: null,
       retry_count: 2,
       last_error: 'HTTP 503: prior attempt',

@@ -21,8 +21,10 @@ export async function runCreatorDeleteCron(deps) {
   let processed = 0;
   const errors = [];
 
+  let querySucceeded = false;
   try {
     const events = await queryKind5Since(sinceSeconds);
+    querySucceeded = true;
     for (const kind5 of events) {
       try {
         const lagSeconds = Math.max(0, Math.floor(now() / 1000) - (kind5.created_at || 0));
@@ -41,14 +43,20 @@ export async function runCreatorDeleteCron(deps) {
     errors.push({ stage: 'query', error: e.message });
   }
 
-  // Retry failed:transient rows
+  // Retry failed:transient rows with exponential backoff:
+  // Only retry rows where enough time has elapsed since accepted_at (30s * 2^retry_count, capped at 300s).
   const transientRows = await db.prepare(
     `SELECT kind5_id, target_event_id, creator_pubkey, status, retry_count, accepted_at
      FROM creator_deletions
      WHERE status LIKE 'failed:transient:%' AND retry_count < ?`
   ).bind(MAX_RETRY_COUNT).all();
 
+  const nowSeconds = Math.floor(nowMs / 1000);
   for (const row of (transientRows.results || [])) {
+    const backoffSeconds = Math.min(30 * Math.pow(2, row.retry_count), 300);
+    const acceptedSeconds = Math.floor(Date.parse(row.accepted_at) / 1000);
+    if (nowSeconds - acceptedSeconds < backoffSeconds) continue;
+
     try {
       const kind5 = { id: row.kind5_id, pubkey: row.creator_pubkey, tags: [['e', row.target_event_id]] };
       await processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete, triggerLabel: 'cron' });
@@ -58,7 +66,11 @@ export async function runCreatorDeleteCron(deps) {
     }
   }
 
-  await kv.put(LAST_POLL_KEY, String(nowMs));
+  // Only advance the poll timestamp if the relay query succeeded.
+  // On failure, next tick retries from the same window.
+  if (querySucceeded) {
+    await kv.put(LAST_POLL_KEY, String(nowMs));
+  }
 
   return { processed, errors };
 }

@@ -10,6 +10,9 @@ import { handleStatusQuery } from './status-endpoint.mjs';
 import { checkRateLimit } from './rate-limit.mjs';
 import { makeFakeD1, makeFakeKV } from './test-helpers.mjs';
 
+const KIND5_A = 'a'.repeat(64);
+const KIND5_B = 'b'.repeat(64);
+
 describe('handleStatusQuery', () => {
   let sk, pk, deps;
 
@@ -30,11 +33,8 @@ describe('handleStatusQuery', () => {
   }
 
   it('returns 200 with target rows for the caller pubkey', async () => {
-    // Seed D1 directly — bypass the fake's INSERT path, which is tailored
-    // to claimRow's 4-arg bind with 'accepted' status literal. Direct
-    // rows.set() lets us simulate a terminal 'success' row.
-    deps.db.rows.set('k1:t1', {
-      kind5_id: 'k1',
+    deps.db.rows.set(`${KIND5_A}:t1`, {
+      kind5_id: KIND5_A,
       target_event_id: 't1',
       creator_pubkey: pk,
       status: 'success',
@@ -45,23 +45,29 @@ describe('handleStatusQuery', () => {
       completed_at: new Date().toISOString()
     });
 
-    const url = 'https://moderation-api.divine.video/api/delete-status/k1';
+    const url = `https://moderation-api.divine.video/api/delete-status/${KIND5_A}`;
     const request = new Request(url, { method: 'GET', headers: { Authorization: signNip98Get(url) } });
     const response = await handleStatusQuery(request, deps);
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.kind5_id).toBe('k1');
+    expect(body.kind5_id).toBe(KIND5_A);
     expect(body.targets[0]).toMatchObject({ target_event_id: 't1', status: 'success' });
   });
 
+  it('returns 400 on malformed kind5_id', async () => {
+    const url = 'https://moderation-api.divine.video/api/delete-status/not-a-hex-id';
+    const response = await handleStatusQuery(new Request(url, { method: 'GET', headers: { Authorization: signNip98Get(url) } }), deps);
+    expect(response.status).toBe(400);
+  });
+
   it('returns 401 when Authorization header is missing', async () => {
-    const url = 'https://moderation-api.divine.video/api/delete-status/k1';
+    const url = `https://moderation-api.divine.video/api/delete-status/${KIND5_A}`;
     const response = await handleStatusQuery(new Request(url, { method: 'GET' }), deps);
     expect(response.status).toBe(401);
   });
 
   it('returns 404 when no rows exist for the kind5_id', async () => {
-    const url = 'https://moderation-api.divine.video/api/delete-status/unknown';
+    const url = `https://moderation-api.divine.video/api/delete-status/${KIND5_B}`;
     const response = await handleStatusQuery(new Request(url, { method: 'GET', headers: { Authorization: signNip98Get(url) } }), deps);
     expect(response.status).toBe(404);
   });
@@ -69,9 +75,8 @@ describe('handleStatusQuery', () => {
   it('returns 403 when caller pubkey does not match row creator_pubkey', async () => {
     const otherSk = generateSecretKey();
     const otherPk = getPublicKey(otherSk);
-    // Seed D1 directly (see happy-path note).
-    deps.db.rows.set('k2:t1', {
-      kind5_id: 'k2',
+    deps.db.rows.set(`${KIND5_B}:t1`, {
+      kind5_id: KIND5_B,
       target_event_id: 't1',
       creator_pubkey: otherPk,
       status: 'success',
@@ -82,7 +87,7 @@ describe('handleStatusQuery', () => {
       completed_at: null
     });
 
-    const url = 'https://moderation-api.divine.video/api/delete-status/k2';
+    const url = `https://moderation-api.divine.video/api/delete-status/${KIND5_B}`;
     const response = await handleStatusQuery(new Request(url, { method: 'GET', headers: { Authorization: signNip98Get(url) } }), deps);
     expect(response.status).toBe(403);
   });
@@ -91,7 +96,7 @@ describe('handleStatusQuery', () => {
     for (let i = 0; i < 120; i++) {
       await checkRateLimit(deps.kv, { key: `status:${pk}`, limit: 120, windowSeconds: 60 });
     }
-    const url = 'https://moderation-api.divine.video/api/delete-status/k1';
+    const url = `https://moderation-api.divine.video/api/delete-status/${KIND5_A}`;
     const response = await handleStatusQuery(new Request(url, { method: 'GET', headers: { Authorization: signNip98Get(url) } }), deps);
     expect(response.status).toBe(429);
   });

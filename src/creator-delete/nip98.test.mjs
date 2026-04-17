@@ -6,7 +6,6 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
-import { bytesToHex } from '@noble/hashes/utils';
 import { validateNip98Header } from './nip98.mjs';
 
 describe('validateNip98Header', () => {

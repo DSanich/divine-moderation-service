@@ -59,7 +59,12 @@ export async function processKind5(kind5, { db, fetchTargetEvent, callBlossomDel
       continue;
     }
 
-    // action === 'proceed'
+    // action === 'proceed' — re-claim stale row by refreshing accepted_at
+    if (!claim.claimed) {
+      await db.prepare(
+        `UPDATE creator_deletions SET accepted_at = ?, status = 'accepted' WHERE kind5_id = ? AND target_event_id = ?`
+      ).bind(acceptedIso, kind5.id, target_event_id).run();
+    }
     console.log(JSON.stringify({
       event: 'creator_delete.accepted',
       kind5_id: kind5.id,
@@ -143,26 +148,32 @@ export async function processKind5(kind5, { db, fetchTargetEvent, callBlossomDel
       : (status !== undefined ? `failed:permanent:blossom_${status}` : 'failed:permanent:blossom_skipped');
 
     const lastError = blossomResult.error || `Blossom returned ${blossomResult.status}`;
+    const priorRetryCount = (claim.existing && claim.existing.retry_count) || 0;
+    const retryCountAfter = isTransient ? priorRetryCount + 1 : priorRetryCount;
+
+    // Promote to permanent if retries exhausted
+    const finalStatus = (isTransient && retryCountAfter >= 5)
+      ? 'failed:permanent:max_retries_exceeded'
+      : category;
+
     await updateToFailed(db, {
       kind5_id: kind5.id,
       target_event_id,
-      status: category,
+      status: finalStatus,
       last_error: lastError,
       increment_retry: isTransient
     });
-    const priorRetryCount = (claim.existing && claim.existing.retry_count) || 0;
-    const retryCountAfter = isTransient ? priorRetryCount + 1 : priorRetryCount;
     console.log(JSON.stringify({
       event: 'creator_delete.failed',
       kind5_id: kind5.id,
       target_event_id,
       creator_pubkey: kind5.pubkey,
-      status: category,
+      status: finalStatus,
       last_error: lastError,
       retry_count_after: retryCountAfter,
       trigger: triggerLabel
     }));
-    resultTargets.push({ target_event_id, status: category, last_error: blossomResult.error, blob_sha256: sha256 });
+    resultTargets.push({ target_event_id, status: finalStatus, last_error: blossomResult.error, blob_sha256: sha256 });
   }
 
   return { targets: resultTargets };

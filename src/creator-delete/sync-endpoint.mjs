@@ -29,6 +29,22 @@ export async function handleSyncDelete(request, deps) {
     return jsonResponse(400, { error: 'Invalid kind5_id' });
   }
 
+  // IP rate limit BEFORE NIP-98 validation — limits crypto work from unauthenticated callers
+  const clientIp = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const ipCheck = await checkRateLimit(kv, { key: `ip:${clientIp}`, limit: PER_IP_LIMIT, windowSeconds: RATE_WINDOW_SECONDS });
+  if (!ipCheck.allowed) {
+    console.log(JSON.stringify({
+      event: 'creator_delete.sync.request',
+      status_code: 429,
+      latency_ms: Date.now() - t0,
+      kind5_id: kind5_id || null
+    }));
+    return jsonResponse(429, {
+      error: 'Rate limit exceeded',
+      retry_after_seconds: ipCheck.retryAfterSeconds || 0
+    });
+  }
+
   const auth = await validateNip98Header(request.headers.get('Authorization'), url.toString(), 'POST');
   if (!auth.valid) {
     console.log(JSON.stringify({
@@ -40,10 +56,9 @@ export async function handleSyncDelete(request, deps) {
     return jsonResponse(401, { error: `NIP-98 validation failed: ${auth.error}` });
   }
 
-  const clientIp = request.headers.get('CF-Connecting-IP') || 'unknown';
-  const ipCheck = await checkRateLimit(kv, { key: `ip:${clientIp}`, limit: PER_IP_LIMIT, windowSeconds: RATE_WINDOW_SECONDS });
+  // Per-pubkey rate limit AFTER NIP-98 (pubkey only known after validation)
   const pubkeyCheck = await checkRateLimit(kv, { key: `pubkey:${auth.pubkey}`, limit: PER_PUBKEY_LIMIT, windowSeconds: RATE_WINDOW_SECONDS });
-  if (!ipCheck.allowed || !pubkeyCheck.allowed) {
+  if (!pubkeyCheck.allowed) {
     console.log(JSON.stringify({
       event: 'creator_delete.sync.request',
       status_code: 429,
@@ -52,7 +67,7 @@ export async function handleSyncDelete(request, deps) {
     }));
     return jsonResponse(429, {
       error: 'Rate limit exceeded',
-      retry_after_seconds: Math.max(ipCheck.retryAfterSeconds || 0, pubkeyCheck.retryAfterSeconds || 0)
+      retry_after_seconds: pubkeyCheck.retryAfterSeconds || 0
     });
   }
 
