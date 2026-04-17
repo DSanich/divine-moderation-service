@@ -11,9 +11,11 @@ import {
   loadModelFromEnv,
   runInference,
   cropCorner,
+  envelopeToDetections,
   LOGO_CLASSES,
   CORNERS
 } from './logo_detector.mjs';
+import { aggregateLogoDetections } from './logo_aggregator.mjs';
 
 describe('logo_detector - constants', () => {
   it('exposes the nine classifier classes in a stable order', () => {
@@ -76,6 +78,83 @@ describe('logo_detector - loadModelFromEnv', () => {
     const model = await loadModelFromEnv(null);
     expect(model.ready).toBe(false);
     expect(model.modelUrl).toBeNull();
+  });
+
+  it('prefers AI_DETECTOR_BASE_URL over the deprecated LOGO_DETECTOR_MODEL_URL', async () => {
+    const env = {
+      AI_DETECTOR_BASE_URL: 'https://ai-detector.divine.video',
+      LOGO_DETECTOR_MODEL_URL: 'https://old.example/model.onnx'
+    };
+    const model = await loadModelFromEnv(env);
+    expect(model).toEqual({
+      modelUrl: 'https://ai-detector.divine.video',
+      ready: true
+    });
+  });
+
+  it('falls back to LOGO_DETECTOR_MODEL_URL for deployed configs that have not been rotated', async () => {
+    const env = { LOGO_DETECTOR_MODEL_URL: 'https://models.divine.video/logo-v1.onnx' };
+    const model = await loadModelFromEnv(env);
+    expect(model.ready).toBe(true);
+    expect(model.modelUrl).toBe('https://models.divine.video/logo-v1.onnx');
+  });
+});
+
+describe('logo_detector - envelopeToDetections', () => {
+  it('returns null for an error envelope so callers can fall through to vendor', () => {
+    expect(envelopeToDetections({ state: 'error', error: 'boom', model: 'v1' })).toBeNull();
+  });
+
+  it('returns null when given a null envelope', () => {
+    expect(envelopeToDetections(null)).toBeNull();
+  });
+
+  it('emits all-clean detections for an absent envelope with total_frames', () => {
+    const detections = envelopeToDetections({
+      state: 'absent', total_frames: 3, model: 'v1'
+    });
+    expect(detections).toHaveLength(12); // 3 frames × 4 corners
+    for (const d of detections) {
+      expect(d.class).toBe('clean');
+      expect(d.confidence).toBe(1.0);
+    }
+  });
+
+  it('emits flagged + clean detections for a detected envelope that aggregator agrees with', () => {
+    const envelope = {
+      state: 'detected',
+      class: 'meta_sparkle',
+      confidence: 0.9,
+      frames_flagged: 3,
+      total_frames: 4,
+      model: 'logo-v1.2.0'
+    };
+    const detections = envelopeToDetections(envelope);
+    expect(detections).toHaveLength(16);
+
+    const result = aggregateLogoDetections(detections);
+    expect(result.detected).toBe(true);
+    expect(result.class).toBe('meta_sparkle');
+    expect(result.frames_flagged).toBe(3);
+    expect(result.total_frames).toBe(4);
+  });
+
+  it('emits zero detections for a detected envelope with total_frames=0', () => {
+    const detections = envelopeToDetections({
+      state: 'detected', class: 'meta_sparkle', confidence: 0.9,
+      frames_flagged: 0, total_frames: 0, model: 'v1'
+    });
+    expect(detections).toEqual([]);
+  });
+
+  it('caps frames_flagged at total_frames to avoid aggregator double-counting', () => {
+    const detections = envelopeToDetections({
+      state: 'detected', class: 'meta_sparkle', confidence: 0.9,
+      frames_flagged: 99, total_frames: 4, model: 'v1'
+    });
+    const result = aggregateLogoDetections(detections);
+    expect(result.frames_flagged).toBe(4);
+    expect(result.total_frames).toBe(4);
   });
 });
 
