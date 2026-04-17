@@ -345,8 +345,23 @@ export async function fetchKind5EventsSince(sinceSeconds, relayUrl = 'wss://rela
 
 export async function fetchNostrEventById(eventId, relays = ['wss://relay.divine.video'], env = {}) {
   for (const relayUrl of relays) {
-    const event = await queryRelay(relayUrl, { ids: [eventId], limit: 1 }, env);
-    if (event) return event;
+    // Use Funnelcake's REST API (GET /api/event/{id}) instead of WebSocket REQ.
+    // Faster (no upgrade handshake), works in local dev (Miniflare), and the
+    // endpoint returns a raw Nostr event: { id, pubkey, created_at, kind, tags, content, sig }.
+    const apiBaseUrl = relayUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/$/, '');
+    try {
+      const headers = { 'Accept': 'application/json' };
+      if (env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
+        headers['CF-Access-Client-Id'] = env.CF_ACCESS_CLIENT_ID;
+        headers['CF-Access-Client-Secret'] = env.CF_ACCESS_CLIENT_SECRET;
+      }
+      const response = await fetch(`${apiBaseUrl}/api/event/${eventId}`, { headers });
+      if (!response.ok) continue;
+      const event = await response.json();
+      if (event?.id && event?.pubkey) return event;
+    } catch {
+      continue;
+    }
   }
   return null;
 }
