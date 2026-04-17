@@ -3,6 +3,15 @@
 //
 // ABOUTME: Aggregates per-frame logo detections into a single verdict
 // ABOUTME: Static pass: majority vote per (corner, class); fallback: class-only for moving watermarks
+//
+// TODO(divine-ai-detector): rename this module to `ai-detector-fusion.mjs`
+// once we add a second signal to fuse. The design doc
+// (docs/superpowers/plans/2026-04-17-divine-ai-detector-design.md
+// §"Worker-side changes") reframes this as "the Worker-side fusion layer that
+// combines multiple signals' confidence into a single ai_generated score."
+// For now the vote math here only fuses the four corners of a single
+// watermark_visible signal, so the old name is still accurate and a rename
+// would churn imports across the codebase without adding value.
 
 const CONFIDENCE_FLOOR = 0.7;
 const FRAME_SHARE_THRESHOLD = 0.5;

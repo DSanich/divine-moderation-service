@@ -85,11 +85,29 @@ AI_GENERATED_THRESHOLD_MEDIUM = "0.6" # Human review
 # Called from the pipeline before Hive — valid_ai_signed short-circuits Hive, valid_proofmode downgrades AI-QUARANTINE to REVIEW
 INQUISITOR_BASE_URL = "https://inquisitor.divine.video"
 
-# Visible-watermark detector (corner logo classifier for consumer AI generators:
-# Meta sparkle, Sora, Veo, Runway, Kling, Pika, Luma). Points at an ONNX model
-# served over HTTPS; loaded lazily in the Worker via onnxruntime-web. Empty
-# string = detector disabled (stub inference path returns clean).
+# divine-ai-detector service base URL. The Worker posts per-signal detection
+# requests to {AI_DETECTOR_BASE_URL}/detect and gets back per-signal envelopes
+# (see docs/superpowers/plans/2026-04-17-divine-ai-detector-design.md §API).
+# Empty string = client disabled; every signal resolves to an `error` envelope
+# and callers fall through to vendor (Hive / Reality Defender).
+AI_DETECTOR_BASE_URL = ""
+
+# DEPRECATED — kept so deployed configs that still set this don't break during
+# cutover. The client reads it as a fallback only when AI_DETECTOR_BASE_URL is
+# empty. Remove after every environment has been migrated.
 LOGO_DETECTOR_MODEL_URL = ""
+
+# Per-signal cutover mode: shadow | gated | preferred | sole (default shadow).
+# - shadow    : call vendor + internal, use vendor, log disagreement
+# - gated     : internal when confidence >= AI_DETECTOR_GATE_<SIGNAL>
+# - preferred : internal whenever state != error
+# - sole      : internal only, vendor not called
+# Flipping this is a runtime rollout decision, not a PR decision.
+AI_DETECTOR_MODE_WATERMARK_VISIBLE = "shadow"
+
+# Confidence gate used by `gated` mode. Spec: 0.8 is the Hive-equivalent high
+# threshold; 0.7 is moderate. Tune from shadow-mode agreement data.
+AI_DETECTOR_GATE_WATERMARK_VISIBLE = "0.8"
 
 # Relay Polling Configuration
 RELAY_POLLING_ENABLED = "true"                    # Enable/disable relay polling
