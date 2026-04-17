@@ -14,7 +14,7 @@
 //
 // The stub `detectLogos` + `options.infer` test-injection path is preserved
 // for unit tests only. In production, callers should use
-// `envelopeToDetections(envelope, frameCount)` to adapt the service's
+// `envelopeToDetections(envelope)` to adapt the service's
 // per-signal `watermark_visible` envelope back into the per-frame/per-corner
 // shape that logo_aggregator.mjs consumes. This keeps the aggregator's vote
 // math stable during cutover.

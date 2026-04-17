@@ -80,6 +80,13 @@ describe('ai-detector-mode - readGate', () => {
     expect(readGate({ AI_DETECTOR_GATE_WATERMARK_VISIBLE: 'nope' }, 'watermark_visible'))
       .toBe(0.8);
   });
+
+  it('defaults to 0.8 when the env var is outside 0..1', () => {
+    expect(readGate({ AI_DETECTOR_GATE_WATERMARK_VISIBLE: '1.5' }, 'watermark_visible'))
+      .toBe(0.8);
+    expect(readGate({ AI_DETECTOR_GATE_WATERMARK_VISIBLE: '-0.1' }, 'watermark_visible'))
+      .toBe(0.8);
+  });
 });
 
 describe('ai-detector-mode - dispatchSignal: shadow', () => {

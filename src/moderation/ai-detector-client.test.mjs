@@ -154,6 +154,19 @@ describe('ai-detector-client - detectSignals happy path', () => {
     );
     expect(result.signals.watermark_visible).toEqual({ state: 'skipped', model: null });
   });
+
+  it('treats an envelope with an unknown state as skipped', async () => {
+    const fetchImpl = mockFetch(jsonResponse({
+      sha256: 'x', checked_at: 'now', duration_ms: 1,
+      signals: { watermark_visible: { state: 'mystery', model: 'v1' } }
+    }));
+    const result = await detectSignals(
+      { url: 'u', signals: ['watermark_visible'] },
+      { AI_DETECTOR_BASE_URL: 'https://svc' },
+      { fetchImpl }
+    );
+    expect(result.signals.watermark_visible).toEqual({ state: 'skipped', model: null });
+  });
 });
 
 describe('ai-detector-client - error paths', () => {

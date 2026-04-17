@@ -38,7 +38,7 @@ export function readGate(env, signal) {
   const raw = env[key];
   if (raw === undefined || raw === null || raw === '') return DEFAULT_GATE;
   const n = Number(raw);
-  return Number.isFinite(n) ? n : DEFAULT_GATE;
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : DEFAULT_GATE;
 }
 
 /**

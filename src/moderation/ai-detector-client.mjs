@@ -135,7 +135,12 @@ export async function detectSignals(req, env, opts = {}) {
   const respSignals = (payload && payload.signals) || {};
   for (const sig of signals) {
     const env_ = respSignals[sig];
-    if (env_ && typeof env_ === 'object' && typeof env_.state === 'string') {
+    if (
+      env_ &&
+      typeof env_ === 'object' &&
+      typeof env_.state === 'string' &&
+      SIGNAL_STATES.includes(env_.state)
+    ) {
       merged[sig] = env_;
     } else {
       merged[sig] = { state: 'skipped', model: null };
