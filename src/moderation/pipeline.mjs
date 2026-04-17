@@ -10,10 +10,82 @@ import { classifyText, parseVttText } from './text-classifier.mjs';
 import { fetchNostrEventBySha256, parseVideoEventMetadata, isOriginalVine, hasStrongOriginalVineEvidence } from '../nostr/relay-client.mjs';
 import { classifyVideo } from '../classification/pipeline.mjs';
 import { extractTopics } from '../classification/topic-extractor.mjs';
+import { verifyC2pa } from './inquisitor-client.mjs';
 
 const ORIGINAL_VINE_SUPPRESSED_CATEGORIES = new Set(['ai_generated', 'deepfake']);
 const DOWNSTREAM_SIGNAL_THRESHOLD = 0.5;
 const ARCHIVE_ORIGINAL_VINE_SOURCES = new Set(['archive-export', 'incident-backfill', 'sha-list']);
+const C2PA_CACHE_PREFIX = 'c2pa:';
+const C2PA_CACHE_TTL = 30 * 86400;
+
+async function getCachedC2paOrVerify({ sha256, videoUrl, env, fetchFn }) {
+  if (env.MODERATION_KV) {
+    try {
+      const cached = await env.MODERATION_KV.get(`${C2PA_CACHE_PREFIX}${sha256}`);
+      if (cached) return JSON.parse(cached);
+    } catch (err) {
+      console.warn(`[C2PA] KV read failed for ${sha256}: ${err.message}`);
+    }
+  }
+
+  const result = await verifyC2pa({ url: videoUrl, mimeType: 'video/mp4' }, env, { fetchFn });
+
+  if (env.MODERATION_KV && result.state !== 'unchecked') {
+    try {
+      await env.MODERATION_KV.put(`${C2PA_CACHE_PREFIX}${sha256}`, JSON.stringify(result), {
+        expirationTtl: C2PA_CACHE_TTL,
+      });
+    } catch (err) {
+      console.warn(`[C2PA] KV write failed for ${sha256}: ${err.message}`);
+    }
+  }
+
+  return result;
+}
+
+function buildSignedAiShortCircuitResult({ sha256, uploadedBy, uploadedAt, metadata, videoUrl, nostrContext, nostrEventId, c2pa }) {
+  const claimGenerator = c2pa.claimGenerator || 'unknown';
+  const reason = `c2pa-ai-signed:${claimGenerator} — quarantined pending moderator review`;
+  return {
+    action: 'QUARANTINE',
+    severity: 'high',
+    category: 'ai_generated',
+    reason,
+    requiresSecondaryVerification: false,
+    scores: { ai_generated: 1.0, deepfake: 0 },
+    provider: 'inquisitor-c2pa',
+    processingTime: 0,
+    detailedCategories: null,
+    sha256,
+    uploadedBy,
+    uploadedAt,
+    metadata,
+    cdnUrl: videoUrl,
+    nostrEventId,
+    nostrContext,
+    policyContext: {
+      originalVine: false,
+      originalVineLegacyFallback: false,
+      enforcementOverridden: true,
+      overrideReason: 'c2pa-ai-signed-short-circuit',
+      originalAction: 'QUARANTINE',
+    },
+    downstreamSignals: {
+      hasSignals: true,
+      scores: { ai_generated: 1.0 },
+      primaryConcern: 'ai_generated',
+      category: 'ai_generated',
+      severity: 'high',
+      reason: `C2PA signature declares AI origin (claim_generator=${claimGenerator})`,
+    },
+    text_scores: null,
+    providerRaw: null,
+    rawClassifierData: null,
+    sceneClassification: null,
+    topicProfile: null,
+    c2pa,
+  };
+}
 
 function parseOptionalString(value) {
   return typeof value === 'string' && value.length > 0 ? value : null;
@@ -286,6 +358,18 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     console.log(`[MODERATION] Original Vine detected - skipping AI detection for ${sha256}`);
   }
 
+  // Step 2.5: Call divine-inquisitor first so valid_ai_signed content can short-circuit Hive
+  const c2pa = await getCachedC2paOrVerify({ sha256, videoUrl, env, fetchFn });
+  console.log(`[MODERATION] ${sha256} - C2PA state: ${c2pa.state}${c2pa.claimGenerator ? ` (claim=${c2pa.claimGenerator})` : ''}`);
+
+  if (c2pa.state === 'valid_ai_signed') {
+    console.log(`[MODERATION] ${sha256} - signed-AI short-circuit, skipping Hive and Reality Defender`);
+    return buildSignedAiShortCircuitResult({
+      sha256, uploadedBy, uploadedAt, metadata,
+      videoUrl, nostrContext, nostrEventId, c2pa,
+    });
+  }
+
   // Step 3: Run moderation and scene classification in parallel
   let moderationResult;
   let combinedScores = {};
@@ -406,7 +490,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
 
   const downstreamSignals = deriveDownstreamSignals(classification, { originalVine: shouldForceServeable });
 
-  const finalClassification = shouldForceServeable
+  let finalClassification = shouldForceServeable
     ? (() => {
       const overridden = applyOriginalVineEnforcementOverride(classification);
       if (classification.action !== overridden.action) {
@@ -416,6 +500,25 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
       return overridden;
     })()
     : classification;
+
+  // Step 4.25: ProofMode downgrade rule — valid ProofMode capture attestation
+  // downgrades an AI-driven QUARANTINE to REVIEW so humans decide (content stays visible).
+  if (
+    c2pa.state === 'valid_proofmode'
+    && finalClassification.action === 'QUARANTINE'
+    && (finalClassification.category === 'ai_generated' || finalClassification.category === 'deepfake')
+  ) {
+    console.log(`[MODERATION] ${sha256} - ProofMode downgrade: QUARANTINE → REVIEW`);
+    policyContext.originalAction = finalClassification.action;
+    policyContext.enforcementOverridden = true;
+    policyContext.overrideReason = 'proofmode-capture-authenticated';
+    finalClassification = {
+      ...finalClassification,
+      action: 'REVIEW',
+      reason: `${finalClassification.reason} | proofmode-capture-authenticated`,
+      requiresSecondaryVerification: false,
+    };
+  }
 
   // Step 4.5: If AI-flagged, submit to Reality Defender for secondary verification (fire-and-forget)
   if (finalClassification.requiresSecondaryVerification && env.REALITY_DEFENDER_API_KEY) {
@@ -482,6 +585,12 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     // Topic profile extracted from VTT transcript text
     // Contains topics with confidence scores, primary_topic, has_speech, language_hint
     // null if no VTT transcript is available
-    topicProfile: topicProfile || null
+    topicProfile: topicProfile || null,
+
+    // C2PA / ProofMode verification result from divine-inquisitor.
+    // state ∈ {valid_proofmode, valid_c2pa, valid_ai_signed, invalid, absent, unchecked}.
+    // valid_ai_signed is handled earlier via short-circuit; valid_proofmode may have
+    // downgraded the action above.
+    c2pa,
   };
 }
