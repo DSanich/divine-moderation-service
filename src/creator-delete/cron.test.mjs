@@ -6,6 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { runCreatorDeleteCron } from './cron.mjs';
+import { MAX_RETRY_COUNT } from './d1.mjs';
 import { makeFakeD1, makeFakeKV } from './test-helpers.mjs';
 
 const SHA_C = 'c'.repeat(64); // 64-char hex fixture (extractSha256 requires)
@@ -38,7 +39,7 @@ describe('runCreatorDeleteCron', () => {
     expect(Number(lastPoll)).toBe(1700000000000);
   });
 
-  it('retries failed:transient rows with retry_count < 5', async () => {
+  it('retries failed:transient rows with retry_count below MAX_RETRY_COUNT', async () => {
     // Seed D1 directly — the fake's INSERT path is tailored to claimRow's
     // 4-arg bind with 'accepted' status literal, so it can't represent a
     // pre-existing failed:transient row. Direct rows.set() bypasses it.
@@ -49,7 +50,7 @@ describe('runCreatorDeleteCron', () => {
       status: 'failed:transient:blossom_5xx',
       accepted_at: new Date(1700000000000 - 300_000).toISOString(),
       blob_sha256: null,
-      retry_count: 2,
+      retry_count: MAX_RETRY_COUNT - 3,
       last_error: 'HTTP 503: prior attempt',
       completed_at: null
     });

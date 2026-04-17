@@ -5,10 +5,10 @@
 // ABOUTME: Runs every minute via wrangler.toml [triggers] crons entry; dispatched in scheduled(event, env, ctx).
 
 import { processKind5 } from './process.mjs';
+import { MAX_RETRY_COUNT } from './d1.mjs';
 
 const LAST_POLL_KEY = 'creator-delete-cron:last-poll';
 const DEFAULT_LOOKBACK_SECONDS = 3600; // first run
-const MAX_RETRY_COUNT = 5;
 
 export async function runCreatorDeleteCron(deps) {
   const { db, kv, queryKind5Since, fetchTargetEvent, callBlossomDelete, now = () => Date.now() } = deps;

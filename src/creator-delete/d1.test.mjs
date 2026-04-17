@@ -5,7 +5,7 @@
 // ABOUTME: Uses an in-memory fake D1 (makeFakeD1) imported from ./test-helpers.mjs.
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { claimRow, readRow, updateToSuccess, updateToFailed, decideAction } from './d1.mjs';
+import { claimRow, readRow, updateToSuccess, updateToFailed, decideAction, IN_PROGRESS_TIMEOUT_MS, MAX_RETRY_COUNT } from './d1.mjs';
 import { makeFakeD1 } from './test-helpers.mjs';
 
 describe('claimRow', () => {
@@ -55,11 +55,11 @@ describe('decideAction', () => {
     expect(decideAction(existing, { now })).toBe('skip_in_progress');
   });
 
-  it('proceed when accepted but stale (>30s)', () => {
+  it('proceed when accepted but stale', () => {
     const now = Date.now();
     const existing = {
       status: 'accepted',
-      accepted_at: new Date(now - 60_000).toISOString()
+      accepted_at: new Date(now - IN_PROGRESS_TIMEOUT_MS - 1).toISOString()
     };
     expect(decideAction(existing, { now })).toBe('proceed');
   });
@@ -69,6 +69,6 @@ describe('decideAction', () => {
   });
 
   it('skip when failed:transient and retries exhausted', () => {
-    expect(decideAction({ status: 'failed:transient:blossom_5xx', retry_count: 5 })).toBe('skip_permanent_failure');
+    expect(decideAction({ status: 'failed:transient:blossom_5xx', retry_count: MAX_RETRY_COUNT })).toBe('skip_permanent_failure');
   });
 });

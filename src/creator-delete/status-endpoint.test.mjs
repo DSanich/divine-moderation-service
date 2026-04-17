@@ -66,6 +66,18 @@ describe('handleStatusQuery', () => {
     expect(response.status).toBe(401);
   });
 
+  it('returns 429 on IP rate limit before NIP-98 validation', async () => {
+    for (let i = 0; i < 60; i++) {
+      await checkRateLimit(deps.kv, { key: 'status-ip:203.0.113.10', limit: 60, windowSeconds: 60 });
+    }
+    const url = `https://moderation-api.divine.video/api/delete-status/${KIND5_A}`;
+    const response = await handleStatusQuery(new Request(url, {
+      method: 'GET',
+      headers: { 'CF-Connecting-IP': '203.0.113.10' }
+    }), deps);
+    expect(response.status).toBe(429);
+  });
+
   it('returns 404 when no rows exist for the kind5_id', async () => {
     const url = `https://moderation-api.divine.video/api/delete-status/${KIND5_B}`;
     const response = await handleStatusQuery(new Request(url, { method: 'GET', headers: { Authorization: signNip98Get(url) } }), deps);

@@ -5,7 +5,9 @@
 // ABOUTME: claimRow implements INSERT ... ON CONFLICT DO NOTHING then SELECT to read canonical state.
 
 const MAX_RETRY_COUNT = 5;
-const IN_PROGRESS_TIMEOUT_MS = 30_000;
+// Must exceed the sync endpoint's waitUntil work window. A stale accepted row
+// may be re-claimed after this; Blossom DELETE must remain idempotent.
+const IN_PROGRESS_TIMEOUT_MS = 120_000;
 
 /**
  * Attempt to claim a row for processing. Returns { claimed, existing }.

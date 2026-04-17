@@ -7,7 +7,8 @@ import {
   fetchNostrVideoEventsByDTag,
   parseVideoEventMetadata,
   isOriginalVine,
-  hasStrongOriginalVineEvidence
+  hasStrongOriginalVineEvidence,
+  fetchNostrEventById
 } from './relay-client.mjs';
 
 const OriginalWebSocket = globalThis.WebSocket;
@@ -386,5 +387,23 @@ describe('fetchNostrEventBySha256', () => {
     globalThis.WebSocket = FakeWebSocket;
 
     await expect(fetchNostrEventBySha256(sha256)).resolves.toEqual(event);
+  });
+});
+
+describe('fetchNostrEventById', () => {
+  it('returns null for non-hex event IDs without fetching', async () => {
+    const originalFetch = globalThis.fetch;
+    let called = false;
+    globalThis.fetch = async () => {
+      called = true;
+      return new Response('{}');
+    };
+
+    try {
+      await expect(fetchNostrEventById('../not-hex')).resolves.toBeNull();
+      expect(called).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

@@ -79,7 +79,6 @@ export async function handleSyncDelete(request, deps) {
     return jsonResponse(400, { error: 'Kind 5 event has no e-tags; nothing to delete' });
   }
 
-  const deadline = Date.now() + budgetMs;
   const processing = processKind5(kind5, {
     db,
     fetchTargetEvent,
@@ -116,7 +115,7 @@ export async function handleSyncDelete(request, deps) {
   const anyFailed = raceResult.targets.some(t => t.status.startsWith('failed:'));
   const anyInProgress = raceResult.targets.some(t => t.status === 'in_progress');
 
-  if (anyInProgress && Date.now() < deadline) {
+  if (anyInProgress) {
     logRequest(t0, kind5_id, 202);
     return jsonResponse(202, {
       kind5_id,

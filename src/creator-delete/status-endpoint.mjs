@@ -9,6 +9,7 @@ import { readAllTargetsForKind5 } from './d1.mjs';
 import { checkRateLimit } from './rate-limit.mjs';
 
 const PER_PUBKEY_LIMIT = 120; // 2/sec average
+const PER_IP_LIMIT = 60;
 const RATE_WINDOW_SECONDS = 60;
 
 export async function handleStatusQuery(request, deps) {
@@ -18,6 +19,13 @@ export async function handleStatusQuery(request, deps) {
 
   if (!kind5_id || !/^[a-f0-9]{64}$/i.test(kind5_id)) {
     return jsonResponse(400, { error: 'Invalid kind5_id' });
+  }
+
+  // IP rate limit BEFORE NIP-98 validation to limit unauthenticated crypto work.
+  const clientIp = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const ipCheck = await checkRateLimit(kv, { key: `status-ip:${clientIp}`, limit: PER_IP_LIMIT, windowSeconds: RATE_WINDOW_SECONDS });
+  if (!ipCheck.allowed) {
+    return jsonResponse(429, { error: 'Rate limit exceeded', retry_after_seconds: ipCheck.retryAfterSeconds || 0 });
   }
 
   const auth = await validateNip98Header(request.headers.get('Authorization'), url.toString(), 'GET');
