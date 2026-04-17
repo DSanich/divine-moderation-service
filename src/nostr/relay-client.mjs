@@ -344,6 +344,9 @@ export async function fetchKind5EventsSince(sinceSeconds, relayUrl = 'wss://rela
 }
 
 export async function fetchNostrEventById(eventId, relays = ['wss://relay.divine.video'], env = {}) {
+  // Reject non-hex IDs to prevent path-traversal via attacker-controlled kind 5 e-tags
+  if (!eventId || !/^[a-f0-9]{64}$/i.test(eventId)) return null;
+
   for (const relayUrl of relays) {
     // Use Funnelcake's REST API (GET /api/event/{id}) instead of WebSocket REQ.
     // Faster (no upgrade handshake), works in local dev (Miniflare), and the

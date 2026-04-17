@@ -96,6 +96,20 @@ describe('handleSyncDelete', () => {
     expect(response.status).toBe(404);
   });
 
+  it('returns 429 when per-IP limit exceeded (before NIP-98 validation)', async () => {
+    const url = `https://moderation-api.divine.video/api/delete/${KIND5_ID}`;
+    // Exhaust IP limit — no NIP-98 needed since IP check runs first
+    for (let i = 0; i < PER_IP_LIMIT; i++) {
+      await checkRateLimit(deps.kv, { key: 'ip:1.2.3.4', limit: PER_IP_LIMIT, windowSeconds: RATE_WINDOW_SECONDS });
+    }
+    const request = new Request(url, {
+      method: 'POST',
+      headers: { 'CF-Connecting-IP': '1.2.3.4' }
+    });
+    const response = await handleSyncDelete(request, deps);
+    expect(response.status).toBe(429);
+  });
+
   it('returns 429 when per-pubkey limit exceeded', async () => {
     const url = `https://moderation-api.divine.video/api/delete/${KIND5_ID}`;
     // Exhaust limit

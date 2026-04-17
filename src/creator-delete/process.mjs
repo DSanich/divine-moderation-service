@@ -4,7 +4,7 @@
 // ABOUTME: Shared kind 5 processing function used by both sync endpoint and cron.
 // ABOUTME: Race-safe via D1 INSERT-OR-IGNORE claim, handles multi-target kind 5 per NIP-09.
 
-import { claimRow, readRow, updateToSuccess, updateToFailed, decideAction } from './d1.mjs';
+import { claimRow, updateToSuccess, updateToFailed, decideAction } from './d1.mjs';
 
 /**
  * Extract the main blob sha256 from a kind 34236 video event.
