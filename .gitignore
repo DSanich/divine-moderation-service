@@ -16,3 +16,6 @@ old_files/
 old_files/
 cost-projections-internal.md
 .worktrees/
+.claude/worktrees/
+.playwright-mcp/
+tmp/
