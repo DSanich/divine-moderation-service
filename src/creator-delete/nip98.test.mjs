@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
-import { validateNip98Header } from './nip98.mjs';
+import { validateNip98Header, normalizeUrl } from './nip98.mjs';
 
 describe('validateNip98Header', () => {
   let sk, pk;
@@ -111,5 +111,157 @@ describe('validateNip98Header', () => {
     const result = await validateNip98Header(header, 'https://x/y', 'POST');
     expect(result.valid).toBe(false);
     expect(result.error).toMatch(/Signature/);
+  });
+
+  describe('URL canonicalization', () => {
+    it('accepts signed https://host:443/ when request is https://host/', async () => {
+      const header = signNip98('https://moderation-api.divine.video:443/api/delete/abc123', 'POST');
+      const result = await validateNip98Header(
+        header,
+        'https://moderation-api.divine.video/api/delete/abc123',
+        'POST'
+      );
+      expect(result.valid).toBe(true);
+    });
+
+    it('accepts signed http://host:80/ when request is http://host/', async () => {
+      const header = signNip98('http://moderation-api.divine.video:80/api/delete/abc123', 'POST');
+      const result = await validateNip98Header(
+        header,
+        'http://moderation-api.divine.video/api/delete/abc123',
+        'POST'
+      );
+      expect(result.valid).toBe(true);
+    });
+
+    it('accepts uppercase scheme and host', async () => {
+      const header = signNip98('HTTPS://Moderation-API.Divine.Video/api/delete/abc123', 'POST');
+      const result = await validateNip98Header(
+        header,
+        'https://moderation-api.divine.video/api/delete/abc123',
+        'POST'
+      );
+      expect(result.valid).toBe(true);
+    });
+
+    it('accepts root URL with and without trailing slash', async () => {
+      const header = signNip98('https://moderation-api.divine.video', 'POST');
+      const result = await validateNip98Header(
+        header,
+        'https://moderation-api.divine.video/',
+        'POST'
+      );
+      expect(result.valid).toBe(true);
+    });
+
+    it('strips fragment when comparing', async () => {
+      const header = signNip98('https://moderation-api.divine.video/api/delete/abc123#frag', 'POST');
+      const result = await validateNip98Header(
+        header,
+        'https://moderation-api.divine.video/api/delete/abc123',
+        'POST'
+      );
+      expect(result.valid).toBe(true);
+    });
+
+    it('keeps non-root trailing slash distinct (not equivalent resources)', async () => {
+      const header = signNip98('https://moderation-api.divine.video/api/delete/abc123/', 'POST');
+      const result = await validateNip98Header(
+        header,
+        'https://moderation-api.divine.video/api/delete/abc123',
+        'POST'
+      );
+      expect(result.valid).toBe(false);
+      expect(result.error).toMatch(/does not match/);
+    });
+
+    it('keeps different paths distinct', async () => {
+      const header = signNip98('https://moderation-api.divine.video/api/delete/abc123', 'POST');
+      const result = await validateNip98Header(
+        header,
+        'https://moderation-api.divine.video/api/delete/xyz789',
+        'POST'
+      );
+      expect(result.valid).toBe(false);
+    });
+
+    it('rejects mismatched host even after canonicalization', async () => {
+      const header = signNip98('https://evil.example.com/api/delete/abc123', 'POST');
+      const result = await validateNip98Header(
+        header,
+        'https://moderation-api.divine.video/api/delete/abc123',
+        'POST'
+      );
+      expect(result.valid).toBe(false);
+    });
+
+    it('rejects an unparseable u tag as a URL', async () => {
+      const header = signNip98('not a url', 'POST');
+      const result = await validateNip98Header(header, 'https://x/y', 'POST');
+      expect(result.valid).toBe(false);
+      expect(result.error).toMatch(/canonicalization/);
+    });
+
+    it('leaves the existing replay-window check unchanged (expired event still rejected)', async () => {
+      const event = finalizeEvent({
+        kind: 27235,
+        created_at: Math.floor(Date.now() / 1000) - 120,
+        tags: [['u', 'https://x/y'], ['method', 'POST']],
+        content: ''
+      }, sk);
+      const header = `Nostr ${btoa(JSON.stringify(event))}`;
+      const result = await validateNip98Header(header, 'https://x/y', 'POST');
+      expect(result.valid).toBe(false);
+      expect(result.error).toMatch(/outside.*window/);
+    });
+
+    it('leaves the existing method check unchanged (method mismatch rejected)', async () => {
+      const header = signNip98('https://x/y', 'GET');
+      const result = await validateNip98Header(header, 'https://x/y', 'POST');
+      expect(result.valid).toBe(false);
+      expect(result.error).toMatch(/method/);
+    });
+  });
+
+  describe('normalizeUrl helper', () => {
+    it('normalizes explicit https default port', () => {
+      expect(normalizeUrl('https://x:443/path')).toBe('https://x/path');
+    });
+
+    it('normalizes explicit http default port', () => {
+      expect(normalizeUrl('http://x:80/path')).toBe('http://x/path');
+    });
+
+    it('preserves non-default port', () => {
+      expect(normalizeUrl('https://x:8443/path')).toBe('https://x:8443/path');
+    });
+
+    it('lowercases scheme and host', () => {
+      expect(normalizeUrl('HTTPS://X.Example.COM/path')).toBe('https://x.example.com/path');
+    });
+
+    it('adds root trailing slash', () => {
+      expect(normalizeUrl('https://x')).toBe('https://x/');
+    });
+
+    it('preserves non-root path as-is', () => {
+      expect(normalizeUrl('https://x/foo')).toBe('https://x/foo');
+      expect(normalizeUrl('https://x/foo/')).toBe('https://x/foo/');
+    });
+
+    it('strips fragment', () => {
+      expect(normalizeUrl('https://x/path#frag')).toBe('https://x/path');
+    });
+
+    it('strips userinfo', () => {
+      expect(normalizeUrl('https://user:pass@x/path')).toBe('https://x/path');
+    });
+
+    it('returns null for unparseable input', () => {
+      expect(normalizeUrl('not a url')).toBeNull();
+      expect(normalizeUrl('')).toBeNull();
+      expect(normalizeUrl(null)).toBeNull();
+      expect(normalizeUrl(undefined)).toBeNull();
+    });
   });
 });

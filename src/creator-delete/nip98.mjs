@@ -9,6 +9,44 @@ import { verifyEvent } from 'nostr-tools/pure';
 const CLOCK_DRIFT_SECONDS = 60;
 const EXPECTED_KIND = 27235;
 
+/**
+ * Canonicalize a URL for NIP-98 `u` tag comparison. Normalizes forms that are
+ * semantically equivalent but textually distinct so that a signed `u` tag from
+ * a well-behaved client matches the request URL we build server-side.
+ *
+ * What normalizes:
+ * - Scheme and host case (`HTTPS://Example.COM` → `https://example.com`).
+ * - Explicit default ports (`https://x:443/path` → `https://x/path`,
+ *   `http://x:80/path` → `http://x/path`).
+ * - Root path (`https://x` → `https://x/`).
+ * - Fragment stripped (fragments never reach the server).
+ * - Userinfo stripped (not expected on API auth URLs; normalized away so a
+ *   stray `user@host` form doesn't mismatch).
+ *
+ * What does NOT normalize (documented behavior — signer and verifier must agree):
+ * - Non-root trailing slash (`/path` vs `/path/` are distinct resources).
+ * - Query parameter ordering.
+ * - Percent-encoding of reserved or unreserved characters (the URL constructor
+ *   preserves the encoding as-received). If a signer produces `%7E` and the
+ *   request URL has `~`, they will not match. Clients should build both sides
+ *   with the same serialization; the typical path is `new URL(x).toString()`.
+ *
+ * Returns `null` if the input cannot be parsed as a URL. Callers must treat
+ * `null === null` as a mismatch, not a match.
+ */
+function normalizeUrl(url) {
+  if (typeof url !== 'string' || url.length === 0) return null;
+  try {
+    const u = new URL(url);
+    u.hash = '';
+    u.username = '';
+    u.password = '';
+    return u.toString();
+  } catch (e) {
+    return null;
+  }
+}
+
 export async function validateNip98Header(authorizationHeader, expectedUrl, expectedMethod) {
   if (!authorizationHeader || !authorizationHeader.startsWith('Nostr ')) {
     return { valid: false, error: 'Missing or malformed Authorization header (expected "Nostr <base64>")' };
@@ -40,8 +78,17 @@ export async function validateNip98Header(authorizationHeader, expectedUrl, expe
   const uTag = event.tags.find(t => t[0] === 'u')?.[1];
   const methodTag = event.tags.find(t => t[0] === 'method')?.[1];
 
-  if (uTag !== expectedUrl) {
-    return { valid: false, error: `u tag '${uTag}' does not match expected URL '${expectedUrl}'` };
+  const normalizedUTag = normalizeUrl(uTag);
+  const normalizedExpectedUrl = normalizeUrl(expectedUrl);
+  if (
+    normalizedUTag === null ||
+    normalizedExpectedUrl === null ||
+    normalizedUTag !== normalizedExpectedUrl
+  ) {
+    return {
+      valid: false,
+      error: `u tag '${uTag}' does not match expected URL '${expectedUrl}' after canonicalization`,
+    };
   }
 
   if ((methodTag || '').toUpperCase() !== expectedMethod.toUpperCase()) {
@@ -54,3 +101,7 @@ export async function validateNip98Header(authorizationHeader, expectedUrl, expe
 
   return { valid: true, pubkey: event.pubkey };
 }
+
+// Exported for tests so callers can pin behavior without invoking the full
+// validator.
+export { normalizeUrl };
