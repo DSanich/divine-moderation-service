@@ -18,7 +18,6 @@ import dashboardHTML from './admin/dashboard.html';
 import swipeReviewHTML from './admin/swipe-review.html';
 import messagesHTML from './admin/messages.html';
 import { initReportsTable, addReport } from './reports.mjs';
-import { initOffenderTable, updateUploaderStats, getUploaderStats } from './offender-tracker.mjs';
 import { initUploaderEnforcementTable, getUploaderEnforcement, setUploaderEnforcement, applyUploaderEnforcementToResult } from './uploader-enforcement.mjs';
 import { formatForStorage, formatForGorse, formatForFunnelcake } from './classification/pipeline.mjs';
 import { topicsToLabels, topicsToWeightedFeatures } from './classification/topic-extractor.mjs';
@@ -504,14 +503,10 @@ async function enrichAdminLookupVideo(video, env) {
   }
 
   if (enriched.uploaded_by) {
-    const [uploaderStats, uploaderEnforcement] = await Promise.all([
-      getUploaderStats(env.BLOSSOM_DB, enriched.uploaded_by).catch(() => null),
-      getUploaderEnforcement(env.BLOSSOM_DB, enriched.uploaded_by).catch(() => null)
-    ]);
+    const uploaderEnforcement = await getUploaderEnforcement(env.BLOSSOM_DB, enriched.uploaded_by).catch(() => null);
 
     enriched = {
       ...enriched,
-      uploaderStats,
       uploaderEnforcement: uploaderEnforcement || {
         pubkey: enriched.uploaded_by,
         approval_required: false,
@@ -931,8 +926,6 @@ export default {
       return hostMismatchResponse(requestId, hostname, url.pathname, expectedHost);
     }
 
-    // Ensure offender tracking table exists (idempotent)
-    await initOffenderTable(env.BLOSSOM_DB);
     await initUploaderEnforcementTable(env.BLOSSOM_DB);
 
     // Ensure reports table exists
@@ -3682,15 +3675,6 @@ async function runMigration() {
         console.log(`[MODERATION] Step 8: Handling result (action=${result.action})`);
         await handleModerationResult(result, env);
         console.log(`[MODERATION] Step 9: Result handled`);
-
-        // Update uploader stats for repeat offender tracking
-        if (result.uploadedBy) {
-          try {
-            await updateUploaderStats(env.BLOSSOM_DB, result.uploadedBy, result.action);
-          } catch (statsErr) {
-            console.error(`[MODERATION] Failed to update uploader stats:`, statsErr.message);
-          }
-        }
 
         // Acknowledge successful processing
         message.ack();
