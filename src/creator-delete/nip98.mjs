@@ -14,14 +14,15 @@ const EXPECTED_KIND = 27235;
  * semantically equivalent but textually distinct so that a signed `u` tag from
  * a well-behaved client matches the request URL we build server-side.
  *
- * What normalizes:
- * - Scheme and host case (`HTTPS://Example.COM` → `https://example.com`).
- * - Explicit default ports (`https://x:443/path` → `https://x/path`,
- *   `http://x:80/path` → `http://x/path`).
- * - Root path (`https://x` → `https://x/`).
- * - Fragment stripped (fragments never reach the server).
- * - Userinfo stripped (not expected on API auth URLs; normalized away so a
- *   stray `user@host` form doesn't mismatch).
+ * Explicit behaviors this helper performs:
+ * - Strip fragment (never reaches the server).
+ * - Strip userinfo (see comment at the assignment below).
+ *
+ * Behaviors the WHATWG URL constructor performs for us (stable across every
+ * JS runtime that hosts CF Workers):
+ * - Lowercase scheme and host.
+ * - Strip explicit default ports (`:443` on https, `:80` on http).
+ * - Normalize a bare root (`https://x`) to `https://x/`.
  *
  * What does NOT normalize (documented behavior — signer and verifier must agree):
  * - Non-root trailing slash (`/path` vs `/path/` are distinct resources).
@@ -39,6 +40,13 @@ function normalizeUrl(url) {
   try {
     const u = new URL(url);
     u.hash = '';
+    // Strip userinfo. API auth URLs never carry credentials, so a signed
+    // `https://user@host/path` is treated as equivalent to `https://host/path`.
+    // Intentional: clients that accidentally include userinfo in their signed
+    // `u` tag should still match the server's clean expected URL. A malicious
+    // signer cannot exploit this to forge auth because the signature is bound
+    // to the original event (including the original u tag), not to the
+    // normalized form used only for comparison.
     u.username = '';
     u.password = '';
     return u.toString();
