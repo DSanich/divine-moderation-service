@@ -55,6 +55,8 @@ export function isCanonicalLabel(label) {
 export function classifierCategoryToLabels(category, scores) {
   const map = {
     nudity: ['nudity'],
+    sexual: ['sexual'],
+    porn: ['porn'],
     violence: ['violence'],
     gore: ['graphic-media'],
     offensive: ['hate'],

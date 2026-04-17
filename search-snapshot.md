@@ -1,0 +1,19 @@
+- generic [ref=e2]:
+  - region "Notifications (F8)":
+    - list
+  - region "Notifications alt+T"
+  - complementary [ref=e3]:
+    - button "Go to home" [ref=e5] [cursor=pointer]:
+      - img "Divine" [ref=e6]
+    - generic [ref=e7]:
+      - navigation [ref=e8]
+      - generic [ref=e146]
+      - button "RSS Feeds" [ref=e23] [cursor=pointer]
+      - button "Dark mode" [ref=e32] [cursor=pointer]
+      - 'button "Language: English" [ref=e39] [cursor=pointer]'
+      - button "Log in" [ref=e47] [cursor=pointer]
+      - generic [ref=e49]
+  - main [ref=e67]:
+    - main [ref=e69]:
+      - generic [ref=e70]
+      - generic [ref=e81]

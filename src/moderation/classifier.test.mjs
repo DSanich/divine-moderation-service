@@ -24,8 +24,8 @@ describe('Moderation Classifier', () => {
   it('should classify medium scores as REVIEW', () => {
     const result = classifyModerationResult({
       maxScores: {
-        nudity: 0.65,
-        violence: 0.3
+        nudity: 0.1,
+        violence: 0.65
       }
     });
 
@@ -37,8 +37,8 @@ describe('Moderation Classifier', () => {
   it('should classify scores above quarantine threshold as QUARANTINE', () => {
     const result = classifyModerationResult({
       maxScores: {
-        nudity: 0.75,
-        violence: 0.3
+        nudity: 0.1,
+        violence: 0.75
       }
     });
 
@@ -47,17 +47,47 @@ describe('Moderation Classifier', () => {
     expect(result.reason).toContain('quarantined');
   });
 
-  it('should classify high nudity as AGE_RESTRICTED', () => {
+  it('keeps benign nudity SAFE when no explicit sexual signal is present', () => {
     const result = classifyModerationResult({
       maxScores: {
-        nudity: 0.85,
-        violence: 0.1
+        nudity: 0.92,
+        sexual: 0,
+        porn: 0
+      }
+    });
+
+    expect(result.action).toBe('SAFE');
+    expect(result.category).toBeNull();
+  });
+
+  it('should classify high sexual content as AGE_RESTRICTED', () => {
+    const result = classifyModerationResult({
+      maxScores: {
+        nudity: 0.1,
+        sexual: 0.85,
+        porn: 0
       }
     });
 
     expect(result.action).toBe('AGE_RESTRICTED');
     expect(result.severity).toBe('high');
-    expect(result.reason).toContain('Adult');
+    expect(result.category).toBe('sexual');
+    expect(result.reason).toContain('Sexual');
+  });
+
+  it('should classify high porn content as PERMANENT_BAN', () => {
+    const result = classifyModerationResult({
+      maxScores: {
+        nudity: 0.1,
+        sexual: 0.1,
+        porn: 0.9
+      }
+    });
+
+    expect(result.action).toBe('PERMANENT_BAN');
+    expect(result.severity).toBe('critical');
+    expect(result.category).toBe('porn');
+    expect(result.reason).toContain('Porn');
   });
 
   it('should classify high violence as AGE_RESTRICTED', () => {
@@ -84,8 +114,8 @@ describe('Moderation Classifier', () => {
     // Score 0.85: above default quarantine (0.7) but below env high (0.9) → QUARANTINE
     const result = classifyModerationResult({
       maxScores: {
-        nudity: 0.85,
-        violence: 0.1
+        nudity: 0.1,
+        sexual: 0.85
       }
     }, env);
 
@@ -100,8 +130,8 @@ describe('Moderation Classifier', () => {
     // Score 0.75: above default medium (0.6) but below custom quarantine (0.8) → REVIEW
     const result = classifyModerationResult({
       maxScores: {
-        nudity: 0.75,
-        violence: 0.1
+        nudity: 0.1,
+        sexual: 0.75
       }
     }, env);
 
@@ -111,8 +141,8 @@ describe('Moderation Classifier', () => {
   it('should use default thresholds when env not provided', () => {
     const result = classifyModerationResult({
       maxScores: {
-        nudity: 0.85,
-        violence: 0.1
+        nudity: 0.1,
+        sexual: 0.85
       }
     });
 
@@ -123,17 +153,21 @@ describe('Moderation Classifier', () => {
     const result = classifyModerationResult({
       maxScores: {
         nudity: 0.65,
+        sexual: 0.45,
+        porn: 0.2,
         violence: 0.45,
         ai_generated: 0.2
       }
     });
 
     expect(result.scores.nudity).toBe(0.65);
+    expect(result.scores.sexual).toBe(0.45);
+    expect(result.scores.porn).toBe(0.2);
     expect(result.scores.violence).toBe(0.45);
     expect(result.scores.ai_generated).toBe(0.2);
     expect(result.scores.gore).toBe(0);
     expect(result.scores.weapon).toBe(0);
-    expect(Object.keys(result.scores).length).toBe(18);
+    expect(Object.keys(result.scores).length).toBe(20);
   });
 
   it('should identify primary concern', () => {

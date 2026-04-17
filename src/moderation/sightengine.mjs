@@ -73,6 +73,8 @@ function analyzeFrames(frames) {
   // Initialize max scores for all categories
   const maxScores = {
     nudity: 0,
+    sexual: 0,
+    porn: 0,
     violence: 0,
     ai_generated: 0,
     deepfake: 0,
@@ -123,25 +125,27 @@ function analyzeFrames(frames) {
 
     // NUDITY-2.1: Detailed adult content classification
     // Support both old format (raw/partial) and new format (detailed categories)
-    const nudityIntensity = Math.max(
+    const broadNudity = Math.max(
       frame.nudity?.raw || 0,  // Legacy support
       frame.nudity?.partial || 0,  // Legacy support
-      frame.nudity?.sexual_activity || 0,
-      frame.nudity?.sexual_display || 0,
-      frame.nudity?.erotica || 0,
-      frame.nudity?.very_suggestive || 0,
       frame.nudity?.suggestive || 0,
       frame.nudity?.mildly_suggestive || 0
     );
     const nuditySuggestive = Math.max(
       frame.nudity?.visibly_undressed || 0,
-      frame.nudity?.sextoy || 0,
-      frame.nudity?.suggestive_focus || 0,
-      frame.nudity?.suggestive_pose || 0,
       frame.nudity?.lingerie || 0,
       frame.nudity?.male_underwear || 0
     );
-    frameScores.nudity = Math.max(nudityIntensity, nuditySuggestive);
+    frameScores.nudity = Math.max(broadNudity, nuditySuggestive);
+    frameScores.sexual = Math.max(
+      frame.nudity?.sexual_display || 0,
+      frame.nudity?.erotica || 0,
+      frame.nudity?.very_suggestive || 0,
+      frame.nudity?.sextoy || 0,
+      frame.nudity?.suggestive_focus || 0,
+      frame.nudity?.suggestive_pose || 0
+    );
+    frameScores.porn = frame.nudity?.sexual_activity || 0;
     frameDetails.nudity = {
       sexual_activity: frame.nudity?.sexual_activity || 0,
       sexual_display: frame.nudity?.sexual_display || 0,
@@ -150,6 +154,8 @@ function analyzeFrames(frames) {
       suggestive: frame.nudity?.suggestive || 0,
       visibly_undressed: frame.nudity?.visibly_undressed || 0,
       sextoy: frame.nudity?.sextoy || 0,
+      suggestive_focus: frame.nudity?.suggestive_focus || 0,
+      suggestive_pose: frame.nudity?.suggestive_pose || 0,
       lingerie: frame.nudity?.lingerie || 0,
       male_underwear: frame.nudity?.male_underwear || 0
     };

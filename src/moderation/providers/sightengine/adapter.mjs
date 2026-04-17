@@ -56,6 +56,8 @@ export class SightengineProvider extends BaseModerationProvider {
       const normalized = {
         scores: {
           nudity: rawResult.maxScores?.nudity || 0,
+          sexual: rawResult.maxScores?.sexual || 0,
+          porn: rawResult.maxScores?.porn || 0,
           violence: rawResult.maxScores?.violence || 0,
           gore: rawResult.maxScores?.gore || 0,
           offensive: rawResult.maxScores?.offensive || 0,
