@@ -12,20 +12,25 @@ export const PER_PUBKEY_LIMIT = 5;
 export const PER_IP_LIMIT = 30;
 export const RATE_WINDOW_SECONDS = 60;
 
+function logRequest(t0, kind5_id, status_code, extra = {}) {
+  console.log(JSON.stringify({
+    event: 'creator_delete.sync.request',
+    status_code,
+    latency_ms: Date.now() - t0,
+    kind5_id: kind5_id || null,
+    ...extra
+  }));
+}
+
 export async function handleSyncDelete(request, deps) {
   const t0 = Date.now();
-  const { db, kv, fetchKind5WithRetry, fetchTargetEvent, callBlossomDelete, budgetMs = 8000 } = deps;
+  const { db, kv, ctx, fetchKind5WithRetry, fetchTargetEvent, callBlossomDelete, budgetMs = 8000 } = deps;
 
   const url = new URL(request.url);
   const kind5_id = url.pathname.split('/').pop();
 
   if (!kind5_id || !/^[a-f0-9]{64}$/i.test(kind5_id)) {
-    console.log(JSON.stringify({
-      event: 'creator_delete.sync.request',
-      status_code: 400,
-      latency_ms: Date.now() - t0,
-      kind5_id: kind5_id || null
-    }));
+    logRequest(t0, kind5_id, 400);
     return jsonResponse(400, { error: 'Invalid kind5_id' });
   }
 
@@ -33,12 +38,7 @@ export async function handleSyncDelete(request, deps) {
   const clientIp = request.headers.get('CF-Connecting-IP') || 'unknown';
   const ipCheck = await checkRateLimit(kv, { key: `ip:${clientIp}`, limit: PER_IP_LIMIT, windowSeconds: RATE_WINDOW_SECONDS });
   if (!ipCheck.allowed) {
-    console.log(JSON.stringify({
-      event: 'creator_delete.sync.request',
-      status_code: 429,
-      latency_ms: Date.now() - t0,
-      kind5_id: kind5_id || null
-    }));
+    logRequest(t0, kind5_id, 429);
     return jsonResponse(429, {
       error: 'Rate limit exceeded',
       retry_after_seconds: ipCheck.retryAfterSeconds || 0
@@ -47,24 +47,14 @@ export async function handleSyncDelete(request, deps) {
 
   const auth = await validateNip98Header(request.headers.get('Authorization'), url.toString(), 'POST');
   if (!auth.valid) {
-    console.log(JSON.stringify({
-      event: 'creator_delete.sync.request',
-      status_code: 401,
-      latency_ms: Date.now() - t0,
-      kind5_id: kind5_id || null
-    }));
+    logRequest(t0, kind5_id, 401);
     return jsonResponse(401, { error: `NIP-98 validation failed: ${auth.error}` });
   }
 
   // Per-pubkey rate limit AFTER NIP-98 (pubkey only known after validation)
   const pubkeyCheck = await checkRateLimit(kv, { key: `pubkey:${auth.pubkey}`, limit: PER_PUBKEY_LIMIT, windowSeconds: RATE_WINDOW_SECONDS });
   if (!pubkeyCheck.allowed) {
-    console.log(JSON.stringify({
-      event: 'creator_delete.sync.request',
-      status_code: 429,
-      latency_ms: Date.now() - t0,
-      kind5_id: kind5_id || null
-    }));
+    logRequest(t0, kind5_id, 429);
     return jsonResponse(429, {
       error: 'Rate limit exceeded',
       retry_after_seconds: pubkeyCheck.retryAfterSeconds || 0
@@ -73,23 +63,20 @@ export async function handleSyncDelete(request, deps) {
 
   const kind5 = await fetchKind5WithRetry(kind5_id);
   if (!kind5) {
-    console.log(JSON.stringify({
-      event: 'creator_delete.sync.request',
-      status_code: 404,
-      latency_ms: Date.now() - t0,
-      kind5_id: kind5_id || null
-    }));
+    logRequest(t0, kind5_id, 404);
     return jsonResponse(404, { error: 'Kind 5 not found on Funnelcake after retries' });
   }
 
   if (kind5.pubkey !== auth.pubkey) {
-    console.log(JSON.stringify({
-      event: 'creator_delete.sync.request',
-      status_code: 403,
-      latency_ms: Date.now() - t0,
-      kind5_id: kind5_id || null
-    }));
+    logRequest(t0, kind5_id, 403);
     return jsonResponse(403, { error: 'Caller pubkey does not match kind 5 author' });
+  }
+
+  // Reject kind 5 with no e-tags upfront: produces no targets, would otherwise 200 with empty list
+  const hasETag = (kind5.tags || []).some(t => t[0] === 'e' && t[1]);
+  if (!hasETag) {
+    logRequest(t0, kind5_id, 400, { reason: 'no_e_tags' });
+    return jsonResponse(400, { error: 'Kind 5 event has no e-tags; nothing to delete' });
   }
 
   const deadline = Date.now() + budgetMs;
@@ -100,16 +87,25 @@ export async function handleSyncDelete(request, deps) {
     triggerLabel: 'sync'
   });
 
+  // When the budget elapses we return 202 and let processKind5 keep running.
+  // ctx.waitUntil keeps the Worker alive past the Response; without it the
+  // runtime cancels the promise mid-Blossom-call and recovery waits on the
+  // next cron tick (~1 min latency).
+  if (ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(processing.catch(err => {
+      console.error(JSON.stringify({
+        event: 'creator_delete.sync.waituntil_error',
+        kind5_id,
+        error: err?.message
+      }));
+    }));
+  }
+
   const timeoutPromise = new Promise(resolve => setTimeout(() => resolve({ budgetExceeded: true }), budgetMs));
   const raceResult = await Promise.race([processing, timeoutPromise]);
 
   if (raceResult.budgetExceeded) {
-    console.log(JSON.stringify({
-      event: 'creator_delete.sync.request',
-      status_code: 202,
-      latency_ms: Date.now() - t0,
-      kind5_id: kind5_id || null
-    }));
+    logRequest(t0, kind5_id, 202);
     return jsonResponse(202, {
       kind5_id,
       status: 'in_progress',
@@ -121,13 +117,7 @@ export async function handleSyncDelete(request, deps) {
   const anyInProgress = raceResult.targets.some(t => t.status === 'in_progress');
 
   if (anyInProgress && Date.now() < deadline) {
-    // One target still had an in-progress existing row. Return 202.
-    console.log(JSON.stringify({
-      event: 'creator_delete.sync.request',
-      status_code: 202,
-      latency_ms: Date.now() - t0,
-      kind5_id: kind5_id || null
-    }));
+    logRequest(t0, kind5_id, 202);
     return jsonResponse(202, {
       kind5_id,
       status: 'in_progress',
@@ -135,12 +125,7 @@ export async function handleSyncDelete(request, deps) {
     });
   }
 
-  console.log(JSON.stringify({
-    event: 'creator_delete.sync.request',
-    status_code: 200,
-    latency_ms: Date.now() - t0,
-    kind5_id: kind5_id || null
-  }));
+  logRequest(t0, kind5_id, 200);
   return jsonResponse(200, {
     kind5_id,
     status: anyFailed ? 'failed' : 'success',

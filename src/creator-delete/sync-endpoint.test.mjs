@@ -135,4 +135,32 @@ describe('handleSyncDelete', () => {
     const body = await response.json();
     expect(body.status).toBe('in_progress');
   });
+
+  it('returns 400 when kind 5 has no e-tags', async () => {
+    const kind5 = { id: KIND5_ID, pubkey: pk, tags: [['p', pk]] }; // no e-tag
+    deps.fetchKind5WithRetry.mockResolvedValueOnce(kind5);
+    const url = `https://moderation-api.divine.video/api/delete/${KIND5_ID}`;
+    const request = new Request(url, { method: 'POST', headers: { Authorization: signNip98(url, 'POST') } });
+    const response = await handleSyncDelete(request, deps);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/no e-tags/i);
+    expect(deps.fetchTargetEvent).not.toHaveBeenCalled();
+    expect(deps.callBlossomDelete).not.toHaveBeenCalled();
+  });
+
+  it('calls ctx.waitUntil with the processing promise when budget is exceeded', async () => {
+    const kind5 = { id: KIND5_ID, pubkey: pk, tags: [['e', 't1']] };
+    deps.fetchKind5WithRetry.mockResolvedValueOnce(kind5);
+    deps.fetchTargetEvent.mockResolvedValueOnce({ id: 't1', pubkey: pk, tags: [['imeta', `x ${SHA_C}`]] });
+    deps.callBlossomDelete.mockReturnValueOnce(new Promise(() => {})); // never resolves
+
+    const ctx = { waitUntil: vi.fn() };
+    const url = `https://moderation-api.divine.video/api/delete/${KIND5_ID}`;
+    const request = new Request(url, { method: 'POST', headers: { Authorization: signNip98(url, 'POST') } });
+    const response = await handleSyncDelete(request, { ...deps, ctx, budgetMs: 50 });
+    expect(response.status).toBe(202);
+    expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
+    expect(ctx.waitUntil.mock.calls[0][0]).toBeInstanceOf(Promise);
+  });
 });

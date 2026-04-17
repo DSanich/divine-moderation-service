@@ -25,10 +25,22 @@ export function makeFakeD1() {
             return { meta: { changes: 1, rows_written: 1 } };
           }
           if (this._sql.startsWith('UPDATE')) {
+            // Atomic re-claim: UPDATE ... WHERE kind5_id=? AND target_event_id=? AND accepted_at=?
+            // binds: [new_accepted_at, kind5_id, target_event_id, old_accepted_at]
+            if (this._sql.includes('AND accepted_at = ?')) {
+              const [newAccepted, kind5_id, target_event_id, oldAccepted] = this._binds;
+              const target_key = `${kind5_id}:${target_event_id}`;
+              const existing = rows.get(target_key);
+              if (!existing || existing.accepted_at !== oldAccepted) {
+                return { meta: { changes: 0, rows_written: 0 } };
+              }
+              rows.set(target_key, { ...existing, accepted_at: newAccepted, status: 'accepted' });
+              return { meta: { changes: 1, rows_written: 1 } };
+            }
+            // Other UPDATEs: kind5_id and target_event_id are the last two binds.
             const target_key = `${this._binds[this._binds.length - 2]}:${this._binds[this._binds.length - 1]}`;
             const existing = rows.get(target_key);
             if (existing) {
-              // Very simplified: we're just testing the wrappers, not SQL correctness.
               rows.set(target_key, { ...existing, _updated: true });
               return { meta: { changes: 1 } };
             }

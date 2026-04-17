@@ -5,7 +5,7 @@
 // ABOUTME: Uses makeFakeD1 from ./test-helpers.mjs; callBlossomDelete and fetchTargetEvent are vi.fn mocks.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { processKind5 } from './process.mjs';
+import { processKind5, MAX_TARGETS_PER_KIND5 } from './process.mjs';
 import { makeFakeD1 } from './test-helpers.mjs';
 
 describe('processKind5', () => {
@@ -117,5 +117,22 @@ describe('processKind5', () => {
     expect(result.targets[0].status).toBe('success');
     expect(callBlossomDelete).not.toHaveBeenCalled();
     expect(fetchTargetEvent).not.toHaveBeenCalled();
+  });
+
+  it('caps processing at MAX_TARGETS_PER_KIND5 when given more e-tags', async () => {
+    // Build a kind 5 with N+5 e-tags. Only the first MAX should be processed.
+    const overflow = 5;
+    const eTags = [];
+    for (let i = 0; i < MAX_TARGETS_PER_KIND5 + overflow; i++) {
+      eTags.push(['e', `t${i.toString().padStart(3, '0')}`]);
+    }
+    const kind5 = { id: 'k1', pubkey: 'pub1', tags: eTags };
+    fetchTargetEvent.mockResolvedValue({ id: 't', pubkey: 'pub1', tags: [['imeta', `x ${SHA_C}`]] });
+    callBlossomDelete.mockResolvedValue({ success: true, status: 200 });
+
+    const result = await processKind5(kind5, { db, fetchTargetEvent, callBlossomDelete });
+
+    expect(result.targets).toHaveLength(MAX_TARGETS_PER_KIND5);
+    expect(callBlossomDelete).toHaveBeenCalledTimes(MAX_TARGETS_PER_KIND5);
   });
 });

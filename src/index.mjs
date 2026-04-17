@@ -2026,7 +2026,7 @@ export default {
   /**
    * HTTP handler for testing and admin dashboard
    */
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const startTime = Date.now();
     const requestId = crypto.randomUUID().substring(0, 8);
@@ -4154,6 +4154,7 @@ async function runMigration() {
         return handleSyncDelete(request, {
           db: env.BLOSSOM_DB,
           kv: env.MODERATION_KV,
+          ctx,
           fetchKind5WithRetry: (id) => fetchKind5WithRetry(id, {
             fetchEventById: (eid) => fetchNostrEventById(eid, [relayUrl], env)
           }),
