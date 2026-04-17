@@ -536,6 +536,55 @@ Track these metrics:
 - API costs
 - Manual review queue size
 
+## Visible-Watermark Detector (AI-generated video)
+
+Most consumer AI video generators stamp a small, visually distinctive mark in a
+fixed corner of every frame. A narrow CNN classifier on 15% corner crops is
+highly effective and runs inside the Worker via `onnxruntime-web`.
+
+Source files:
+
+- `src/moderation/logo_detector.mjs` — extracts TL/TR/BL/BR crops per frame and
+  runs the classifier. `loadModel()` / `runInference()` are stubs today; they
+  become real ONNX calls once `LOGO_DETECTOR_MODEL_URL` is set and the model is
+  trained.
+- `src/moderation/logo_aggregator.mjs` — two-pass majority vote across
+  frames. **Static pass** keyed on `(corner, class)` catches stationary corner
+  marks (Meta sparkle, Veo text, Runway/Kling/Pika/Luma). **Fallback pass**
+  keyed on class alone catches moving watermarks like Sora's wordmark whose
+  corner hops frame-to-frame. A verdict fires when ≥50% of frames flag the
+  same class at confidence ≥0.7. One-off false positives are discarded by
+  design; static matches are preferred over moving matches when both qualify.
+
+### Class → generator mapping
+
+| Class           | Generator                            | Typical mark                            |
+|-----------------|--------------------------------------|-----------------------------------------|
+| `clean`         | —                                    | No visible AI watermark                 |
+| `meta_sparkle`  | Meta Imagine / Movie Gen             | Four-point sparkle icon, lower-left     |
+| `openai_sora`   | OpenAI Sora                          | Moving Sora wordmark                    |
+| `google_veo`    | Google Veo                           | "Veo" text watermark                    |
+| `runway`        | Runway (Gen-2/Gen-3)                 | Corner Runway logo                      |
+| `kling`         | Kuaishou Kling                       | Corner Kling logo                       |
+| `pika`          | Pika Labs                            | Corner Pika logo                        |
+| `luma`          | Luma Dream Machine                   | Corner Luma logo                        |
+| `other_logo`    | Unknown generator / off-taxonomy     | Fallback bucket for novel marks         |
+
+### Meta signal caveat
+
+`meta_sparkle` is our **primary signal for Meta-generated video** until Meta's
+Video Seal invisible-watermark prefixes are published and decodable. Once Video
+Seal detection lands, Meta provenance should be confirmed via the invisible
+payload and the sparkle demoted to a secondary indicator — Meta may retire the
+visible mark on their side at any time.
+
+### Configuration
+
+- `LOGO_DETECTOR_MODEL_URL` (wrangler.toml `[vars]`) — HTTPS URL of the ONNX
+  model file. Empty string leaves the detector on its stub code path (all frames
+  return `clean` with confidence 1.0) so the pipeline runs without the model in
+  dev and in tests.
+
 ## Next Steps
 
 1. Start with basic hash checking
