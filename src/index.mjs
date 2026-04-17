@@ -651,7 +651,7 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
   const cdnUrl = `https://${env.CDN_DOMAIN || 'media.divine.video'}/${hash}`;
   if (hash) {
     const moderatedRow = await env.BLOSSOM_DB.prepare(`
-      SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by, raw_response
+      SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by, raw_response, videoseal
       FROM moderation_results
       WHERE sha256 = ?
     `).bind(hash).first();
@@ -684,7 +684,8 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
         detailedCategories: parseMaybeJson(kvModeration?.detailedCategories, null),
         categoryVerifications: parseMaybeJson(kvModeration?.categoryVerifications, {}) || {},
         cdnUrl: kvModeration?.cdnUrl || cdnUrl,
-        c2pa: (storedRaw && typeof storedRaw === 'object' && storedRaw.c2pa) || null
+        c2pa: (storedRaw && typeof storedRaw === 'object' && storedRaw.c2pa) || null,
+        videoseal: parseMaybeJson(kvModeration?.videoseal, null) || parseMaybeJson(moderatedRow?.videoseal, null)
       }, env);
     }
 
@@ -3457,7 +3458,7 @@ async function runMigration() {
 
       // Query D1 for moderation result
       const d1Result = await env.BLOSSOM_DB.prepare(`
-        SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at
+        SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, videoseal
         FROM moderation_results
         WHERE sha256 = ?
       `).bind(sha256).first();
@@ -3488,6 +3489,7 @@ async function runMigration() {
         provider: d1Result.provider,
         scores: d1Result.scores ? JSON.parse(d1Result.scores) : null,
         categories: d1Result.categories ? JSON.parse(d1Result.categories) : null,
+        videoseal: parseMaybeJson(d1Result.videoseal, null),
         moderated_at: d1Result.moderated_at,
         reviewed_by: d1Result.reviewed_by,
         reviewed_at: d1Result.reviewed_at
@@ -3928,7 +3930,14 @@ async function runMigration() {
           continue;
         }
 
-        const { sha256, uploadedBy, uploadedAt, metadata } = validation.data;
+        const {
+          sha256,
+          uploadedBy,
+          uploadedAt,
+          metadata,
+          videoSealPayload,
+          videoSealBitAccuracy
+        } = validation.data;
         console.log(`[MODERATION] Step 2: Message validated for ${sha256}`);
 
         // Check if already moderated (duplicate prevention) - use D1
@@ -3952,7 +3961,9 @@ async function runMigration() {
           sha256,
           uploadedBy,
           uploadedAt,
-          metadata
+          metadata,
+          videoSealPayload,
+          videoSealBitAccuracy
         }, env);
 
         if (result.uploadedBy) {
@@ -3980,8 +3991,8 @@ async function runMigration() {
         await env.BLOSSOM_DB.prepare(`
           INSERT OR REPLACE INTO moderation_results
           (sha256, action, provider, scores, categories, raw_response, moderated_at, uploaded_by,
-           title, author, event_id, content_url, published_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           title, author, event_id, content_url, published_at, videoseal)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           sha256,
           result.action,
@@ -3995,7 +4006,8 @@ async function runMigration() {
           result.nostrContext?.author || null,
           result.nostrEventId || null,
           result.nostrContext?.url || result.cdnUrl || null,
-          result.nostrContext?.publishedAt || null
+          result.nostrContext?.publishedAt || null,
+          JSON.stringify(result.videoseal || null)
         ).run();
         console.log(`[MODERATION] Step 7: D1 write successful`);
 
@@ -4421,4 +4433,3 @@ function blossomFailureResponse(sha256, action, blossomError) {
     headers: { 'Content-Type': 'application/json' }
   });
 }
-

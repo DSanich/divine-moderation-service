@@ -14,6 +14,8 @@
  * @property {number} [metadata.fileSize] - File size in bytes
  * @property {string} [metadata.contentType] - MIME type
  * @property {number} [metadata.duration] - Duration in seconds
+ * @property {string | null} [videoSealPayload] - Upstream Video Seal payload as 64 hex chars
+ * @property {number | null} [videoSealBitAccuracy] - Upstream Video Seal bit accuracy from 0 to 1
  */
 
 const HEX_64_REGEX = /^[0-9a-f]{64}$/i;
@@ -49,6 +51,29 @@ export function validateQueueMessage(message) {
   // Validate uploadedAt
   if (!message.uploadedAt || typeof message.uploadedAt !== 'number') {
     return { valid: false, error: 'uploadedAt is required and must be a number' };
+  }
+
+  if (message.videoSealPayload !== undefined) {
+    if (message.videoSealPayload !== null && typeof message.videoSealPayload !== 'string') {
+      return { valid: false, error: 'videoSealPayload must be null or a string' };
+    }
+    if (typeof message.videoSealPayload === 'string' && !HEX_64_REGEX.test(message.videoSealPayload)) {
+      return { valid: false, error: 'videoSealPayload must be null or 64 hexadecimal characters' };
+    }
+  }
+
+  if (message.videoSealBitAccuracy !== undefined) {
+    if (message.videoSealBitAccuracy !== null && typeof message.videoSealBitAccuracy !== 'number') {
+      return { valid: false, error: 'videoSealBitAccuracy must be null or a number' };
+    }
+    if (
+      typeof message.videoSealBitAccuracy === 'number'
+      && (!Number.isFinite(message.videoSealBitAccuracy)
+        || message.videoSealBitAccuracy < 0
+        || message.videoSealBitAccuracy > 1)
+    ) {
+      return { valid: false, error: 'videoSealBitAccuracy must be null or a number between 0 and 1' };
+    }
   }
 
   // Metadata is optional, no validation needed

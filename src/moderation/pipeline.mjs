@@ -7,6 +7,7 @@
 import { moderateWithFallback } from './providers/index.mjs';
 import { classifyModerationResult, getKVThresholds, kvThresholdsToEnv } from './classifier.mjs';
 import { classifyText, parseVttText } from './text-classifier.mjs';
+import { interpretVideoSealPayload } from './videoseal.mjs';
 import { fetchNostrEventBySha256, parseVideoEventMetadata, isOriginalVine, hasStrongOriginalVineEvidence } from '../nostr/relay-client.mjs';
 import { classifyVideo } from '../classification/pipeline.mjs';
 import { extractTopics } from '../classification/topic-extractor.mjs';
@@ -43,7 +44,7 @@ async function getCachedC2paOrVerify({ sha256, videoUrl, env, fetchFn }) {
   return result;
 }
 
-function buildSignedAiShortCircuitResult({ sha256, uploadedBy, uploadedAt, metadata, videoUrl, nostrContext, nostrEventId, c2pa }) {
+function buildSignedAiShortCircuitResult({ sha256, uploadedBy, uploadedAt, metadata, videoUrl, nostrContext, nostrEventId, c2pa, videoseal }) {
   const claimGenerator = c2pa.claimGenerator || 'unknown';
   const reason = `c2pa-ai-signed:${claimGenerator} — quarantined pending moderator review`;
   return {
@@ -84,6 +85,7 @@ function buildSignedAiShortCircuitResult({ sha256, uploadedBy, uploadedAt, metad
     sceneClassification: null,
     topicProfile: null,
     c2pa,
+    videoseal,
   };
 }
 
@@ -306,7 +308,14 @@ export async function classifyVideoOnly(sha256, env, options = {}) {
  * @returns {Promise<Object>} Complete moderation result with classification
  */
 export async function moderateVideo(videoData, env, fetchFn = fetch) {
-  const { sha256, uploadedBy, uploadedAt, metadata } = videoData;
+  const {
+    sha256,
+    uploadedBy,
+    uploadedAt,
+    metadata,
+    videoSealPayload = null,
+    videoSealBitAccuracy = null
+  } = videoData;
 
   // Validate configuration
   if (!env.CDN_DOMAIN) {
@@ -361,12 +370,13 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
   // Step 2.5: Call divine-inquisitor first so valid_ai_signed content can short-circuit Hive
   const c2pa = await getCachedC2paOrVerify({ sha256, videoUrl, env, fetchFn });
   console.log(`[MODERATION] ${sha256} - C2PA state: ${c2pa.state}${c2pa.claimGenerator ? ` (claim=${c2pa.claimGenerator})` : ''}`);
+  const videoseal = interpretVideoSealPayload(videoSealPayload, videoSealBitAccuracy);
 
   if (c2pa.state === 'valid_ai_signed') {
     console.log(`[MODERATION] ${sha256} - signed-AI short-circuit, skipping Hive and Reality Defender`);
     return buildSignedAiShortCircuitResult({
       sha256, uploadedBy, uploadedAt, metadata,
-      videoUrl, nostrContext, nostrEventId, c2pa,
+      videoUrl, nostrContext, nostrEventId, c2pa, videoseal,
     });
   }
 
@@ -592,5 +602,9 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     // valid_ai_signed is handled earlier via short-circuit; valid_proofmode may have
     // downgraded the action above.
     c2pa,
+
+    // Interpreted upstream Video Seal watermark payload
+    // Always present so downstream consumers can rely on a stable signal shape
+    videoseal
   };
 }

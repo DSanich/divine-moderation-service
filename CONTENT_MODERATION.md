@@ -28,6 +28,14 @@ graph TD
 2. **Multi-stage**: Quick checks first, expensive analysis later
 3. **Fail-safe**: Content remains accessible unless definitively harmful
 
+## Video Seal
+
+Video Seal is a neural watermark embedded in video pixels. Extraction happens upstream in the ingest pipeline because Meta's reference extractor is PyTorch-only; this worker only interprets the extracted queue fields `videoSealPayload` and `videoSealBitAccuracy`.
+
+The moderation pipeline treats Video Seal as an auxiliary provenance signal, not a short-circuit. If the payload is missing or the upstream bit accuracy is below `0.85`, the signal is recorded as not detected. Known prefixes are mapped in [`src/moderation/videoseal.mjs`](./src/moderation/videoseal.mjs); today `0x01` is reserved for Divine attestations (`source: divine`, `isAI: false`, trusted).
+
+Meta prefixes for Facebook and Instagram are intentionally left empty for now. We do not yet have a verified production payload registry from Meta, so adding guessed prefixes would create false confidence. Once a Meta prefix is confirmed empirically, add it to `KNOWN_PAYLOAD_PREFIXES` in `src/moderation/videoseal.mjs`, include its `source`, `isAI`, and `verified` metadata, and extend `src/moderation/videoseal.test.mjs` with a fixture that proves the new mapping.
+
 ## Hook System Design
 
 ### 1. Upload Hook Integration

@@ -5,7 +5,7 @@
 // ABOUTME: Ensures messages from main service have correct structure
 
 import { describe, it, expect } from 'vitest';
-import { validateQueueMessage, QueueMessageSchema } from './queue-message.mjs';
+import { validateQueueMessage } from './queue-message.mjs';
 
 describe('QueueMessage Schema', () => {
   it('should validate a complete queue message', () => {
@@ -79,5 +79,49 @@ describe('QueueMessage Schema', () => {
 
     const result = validateQueueMessage(message);
     expect(result.valid).toBe(true);
+  });
+
+  it('should allow optional Video Seal fields when null or valid', () => {
+    const message = {
+      sha256: 'a'.repeat(64),
+      uploadedAt: Date.now(),
+      videoSealPayload: `01${'b'.repeat(62)}`,
+      videoSealBitAccuracy: 0.92
+    };
+
+    const result = validateQueueMessage(message);
+    expect(result.valid).toBe(true);
+    expect(result.data).toEqual(message);
+
+    const nullResult = validateQueueMessage({
+      sha256: 'c'.repeat(64),
+      uploadedAt: Date.now(),
+      videoSealPayload: null,
+      videoSealBitAccuracy: null
+    });
+
+    expect(nullResult.valid).toBe(true);
+  });
+
+  it('should reject invalid Video Seal payload values', () => {
+    const result = validateQueueMessage({
+      sha256: 'a'.repeat(64),
+      uploadedAt: Date.now(),
+      videoSealPayload: 'not-hex'
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('videoSealPayload');
+  });
+
+  it('should reject invalid Video Seal bit accuracy values', () => {
+    const result = validateQueueMessage({
+      sha256: 'a'.repeat(64),
+      uploadedAt: Date.now(),
+      videoSealBitAccuracy: 1.2
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('videoSealBitAccuracy');
   });
 });

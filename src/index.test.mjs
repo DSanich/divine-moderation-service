@@ -372,6 +372,48 @@ describe('Admin video lookup', () => {
     }
   });
 
+  it('returns persisted videoseal metadata from D1', async () => {
+    const videoseal = {
+      signal: 'videoseal',
+      detected: true,
+      source: 'divine',
+      isAI: false,
+      payload: `01${'e'.repeat(62)}`,
+      confidence: 0.9
+    };
+
+    const env = createEnv({
+      BLOSSOM_DB: createDbMock({
+        moderationResults: new Map([[SHA256, {
+          sha256: SHA256,
+          action: 'SAFE',
+          provider: 'hiveai',
+          scores: JSON.stringify({ nudity: 0.01 }),
+          categories: JSON.stringify(['safe']),
+          moderated_at: '2026-03-07T00:00:00.000Z',
+          reviewed_by: null,
+          reviewed_at: null,
+          videoseal: JSON.stringify(videoseal)
+        }]])
+      })
+    });
+
+    const response = await worker.fetch(
+      new Request(`https://moderation.admin.divine.video/admin/api/video/${SHA256}`, {
+        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' }
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      video: {
+        sha256: SHA256,
+        videoseal
+      }
+    });
+  });
+
   it('uses FunnelCake REST instead of WebSocket when moderated metadata is missing', async () => {
     const originalFetch = globalThis.fetch;
     const originalWebSocket = globalThis.WebSocket;

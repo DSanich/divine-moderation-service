@@ -264,6 +264,34 @@ how to learn the basics so you can understand this concept`;
     });
   });
 
+  describe('videoseal field', () => {
+    it('should attach the interpreted Video Seal signal without changing moderation flow', async () => {
+      const payload = `01${'c'.repeat(62)}`;
+      const mockFetch = buildMockFetch({ vttStatus: 404 });
+
+      const result = await moderateVideo(
+        {
+          sha256,
+          uploadedAt: Date.now(),
+          videoSealPayload: payload,
+          videoSealBitAccuracy: 0.9
+        },
+        baseEnv,
+        mockFetch
+      );
+
+      expect(result.action).toBe('SAFE');
+      expect(result.videoseal).toEqual({
+        signal: 'videoseal',
+        detected: true,
+        source: 'divine',
+        isAI: false,
+        payload,
+        confidence: 0.9
+      });
+    });
+  });
+
   describe('parallel execution', () => {
     it('should run both moderation and classification, returning all results', async () => {
       const vttText = `WEBVTT
