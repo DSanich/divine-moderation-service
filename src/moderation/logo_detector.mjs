@@ -32,6 +32,11 @@ export async function loadModel(modelUrl) {
   return { modelUrl, ready: true };
 }
 
+export async function loadModelFromEnv(env) {
+  const url = env && env.LOGO_DETECTOR_MODEL_URL ? env.LOGO_DETECTOR_MODEL_URL : null;
+  return loadModel(url);
+}
+
 export function cropCorner(frame, corner) {
   if (!CORNERS.includes(corner)) {
     throw new Error(`unknown corner: ${corner}`);

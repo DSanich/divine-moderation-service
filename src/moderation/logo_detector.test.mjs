@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import {
   detectLogos,
   loadModel,
+  loadModelFromEnv,
   runInference,
   cropCorner,
   LOGO_CLASSES,
@@ -45,6 +46,34 @@ describe('logo_detector - loadModel', () => {
 
   it('handles a missing model URL by returning a non-ready handle', async () => {
     const model = await loadModel(null);
+    expect(model.ready).toBe(false);
+    expect(model.modelUrl).toBeNull();
+  });
+});
+
+describe('logo_detector - loadModelFromEnv', () => {
+  it('loads the model from env.LOGO_DETECTOR_MODEL_URL', async () => {
+    const env = { LOGO_DETECTOR_MODEL_URL: 'https://models.divine.video/logo-v1.onnx' };
+    const model = await loadModelFromEnv(env);
+    expect(model).toEqual({
+      modelUrl: 'https://models.divine.video/logo-v1.onnx',
+      ready: true
+    });
+  });
+
+  it('returns a non-ready handle when the env var is empty', async () => {
+    const model = await loadModelFromEnv({ LOGO_DETECTOR_MODEL_URL: '' });
+    expect(model).toEqual({ modelUrl: null, ready: false });
+  });
+
+  it('returns a non-ready handle when the env var is missing entirely', async () => {
+    const model = await loadModelFromEnv({});
+    expect(model.ready).toBe(false);
+    expect(model.modelUrl).toBeNull();
+  });
+
+  it('returns a non-ready handle when env itself is null', async () => {
+    const model = await loadModelFromEnv(null);
     expect(model.ready).toBe(false);
     expect(model.modelUrl).toBeNull();
   });
