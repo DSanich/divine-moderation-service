@@ -4,13 +4,20 @@
 // ABOUTME: Tests for classic Vine enforcement rollback helpers
 // ABOUTME: Verifies rollback candidate matching and enforcement rewrite semantics
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildClassicVineRollbackUpdate,
   executeClassicVineRollback,
   getClassicVineRollbackKvKeys,
-  isClassicVineRollbackCandidate
+  isClassicVineRollbackCandidate,
+  runClassicVineRollback
 } from './classic-vine-rollback.mjs';
+
+const OriginalWebSocket = globalThis.WebSocket;
+
+afterEach(() => {
+  globalThis.WebSocket = OriginalWebSocket;
+});
 
 describe('isClassicVineRollbackCandidate', () => {
   it('accepts explicit Vine platform metadata', () => {
@@ -117,5 +124,76 @@ describe('executeClassicVineRollback', () => {
     expect(writes).toHaveLength(0);
     expect(result.alreadySafe).toBe(true);
     expect(result.blossomNotified).toBe(true);
+  });
+});
+
+describe('runClassicVineRollback', () => {
+  it('previews legacy Vine events discovered by x tag when d is a Vine ID', async () => {
+    const sha256 = 'a'.repeat(64);
+    const event = {
+      id: 'b'.repeat(64),
+      kind: 34236,
+      content: '',
+      created_at: 1465948644,
+      tags: [
+        ['d', 'legacy-vine-id'],
+        ['x', sha256],
+        ['imeta', `url https://media.divine.video/${sha256}`, 'm video/mp4', `x ${sha256}`],
+        ['platform', 'vine'],
+        ['client', 'vine-archive-importer'],
+        ['r', 'https://vine.co/v/legacy-vine-id'],
+        ['published_at', '1465948644']
+      ]
+    };
+
+    class FakeWebSocket {
+      constructor() {
+        this.listeners = {};
+        queueMicrotask(() => this.emit('open'));
+      }
+
+      addEventListener(type, handler) {
+        if (!this.listeners[type]) {
+          this.listeners[type] = [];
+        }
+        this.listeners[type].push(handler);
+      }
+
+      send(message) {
+        const [, subscriptionId, filter] = JSON.parse(message);
+        queueMicrotask(() => {
+          if (filter['#x']?.includes(sha256)) {
+            this.emit('message', { data: JSON.stringify(['EVENT', subscriptionId, event]) });
+          }
+          this.emit('message', { data: JSON.stringify(['EOSE', subscriptionId]) });
+        });
+      }
+
+      close() {
+        queueMicrotask(() => this.emit('close'));
+      }
+
+      emit(type, event = {}) {
+        for (const handler of this.listeners[type] || []) {
+          handler(event);
+        }
+      }
+    }
+
+    globalThis.WebSocket = FakeWebSocket;
+
+    const result = await runClassicVineRollback({
+      mode: 'preview',
+      source: 'sha-list',
+      sha256s: [sha256]
+    }, {});
+
+    expect(result.candidates).toEqual([
+      {
+        sha256,
+        reason: 'confirmed-classic-vine',
+        would_restore: true
+      }
+    ]);
   });
 });

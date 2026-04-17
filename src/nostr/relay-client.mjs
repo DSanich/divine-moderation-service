@@ -4,6 +4,8 @@
 // ABOUTME: Nostr relay WebSocket client for fetching event context
 // ABOUTME: Connects to relay.divine.video to get kind 34236 video events by SHA256
 
+import { extractMediaShaFromEvent } from '../validation.mjs';
+
 async function queryRelay(relayUrl, filter, env = {}, options = {}) {
   return new Promise((resolve, reject) => {
     let ws;
@@ -102,7 +104,8 @@ async function queryRelay(relayUrl, filter, env = {}, options = {}) {
 
 /**
  * Fetch Nostr event for a video SHA256 from relay.
- * The d-tag in kind 34236 video events contains the SHA256 hash directly.
+ * Legacy Vine imports use d=vine_id and expose the media hash via x/imeta x,
+ * while newer content may still use d=sha256.
  *
  * @param {string} sha256 - Video hash
  * @param {string[]} relays - Relay URLs to query
@@ -110,15 +113,30 @@ async function queryRelay(relayUrl, filter, env = {}, options = {}) {
  * @returns {Promise<Object|null>} Nostr event or null if not found
  */
 export async function fetchNostrEventBySha256(sha256, relays = ['wss://relay.divine.video'], env = {}) {
+  const normalizedSha256 = typeof sha256 === 'string' ? sha256.toLowerCase() : sha256;
+
   for (const relay of relays) {
     try {
-      const event = await queryRelay(relay, {
-        kinds: [34236],
-        '#d': [sha256],
-        limit: 1
-      }, env);
-      if (event) {
-        return event;
+      const xTagMatches = await queryRelay(relay, {
+        kinds: [34235, 34236],
+        '#x': [normalizedSha256],
+        limit: 10
+      }, env, { collectAll: true });
+
+      const xTagEvent = xTagMatches.find((event) => extractMediaShaFromEvent(event) === normalizedSha256);
+      if (xTagEvent) {
+        return xTagEvent;
+      }
+
+      const dTagMatches = await queryRelay(relay, {
+        kinds: [34235, 34236],
+        '#d': [normalizedSha256],
+        limit: 10
+      }, env, { collectAll: true });
+
+      const dTagEvent = dTagMatches.find((event) => extractMediaShaFromEvent(event) === normalizedSha256);
+      if (dTagEvent) {
+        return dTagEvent;
       }
     } catch (error) {
       console.error(`[NOSTR] Failed to fetch from ${relay}:`, error);
@@ -157,30 +175,6 @@ export async function fetchNostrVideoEventsByDTag(dTag, relays = ['wss://relay.d
 
   return [];
 }
-
-/**
- * Extract SHA256 from imeta tag parameters
- * imeta format: ["imeta", "url ...", "m video/mp4", "x <sha256>", "image ..."]
- */
-function extractSha256FromImeta(event) {
-  if (!event || !event.tags) return null;
-
-  for (const tag of event.tags) {
-    if (tag[0] === 'imeta') {
-      // Parse space-separated parameters in imeta tag
-      for (let i = 1; i < tag.length; i++) {
-        const param = tag[i];
-        // Look for "x <sha256>" parameter
-        if (param && param.startsWith('x ')) {
-          return param.substring(2).trim();
-        }
-      }
-    }
-  }
-
-  return null;
-}
-
 /**
  * Extract metadata from kind 34236 event tags
  */

@@ -252,6 +252,8 @@ describe('Sightengine Integration', () => {
 
     // Verify all category scores are extracted
     expect(result.maxScores.nudity).toBe(0.1);
+    expect(result.maxScores.sexual).toBe(0);
+    expect(result.maxScores.porn).toBe(0.05);
     expect(result.maxScores.violence).toBe(0.2);
     expect(result.maxScores.gore).toBe(0.3);
     expect(result.maxScores.offensive).toBe(0.4);
@@ -267,6 +269,44 @@ describe('Sightengine Integration', () => {
     expect(result.maxScores.money).toBe(0.05);
     expect(result.maxScores.destruction).toBe(0.25);
     expect(result.maxScores.military).toBe(0.1);
+  });
+
+  it('should separate broad nudity from explicit sexual and porn signals', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: 'success',
+        data: {
+          frames: [
+            {
+              info: { position: 0 },
+              nudity: {
+                male_underwear: 0.6,
+                sexual_display: 0.81,
+                sextoy: 0.7,
+                sexual_activity: 0.93
+              }
+            }
+          ]
+        }
+      })
+    });
+
+    const env = {
+      SIGHTENGINE_API_USER: 'test-user',
+      SIGHTENGINE_API_SECRET: 'test-secret'
+    };
+
+    const result = await moderateVideoWithSightengine(
+      'https://cdn.divine.video/test.mp4',
+      {},
+      env,
+      mockFetch
+    );
+
+    expect(result.maxScores.nudity).toBe(0.6);
+    expect(result.maxScores.sexual).toBe(0.81);
+    expect(result.maxScores.porn).toBe(0.93);
   });
 
   it('should extract detailed subcategories for nudity', async () => {

@@ -7,7 +7,7 @@ Moderators need a reliable way to tell whether a video is likely original legacy
 1. Is this likely an original Vine or other pre-2022 legacy upload?
 2. Who posted it, and what is their moderation and platform history?
 
-This change is guidance-only for now. It does not automatically suppress or downgrade AI-generated moderation outcomes.
+This design was originally guidance-only. As of 2026-04-17 it also covers a single targeted enforcement change for C2PA ProofMode: a cryptographically-valid ProofMode capture attestation downgrades a Hive/RD AI-driven QUARANTINE to REVIEW so a human decides. All other provenance surfaces remain guidance-only. See the "ProofMode Enforcement" section below.
 
 ## Goals
 
@@ -19,7 +19,8 @@ This change is guidance-only for now. It does not automatically suppress or down
 
 ## Non-Goals
 
-- Automatically changing moderation actions based on provenance.
+- Automatically changing moderation actions based on provenance, **except** the one targeted rule in "ProofMode Enforcement" below.
+- Using generic C2PA validity (non-ProofMode, non-capture-authenticated) to rebut AI detectors — C2PA happily signs AI-generated manifests.
 - Inventing creator metrics we cannot source authoritatively.
 - Using creator-only analytics endpoints that require the creator's own NIP-98 auth.
 
@@ -90,15 +91,73 @@ Guardrails:
 - `proofmode` can support `pre_2022_legacy` but does not by itself imply `original_vine`.
 - UI copy must always disclose the evidence source used.
 
-### Proofmode Support
+### ProofMode / C2PA Verification
 
-The current service does not yet parse `proofmode`, but the provenance model should reserve space for it. When present, preserve:
+Verification is performed by `divine-inquisitor` (Rust microservice at `github.com/divinevideo/divine-inquisitor`), **not** by `proofsign.divine.video` (which is the signing side only, no verify endpoint). Divine-moderation-service calls inquisitor with the media URL and normalizes the response into `provenance.proofmode`.
 
-- proof timestamp
-- proof source/device if available
-- proof or attestation reference/hash if available
+`provenance.proofmode` shape (replaces the earlier null placeholder):
 
-This allows imported authenticity evidence to become part of provenance without redesigning the API again.
+```json
+{
+  "state": "valid_proofmode | valid_c2pa | valid_ai_signed | invalid | absent | unchecked",
+  "hasC2pa": true,
+  "valid": true,
+  "isProofmode": true,
+  "validationState": "valid",
+  "claimGenerator": "ProofMode/1.1.9 Android/14",
+  "captureDevice": "Google Pixel 8 Pro",
+  "captureTime": "2024:07:22 14:33:51",
+  "signer": "...Issuer DN... (moderator-only)",
+  "assertions": ["stds.exif", "org.proofmode.location", "c2pa.hash.data"],
+  "verifiedAt": "2026-04-17T10:00:00.000Z",
+  "checkedAt": "2026-04-17T10:00:00.000Z"
+}
+```
+
+Normalization of `state` (derived from inquisitor response):
+
+- `valid_proofmode` — `has_c2pa=true && valid=true && is_proofmode=true`. The strong capture-authenticity signal.
+- `valid_c2pa` — `has_c2pa=true && valid=true && !is_proofmode` and `claim_generator` does not match a known AI tool. Generic authenticated provenance.
+- `valid_ai_signed` — `has_c2pa=true && valid=true` and `claim_generator` matches a known AI-generation tool (Adobe Firefly, DALL·E, etc.). Valid signature, but the signature itself asserts AI origin.
+- `invalid` — `has_c2pa=true && valid=false`. Manifest present but signature check failed. Often innocent (transcoding, clock skew, buggy app) — treat as neutral.
+- `absent` — `has_c2pa=false`. No manifest. The default for most content.
+- `unchecked` — verification failed (inquisitor timeout/error) or not yet run.
+
+### Inquisitor API Contract (summary)
+
+`POST /verify` on divine-inquisitor accepts:
+
+- JSON mode: `Content-Type: application/json`, body `{url, mime_type}`. Inquisitor range-fetches up to `RANGE_FETCH_BYTES` (default 2 MB) from the URL. Typical 100-500 ms.
+- Bytes mode: raw body, `x-mime-type` header, optional `x-content-hash`. Typical <50 ms.
+
+Response fields consumed: `has_c2pa`, `valid`, `validation_state`, `is_proofmode`, `claim_generator`, `capture_device`, `capture_time`, `signer`, `signature_info`, `assertions`, `actions`, `ingredients`, `verified_at`, `content_hash`, `error`. Full schema in `reference_divine_inquisitor.md` (project memory).
+
+### ProofMode / C2PA Enforcement
+
+Two targeted, automatic moderation-action rules are driven by provenance. Both are independent of each other and of Hive/RD.
+
+**Rule 1 — ProofMode downgrade:**
+If Hive AI or Reality Defender flag a video as AI-generated AND `provenance.proofmode.state === "valid_proofmode"`, the moderation action downgrades from QUARANTINE to REVIEW. The video stays visible to users while it sits in the moderator review queue.
+
+**Rule 2 — Signed-AI short-circuit:**
+If `provenance.proofmode.state === "valid_ai_signed"` (valid C2PA signature whose `claim_generator` is a known AI-generation tool — Adobe Firefly, DALL·E, Midjourney, Stable Diffusion, Sora, Runway, Ideogram, etc.), the moderation action is forced to QUARANTINE and **Hive is not called at all**. Reality Defender is also skipped. The tool's own cryptographic declaration is authoritative AI evidence, so paying for Hive or polling RD adds cost and latency with no new information. The pipeline call order is therefore: inquisitor first, then short-circuit to QUARANTINE on `valid_ai_signed`, otherwise continue into the existing Hive/RD flow. Humans review every signed-AI QUARANTINE for labeling or approval.
+
+This loses Hive's non-AI category scores (nudity, violence, self-harm) on signed-AI content. That's an acceptable trade because moderators review every QUARANTINE manually, the volume of signed-AI content should be small, and an opt-in Hive call can be added at review time if a moderator wants those scores.
+
+All other states (`valid_c2pa`, `invalid`, `absent`, `unchecked`) fall through to the existing Hive/RD routing — no auto-downgrade, no auto-escalate.
+
+Rationale:
+- `valid_c2pa` without ProofMode does not rebut AI detection (generic C2PA can sign AI manifests), but it also doesn't imply AI — it's a neutral "authenticated provenance" signal.
+- `invalid` is dominated by non-malicious causes (transcoding strips signatures, buggy capture apps, clock skew, re-encoding pipeline) — escalating on invalid would punish the wrong users, including penalizing our own pipeline for stripping signatures.
+- `unchecked` means inquisitor timed out or errored — we treat it as absent and never block moderation on verification latency.
+
+The dashboard surfaces every state as a distinct badge so moderators can spot patterns (e.g. a user consistently producing invalid proofs) even though the system doesn't auto-act on every state.
+
+### Caching and Triggering
+
+- Verification runs in the moderation pipeline on ingest, alongside the Hive submission, with the result persisted to the moderation record and cached in KV under `c2pa:{sha256}` for 30 days. Do not re-verify on every admin render.
+- Re-verify on demand only when a moderator hits a dashboard control or when the cache is empty.
+- On inquisitor timeout/error, record `state: "unchecked"` and fall through to default routing — never block moderation on verification latency.
 
 ### Creator Context Model
 
@@ -147,17 +206,27 @@ Do not depend on `GET /api/users/{pubkey}/analytics`, because it requires creato
 
 ### Card-Level Provenance
 
-Every moderation card in dashboard and swipe review should display:
+Every moderation card in dashboard and swipe review should display two independent badges — an age/origin badge and a ProofMode badge — because they measure different things.
 
-- a prominent badge:
-  `Original Vine`, `Pre-2022 Legacy`, or `Unknown Provenance`
-- a supporting line:
-  - `Published Aug 21, 2014 via published_at`
-  - `Proofmode Jun 3, 2019`
-  - `Posted Nov 18, 2021 via Nostr`
-  - `Unknown provenance`
+Age/origin badge (one of):
+- `Original Vine`
+- `Pre-2022 Legacy`
+- `Unknown Provenance`
 
-`Original Vine` and `Pre-2022 Legacy` should visually read as "AI unlikely" without changing scoring behavior. `Unknown Provenance` should stay neutral.
+ProofMode / C2PA badge (one of):
+- `Valid ProofMode` (green — capture-authenticated, only this state downgrades AI quarantine)
+- `Valid C2PA` (blue — authenticated provenance, neutral for enforcement)
+- `Valid but AI-signed` (orange — valid signature claims AI origin)
+- `Invalid Proof` (gray — often transcoding or clock skew, informational only)
+- no badge when `state === "absent"` (most content)
+
+Supporting line beneath the badges:
+- `Published Aug 21, 2014 via published_at`
+- `ProofMode captured 2024:07:22 on Google Pixel 8 Pro`
+- `Posted Nov 18, 2021 via Nostr`
+- `Unknown provenance`
+
+`Original Vine`, `Pre-2022 Legacy`, and `Valid ProofMode` should visually read as "AI unlikely" without changing scoring behavior (except the one ProofMode enforcement rule above). `Unknown Provenance`, `Valid C2PA`, and `Invalid Proof` should stay neutral.
 
 ### Creator Info Affordance
 
@@ -193,7 +262,7 @@ When building admin payloads, preserve:
 - `createdAt` / `event.created_at`
 - Vine metadata fields
 - source URL
-- proofmode fields when present
+- C2PA / ProofMode verification result fetched from divine-inquisitor and normalized into `provenance.proofmode`
 
 Existing D1 persistence of `published_at` remains useful, but the admin response builders must stop dropping it.
 

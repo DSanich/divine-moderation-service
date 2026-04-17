@@ -2,7 +2,13 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { afterEach, describe, it, expect } from 'vitest';
-import { fetchNostrVideoEventsByDTag, parseVideoEventMetadata, isOriginalVine, hasStrongOriginalVineEvidence } from './relay-client.mjs';
+import {
+  fetchNostrEventBySha256,
+  fetchNostrVideoEventsByDTag,
+  parseVideoEventMetadata,
+  isOriginalVine,
+  hasStrongOriginalVineEvidence
+} from './relay-client.mjs';
 
 const OriginalWebSocket = globalThis.WebSocket;
 
@@ -227,5 +233,58 @@ describe('fetchNostrVideoEventsByDTag', () => {
 
     const events = await fetchNostrVideoEventsByDTag(sha256);
     expect(events).toEqual([versionA, versionB]);
+  });
+});
+
+describe('fetchNostrEventBySha256', () => {
+  it('finds legacy Vine events by x tag when d is the Vine ID', async () => {
+    const sha256 = 'a'.repeat(64);
+    const event = {
+      id: 'b'.repeat(64),
+      kind: 34236,
+      tags: [
+        ['d', 'legacy-vine-id'],
+        ['x', sha256],
+        ['imeta', `url https://media.divine.video/${sha256}`, 'm video/mp4', `x ${sha256}`]
+      ]
+    };
+
+    class FakeWebSocket {
+      constructor() {
+        this.listeners = {};
+        queueMicrotask(() => this.emit('open'));
+      }
+
+      addEventListener(type, handler) {
+        if (!this.listeners[type]) {
+          this.listeners[type] = [];
+        }
+        this.listeners[type].push(handler);
+      }
+
+      send(message) {
+        const [, subscriptionId, filter] = JSON.parse(message);
+        queueMicrotask(() => {
+          if (filter['#x']?.includes(sha256)) {
+            this.emit('message', { data: JSON.stringify(['EVENT', subscriptionId, event]) });
+          }
+          this.emit('message', { data: JSON.stringify(['EOSE', subscriptionId]) });
+        });
+      }
+
+      close() {
+        queueMicrotask(() => this.emit('close'));
+      }
+
+      emit(type, event = {}) {
+        for (const handler of this.listeners[type] || []) {
+          handler(event);
+        }
+      }
+    }
+
+    globalThis.WebSocket = FakeWebSocket;
+
+    await expect(fetchNostrEventBySha256(sha256)).resolves.toEqual(event);
   });
 });

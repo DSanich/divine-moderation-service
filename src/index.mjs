@@ -173,17 +173,73 @@ function buildFunnelcakeVideoLookup(eventResponse, identifier) {
     videoUrl,
     thumbnailUrl,
     uploadedBy: event.pubkey || null,
-    createdAt: event.created_at ? new Date(event.created_at * 1000).toISOString() : null,
+    createdAt: event.created_at || null,
     nostrContext: {
       title: metadata.title || null,
       author: metadata.author || stats.author_name || null,
       client: metadata.client || null,
       content: metadata.content || event.content || null,
+      url: videoUrl || null,
+      publishedAt: metadata.publishedAt || null,
       pubkey: event.pubkey ? `${event.pubkey.substring(0, 16)}...` : null,
       eventId: event.id,
       platform: metadata.platform || null
     },
     divineUrl: `https://divine.video/video/${encodeURIComponent(stableId)}`
+  };
+}
+
+function buildStoredLookupMetadata(row) {
+  if (!row) {
+    return {
+      eventId: null,
+      divineUrl: null,
+      nostrContext: null
+    };
+  }
+
+  const eventId = row.event_id || null;
+  const publishedAt = row.published_at ? parseInt(row.published_at, 10) : null;
+  const hasStoredContext = Boolean(
+    row.title || row.author || row.content_url || eventId || row.uploaded_by || publishedAt
+  );
+
+  return {
+    eventId,
+    divineUrl: eventId ? `https://divine.video/video/${encodeURIComponent(eventId)}` : null,
+    nostrContext: hasStoredContext ? {
+      title: row.title || null,
+      author: row.author || null,
+      client: null,
+      content: null,
+      url: row.content_url || null,
+      publishedAt: Number.isFinite(publishedAt) ? publishedAt : null,
+      pubkey: row.uploaded_by ? `${row.uploaded_by.substring(0, 16)}...` : null,
+      eventId,
+      platform: null
+    } : null
+  };
+}
+
+function buildAdminNostrMetadata(metadata = {}, extras = {}) {
+  return {
+    title: metadata.title || null,
+    author: metadata.author || null,
+    platform: metadata.platform || null,
+    client: metadata.client || null,
+    loops: metadata.loops ?? null,
+    likes: metadata.likes ?? null,
+    comments: metadata.comments ?? null,
+    url: metadata.url || null,
+    sourceUrl: metadata.sourceUrl || null,
+    publishedAt: metadata.publishedAt ?? null,
+    archivedAt: metadata.archivedAt ?? null,
+    importedAt: metadata.importedAt ?? null,
+    vineHashId: metadata.vineHashId ?? null,
+    vineUserId: metadata.vineUserId ?? null,
+    content: metadata.content || null,
+    eventId: metadata.eventId || null,
+    createdAt: extras.createdAt ?? metadata.createdAt ?? null
   };
 }
 
@@ -210,16 +266,21 @@ function mergeLookupMetadata(baseVideo, funnelcakeVideo) {
     return baseVideo;
   }
 
+  const baseNostrContext = Object.fromEntries(
+    Object.entries(baseVideo.nostrContext || {}).filter(([, value]) => value !== null && value !== undefined)
+  );
+
   return {
     ...baseVideo,
     cdnUrl: funnelcakeVideo.videoUrl || baseVideo.cdnUrl || null,
     thumbnailUrl: baseVideo.thumbnailUrl || funnelcakeVideo.thumbnailUrl || null,
     uploaded_by: baseVideo.uploaded_by || funnelcakeVideo.uploadedBy || null,
+    eventId: baseVideo.eventId || funnelcakeVideo.eventId || null,
     divineUrl: funnelcakeVideo.divineUrl || baseVideo.divineUrl,
     lookupId: funnelcakeVideo.lookupId || baseVideo.lookupId,
     nostrContext: {
       ...(funnelcakeVideo.nostrContext || {}),
-      ...(baseVideo.nostrContext || {})
+      ...baseNostrContext
     }
   };
 }
@@ -418,18 +479,27 @@ async function enrichAdminLookupVideo(video, env) {
   let enriched = { ...video };
 
   if (enriched.sha256 && (!enriched.eventId || !enriched.divineUrl || !enriched.nostrContext)) {
-    const nostrContext = await fetchLookupNostrContext(enriched.sha256, env);
-    if (nostrContext) {
-      enriched = {
-        ...enriched,
-        eventId: enriched.eventId || nostrContext.eventId,
-        divineUrl: enriched.divineUrl || nostrContext.divineUrl,
-        nostrContext: {
-          ...(nostrContext.nostrContext || {}),
-          ...(enriched.nostrContext || {})
-        },
-        uploaded_by: enriched.uploaded_by || nostrContext.uploadedBy || null
-      };
+    const funnelcakeVideo = await fetchFunnelcakeLookupVideo(enriched.lookupId || enriched.eventId || enriched.sha256).catch((error) => {
+      console.error(`[ADMIN] Failed to fetch relay context for ${enriched.sha256}:`, error.message);
+      return null;
+    });
+
+    if (funnelcakeVideo) {
+      enriched = mergeLookupMetadata(enriched, funnelcakeVideo);
+    } else {
+      const nostrContext = await fetchLookupNostrContext(enriched.sha256, env);
+      if (nostrContext) {
+        enriched = {
+          ...enriched,
+          eventId: enriched.eventId || nostrContext.eventId,
+          divineUrl: enriched.divineUrl || nostrContext.divineUrl,
+          nostrContext: {
+            ...(nostrContext.nostrContext || {}),
+            ...(enriched.nostrContext || {})
+          },
+          uploaded_by: enriched.uploaded_by || nostrContext.uploadedBy || null
+        };
+      }
     }
   }
 
@@ -469,6 +539,7 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
 
     if (moderatedRow || kvModeration) {
       const moderatedAt = kvModeration?.moderated_at || moderatedRow?.moderated_at || null;
+      const storedLookup = buildStoredLookupMetadata(moderatedRow);
       return enrichAdminLookupVideo({
         sha256: hash,
         action: kvModeration?.action || moderatedRow?.action || 'REVIEW',
@@ -480,6 +551,9 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
         reviewed_by: moderatedRow?.reviewed_by || kvModeration?.reviewedBy || kvModeration?.overriddenBy || null,
         reviewed_at: moderatedRow?.reviewed_at || null,
         uploaded_by: moderatedRow?.uploaded_by || kvModeration?.uploadedBy || null,
+        eventId: storedLookup.eventId,
+        divineUrl: storedLookup.divineUrl,
+        nostrContext: storedLookup.nostrContext,
         reason: kvModeration?.reason || moderatedRow?.review_notes || null,
         manualOverride: Boolean(kvModeration?.manualOverride),
         overriddenAt: kvModeration?.overriddenAt || moderatedRow?.reviewed_at || null,
@@ -567,7 +641,7 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
 
   return enrichAdminLookupVideo({
     sha256: funnelcakeVideo.mediaSha,
-    receivedAt: funnelcakeVideo.createdAt,
+    receivedAt: funnelcakeVideo.createdAt ? new Date(funnelcakeVideo.createdAt * 1000).toISOString() : null,
     status: 'UNTRIAGED',
     cdnUrl: funnelcakeVideo.videoUrl || `https://${env.CDN_DOMAIN || 'media.divine.video'}/${funnelcakeVideo.mediaSha}`,
     thumbnailUrl: funnelcakeVideo.thumbnailUrl,
@@ -577,6 +651,98 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
     lookupId: funnelcakeVideo.lookupId,
     eventId: funnelcakeVideo.eventId
   }, env);
+}
+
+function appendAdminPlaybackCandidate(candidates, seenUrls, url, source) {
+  if (typeof url !== 'string' || !url.trim()) {
+    return;
+  }
+
+  try {
+    const normalizedUrl = new URL(url).toString();
+    if (seenUrls.has(normalizedUrl)) {
+      return;
+    }
+    seenUrls.add(normalizedUrl);
+    candidates.push({ url: normalizedUrl, source });
+  } catch {
+    // Ignore malformed URLs stored in metadata and continue through other candidates.
+  }
+}
+
+async function getStoredAdminPlaybackCandidates(sha256, env) {
+  const [moderatedRow, untriagedRow, kvModerationRaw] = await Promise.all([
+    env.BLOSSOM_DB.prepare(`
+      SELECT content_url
+      FROM moderation_results
+      WHERE sha256 = ?
+    `).bind(sha256).first(),
+    env.BLOSSOM_DB.prepare(`
+      SELECT mp4_url, hls_url
+      FROM bunny_webhook_events e1
+      WHERE e1.sha256 = ?
+        AND received_at = (
+          SELECT MAX(received_at) FROM bunny_webhook_events e2 WHERE e2.sha256 = e1.sha256
+        )
+      LIMIT 1
+    `).bind(sha256).first(),
+    env.MODERATION_KV.get(`moderation:${sha256}`)
+  ]);
+
+  const kvModeration = parseMaybeJson(kvModerationRaw, null);
+  const candidates = [];
+  const seenUrls = new Set();
+
+  appendAdminPlaybackCandidate(candidates, seenUrls, moderatedRow?.content_url, 'stored-content-url');
+  appendAdminPlaybackCandidate(candidates, seenUrls, kvModeration?.cdnUrl, 'stored-cdn-url');
+  appendAdminPlaybackCandidate(candidates, seenUrls, untriagedRow?.mp4_url, 'bunny-mp4-url');
+  appendAdminPlaybackCandidate(candidates, seenUrls, untriagedRow?.hls_url, 'bunny-hls-url');
+
+  return candidates;
+}
+
+function buildAdminVideoProxyRequestInit(request, extraHeaders = {}) {
+  const headers = new Headers(extraHeaders);
+  for (const headerName of ['Range', 'If-Range']) {
+    const value = request.headers.get(headerName);
+    if (value) {
+      headers.set(headerName, value);
+    }
+  }
+
+  return {
+    method: request.method === 'HEAD' ? 'HEAD' : 'GET',
+    headers
+  };
+}
+
+function createAdminVideoProxyResponse(upstreamResponse, proxySource, extraHeaders = {}) {
+  const headers = new Headers({
+    'Cache-Control': 'private, no-store',
+    'X-Admin-Proxy': proxySource
+  });
+
+  for (const headerName of ['Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges', 'ETag', 'Last-Modified']) {
+    const value = upstreamResponse.headers.get(headerName);
+    if (value) {
+      headers.set(headerName, value);
+    }
+  }
+
+  if (!headers.has('Content-Type')) {
+    headers.set('Content-Type', 'video/mp4');
+  }
+
+  for (const [headerName, value] of Object.entries(extraHeaders)) {
+    if (value) {
+      headers.set(headerName, value);
+    }
+  }
+
+  return new Response(upstreamResponse.body, {
+    status: upstreamResponse.status,
+    headers
+  });
 }
 
 async function handleLegacyScan(request, env) {
@@ -905,8 +1071,28 @@ export default {
         uploaded_by: row.uploaded_by || null
       }));
 
-      // Classifier summaries fetched client-side via /admin/api/classifier/{sha256}
-      const videos = videoRows;
+      // Reuse the existing relay-aware per-item lookup so dashboard cards can render
+      // publisher/post metadata immediately instead of starting from an "unknown" state.
+      const videos = await Promise.all(videoRows.map(async (video) => {
+        try {
+          const enriched = await getAdminLookupVideo(video.sha256, env);
+          if (!enriched) {
+            return video;
+          }
+
+          return {
+            ...video,
+            uploaded_by: enriched.uploaded_by || video.uploaded_by || null,
+            eventId: enriched.eventId || null,
+            divineUrl: enriched.divineUrl || null,
+            lookupId: enriched.lookupId || null,
+            nostrContext: enriched.nostrContext || null
+          };
+        } catch (error) {
+          console.error(`[${requestId}] Failed to enrich dashboard row ${video.sha256}:`, error.message);
+          return video;
+        }
+      }));
 
       console.log(`[${requestId}] Returning ${videos.length} videos in ${Date.now() - startTime}ms`);
       return new Response(JSON.stringify({
@@ -1734,17 +1920,58 @@ export default {
       const sha256 = url.pathname.split('/')[4];
 
       try {
-        const event = await fetchNostrEventBySha256(sha256, ['wss://relay.divine.video'], env);
+        const storedRow = await env.BLOSSOM_DB.prepare(`
+          SELECT uploaded_by, title, author, event_id, content_url, published_at
+          FROM moderation_results
+          WHERE sha256 = ?
+        `).bind(sha256).first();
+        const storedLookup = buildStoredLookupMetadata(storedRow);
 
+        if (storedLookup.nostrContext) {
+          return new Response(JSON.stringify({
+            found: true,
+            metadata: buildAdminNostrMetadata(storedLookup.nostrContext)
+          }), {
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        const funnelcakeVideo = await fetchFunnelcakeLookupVideo(sha256).catch((error) => {
+          console.error(`[ADMIN] Failed to fetch relay context for ${sha256}:`, error.message);
+          return null;
+        });
+
+        if (funnelcakeVideo?.nostrContext) {
+          return new Response(JSON.stringify({
+            found: true,
+            metadata: buildAdminNostrMetadata(funnelcakeVideo.nostrContext, {
+              createdAt: funnelcakeVideo.createdAt
+            })
+          }), {
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        const event = await fetchNostrEventBySha256(sha256, ['wss://relay.divine.video'], env);
         if (!event) {
           return new Response(JSON.stringify({ found: false }), {
             headers: { 'Content-Type': 'application/json' }
           });
         }
 
-        const metadata = parseVideoEventMetadata(event);
+        const metadata = parseVideoEventMetadata(event) || {};
+        const eventId = event.id || null;
 
-        return new Response(JSON.stringify({ found: true, metadata }), {
+        return new Response(JSON.stringify({
+          found: true,
+          metadata: buildAdminNostrMetadata({
+            ...metadata,
+            content: metadata.content || event.content || null,
+            eventId
+          }, {
+            createdAt: event.created_at || null
+          })
+        }), {
           headers: { 'Content-Type': 'application/json' }
         });
       } catch (error) {
@@ -2015,43 +2242,34 @@ export default {
         return new Response('Unauthorized', { status: 401 });
       }
 
-      const sha256 = url.pathname.split('/')[3].replace('.mp4', '');
-      const cdnUrl = `https://${env.CDN_DOMAIN}/${sha256}`;
-      const adminBypassUrl = `https://${env.CDN_DOMAIN}/admin/api/blob/${sha256}/content`;
+      const sha256 = url.pathname.split('/')[3].replace(/\.mp4$/i, '').toLowerCase();
+      const cdnDomain = env.CDN_DOMAIN || 'media.divine.video';
+      const cdnUrl = `https://${cdnDomain}/${sha256}`;
+      const adminBypassUrl = `https://${cdnDomain}/admin/api/blob/${sha256}/content`;
 
       const BROWSER_PLAYABLE_TYPES = new Set(['video/mp4', 'video/webm', 'video/ogg']);
 
       try {
+        const upstreamRequestInit = buildAdminVideoProxyRequestInit(request);
+
         // CDN fetch (unauthenticated) — works for SAFE/unmoderated content
-        const cdnResponse = await fetch(cdnUrl);
+        const cdnResponse = await fetch(cdnUrl, upstreamRequestInit);
         if (cdnResponse.ok) {
           const contentType = cdnResponse.headers.get('Content-Type') || 'video/mp4';
 
           // If the format is browser-playable, serve directly
           if (BROWSER_PLAYABLE_TYPES.has(contentType)) {
             console.log(`[ADMIN] Serving video from CDN: ${sha256}`);
-            return new Response(cdnResponse.body, {
-              headers: {
-                'Content-Type': contentType,
-                'Cache-Control': 'private, no-store',
-                'X-Admin-Proxy': 'cdn'
-              }
-            });
+            return createAdminVideoProxyResponse(cdnResponse, 'cdn');
           }
 
           // Non-browser format (e.g. video/3gpp, video/x-matroska) — try transcoded 720p MP4 from Blossom
           console.log(`[ADMIN] CDN returned non-playable ${contentType}, trying transcoded 720p for ${sha256}`);
-          const transcodeUrl = `https://${env.CDN_DOMAIN}/${sha256}/720p.mp4`;
-          const transcodeResponse = await fetch(transcodeUrl);
+          const transcodeUrl = `https://${cdnDomain}/${sha256}/720p.mp4`;
+          const transcodeResponse = await fetch(transcodeUrl, upstreamRequestInit);
           if (transcodeResponse.ok) {
             console.log(`[ADMIN] Serving transcoded 720p MP4 for ${sha256}`);
-            return new Response(transcodeResponse.body, {
-              headers: {
-                'Content-Type': transcodeResponse.headers.get('Content-Type') || 'video/mp4',
-                'Cache-Control': 'private, no-store',
-                'X-Admin-Proxy': 'cdn-transcode'
-              }
-            });
+            return createAdminVideoProxyResponse(transcodeResponse, 'cdn-transcode');
           }
           console.warn(`[ADMIN] Transcoded 720p not available (${transcodeResponse.status}) for ${sha256}`);
         }
@@ -2060,22 +2278,40 @@ export default {
         // Fall back to admin bypass endpoint which serves regardless of moderation status
         if (env.BLOSSOM_WEBHOOK_SECRET) {
           console.log(`[ADMIN] CDN returned ${cdnResponse.status}, trying admin bypass for ${sha256}`);
-          const bypassResponse = await fetch(adminBypassUrl, {
-            headers: { 'Authorization': `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}` }
-          });
+          const bypassResponse = await fetch(
+            adminBypassUrl,
+            buildAdminVideoProxyRequestInit(request, {
+              'Authorization': `Bearer ${env.BLOSSOM_WEBHOOK_SECRET}`
+            })
+          );
           if (bypassResponse.ok) {
             console.log(`[ADMIN] Serving video from admin bypass: ${sha256}`);
             const moderationStatus = bypassResponse.headers.get('X-Moderation-Status');
-            return new Response(bypassResponse.body, {
-              headers: {
-                'Content-Type': bypassResponse.headers.get('Content-Type') || 'video/mp4',
-                'Cache-Control': 'private, no-store',
-                'X-Admin-Proxy': 'blossom-admin',
-                ...(moderationStatus && { 'X-Moderation-Status': moderationStatus })
-              }
+            return createAdminVideoProxyResponse(bypassResponse, 'blossom-admin', {
+              'X-Moderation-Status': moderationStatus
             });
           }
           console.error(`[ADMIN] Admin bypass returned ${bypassResponse.status} for ${sha256}`);
+        }
+
+        const storedPlaybackCandidates = await getStoredAdminPlaybackCandidates(sha256, env);
+        for (const candidate of storedPlaybackCandidates) {
+          if (candidate.url === cdnUrl || candidate.url === adminBypassUrl) {
+            continue;
+          }
+
+          try {
+            const fallbackResponse = await fetch(candidate.url, upstreamRequestInit);
+            if (!fallbackResponse.ok) {
+              console.warn(`[ADMIN] Stored playback candidate ${candidate.source} returned ${fallbackResponse.status} for ${sha256}`);
+              continue;
+            }
+
+            console.log(`[ADMIN] Serving video from ${candidate.source}: ${sha256}`);
+            return createAdminVideoProxyResponse(fallbackResponse, candidate.source);
+          } catch (candidateError) {
+            console.warn(`[ADMIN] Stored playback candidate ${candidate.source} failed for ${sha256}: ${candidateError.message}`);
+          }
         }
 
         return new Response(JSON.stringify({

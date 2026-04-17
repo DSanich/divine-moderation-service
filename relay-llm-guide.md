@@ -1,0 +1,2714 @@
+- generic [ref=e2]:
+  - link "← Back to Documentation" [ref=e3] [cursor=pointer]:
+    - /url: /docs
+  - generic [ref=e4]:
+    - heading "FunnelCake API Guide for LLM Coding Agents" [level=1] [ref=e5]
+    - paragraph [ref=e6]: This document provides comprehensive information for AI coding agents to interact with FunnelCake - a Nostr video relay and analytics platform. Use this as a reference when building applications that integrate with divine.video.
+    - heading "Overview" [level=2] [ref=e7]
+    - paragraph [ref=e8]:
+      - strong [ref=e9]: FunnelCake
+      - text: "is a specialized Nostr relay for video content. It consists of:"
+    - list [ref=e10]:
+      - listitem [ref=e11]:
+        - strong [ref=e12]: WebSocket Relay
+        - text: "- Standard NIP-01 Nostr protocol for real-time event publishing and subscriptions"
+      - listitem [ref=e13]:
+        - strong [ref=e14]: REST API
+        - text: "- HTTP endpoints for analytics, search, and bulk operations"
+    - heading "Base URLs" [level=3] [ref=e15]
+    - table [ref=e16]:
+      - rowgroup [ref=e17]:
+        - row "Environment WebSocket REST API" [ref=e18]:
+          - columnheader "Environment" [ref=e19]
+          - columnheader "WebSocket" [ref=e20]
+          - columnheader "REST API" [ref=e21]
+      - rowgroup [ref=e22]:
+        - row "Production wss://relay.divine.video https://relay.divine.video/api/" [ref=e23]:
+          - cell "Production" [ref=e24]
+          - cell "wss://relay.divine.video" [ref=e25]:
+            - code [ref=e26]: wss://relay.divine.video
+          - cell "https://relay.divine.video/api/" [ref=e27]:
+            - code [ref=e28]: https://relay.divine.video/api/
+        - row "Staging wss://relay.staging.divine.video https://relay.staging.divine.video/api/" [ref=e29]:
+          - cell "Staging" [ref=e30]
+          - cell "wss://relay.staging.divine.video" [ref=e31]:
+            - code [ref=e32]: wss://relay.staging.divine.video
+          - cell "https://relay.staging.divine.video/api/" [ref=e33]:
+            - code [ref=e34]: https://relay.staging.divine.video/api/
+    - paragraph [ref=e35]:
+      - text: "Legacy staging alias:"
+      - code [ref=e36]: relay.staging.dvines.org
+      - text: currently points at the same service, but
+      - code [ref=e37]: relay.staging.divine.video
+      - text: is the preferred hostname for docs and client configuration.
+    - separator [ref=e38]
+    - heading "When to Use WebSocket vs REST" [level=2] [ref=e39]
+    - heading "Use WebSocket (NIP-01) for:" [level=3] [ref=e40]
+    - list [ref=e41]:
+      - listitem [ref=e42]:
+        - strong [ref=e43]: Publishing events
+        - text: "- All event creation goes through WebSocket"
+      - listitem [ref=e44]:
+        - strong [ref=e45]: Real-time subscriptions
+        - text: "- Live updates for new videos, comments, reactions"
+      - listitem [ref=e46]:
+        - strong [ref=e47]: Signature verification
+        - text: "- When you need cryptographically verifiable events"
+      - listitem [ref=e48]:
+        - strong [ref=e49]: Standard Nostr client operations
+        - text: "- Following the protocol spec"
+    - heading "Use REST API for:" [level=3] [ref=e50]
+    - list [ref=e51]:
+      - listitem [ref=e52]:
+        - strong [ref=e53]: Analytics and stats
+        - text: "- Engagement metrics, view counts, trending scores"
+      - listitem [ref=e54]:
+        - strong [ref=e55]: Bulk operations
+        - text: "- Fetching multiple videos/users in one request"
+      - listitem [ref=e56]:
+        - strong [ref=e57]: Search
+        - text: "- Full-text search and hashtag discovery"
+      - listitem [ref=e58]:
+        - strong [ref=e59]: Pre-computed data
+        - text: "- Denormalized views like"
+        - code [ref=e60]: author_avatar
+        - text: ", social counts"
+      - listitem [ref=e61]:
+        - strong [ref=e62]: Pagination
+        - text: "- Cursor-based pagination with"
+        - code [ref=e63]: next_cursor
+    - separator [ref=e64]
+    - heading "Nostr Protocol Basics" [level=2] [ref=e65]
+    - heading "Event Structure" [level=3] [ref=e66]
+    - paragraph [ref=e67]: "Every Nostr event has this structure:"
+    - code [ref=e69]: "{ \"id\": \"64-char-hex-sha256-of-serialized-event\", \"pubkey\": \"64-char-hex-public-key\", \"created_at\": 1700000000, \"kind\": 34236, \"tags\": [ [\"d\", \"unique-identifier\"], [\"title\", \"My Video\"], [\"t\", \"hashtag\"] ], \"content\": \"Description text\", \"sig\": \"128-char-hex-schnorr-signature\" }"
+    - heading "Computing Event ID" [level=3] [ref=e70]
+    - paragraph [ref=e71]:
+      - text: The
+      - code [ref=e72]: id
+      - text: "is SHA256 of the serialized event array (NOT the full object):"
+    - code [ref=e74]: "// Serialization format for ID computation: const serialized = JSON.stringify([ 0, // Always 0 event.pubkey, // 64-char hex pubkey event.created_at, // Unix timestamp (number) event.kind, // Kind number event.tags, // Tags array event.content // Content string ]); const id = sha256(serialized); // Returns 64-char hex"
+    - paragraph [ref=e75]:
+      - strong [ref=e76]: "Important:"
+      - text: "The serialization must be compact JSON (no extra whitespace). Special characters in content must be escaped:"
+      - code [ref=e77]: \n
+      - text: ","
+      - code [ref=e78]: \"
+      - text: ","
+      - code [ref=e79]: \\
+      - text: .
+    - 'heading "Key Formats: Hex vs Bech32 (npub/nsec)" [level=3] [ref=e80]'
+    - paragraph [ref=e81]:
+      - strong [ref=e82]: All API interactions use hex format (64 characters).
+    - paragraph [ref=e83]:
+      - text: Users often share keys in bech32 format (
+      - code [ref=e84]: npub1...
+      - text: ","
+      - code [ref=e85]: nsec1...
+      - text: "). Convert before API use:"
+    - code [ref=e87]: "// npub1qqqqqq... -> hex pubkey // Use a library like nostr-tools: import { nip19 } from 'nostr-tools'; const { data: hexPubkey } = nip19.decode('npub1...'); // hexPubkey is now \"abc123...\" (64 chars) // Or for event IDs: const { data: hexId } = nip19.decode('note1...'); // For nevent: const { data: { id: hexId } } = nip19.decode('nevent1...');"
+    - paragraph [ref=e88]:
+      - text: If you receive an
+      - code [ref=e89]: npub
+      - text: or
+      - code [ref=e90]: note
+      - text: from a user,
+      - strong [ref=e91]: always decode to hex
+      - text: before using with the API.
+    - heading "Supported Event Kinds" [level=3] [ref=e92]
+    - paragraph [ref=e93]: "FunnelCake accepts these event kinds:"
+    - table [ref=e94]:
+      - rowgroup [ref=e95]:
+        - row "Kind Name NIP Purpose" [ref=e96]:
+          - columnheader "Kind" [ref=e97]
+          - columnheader "Name" [ref=e98]
+          - columnheader "NIP" [ref=e99]
+          - columnheader "Purpose" [ref=e100]
+      - rowgroup [ref=e101]:
+        - row "0 Profile NIP-01 User metadata (name, avatar, bio)" [ref=e102]:
+          - cell "0" [ref=e103]
+          - cell "Profile" [ref=e104]
+          - cell "NIP-01" [ref=e105]
+          - cell "User metadata (name, avatar, bio)" [ref=e106]
+        - row "1 Text Note NIP-01 Legacy text posts" [ref=e107]:
+          - cell "1" [ref=e108]
+          - cell "Text Note" [ref=e109]
+          - cell "NIP-01" [ref=e110]
+          - cell "Legacy text posts" [ref=e111]
+        - row "3 Contact List NIP-02 Follow lists" [ref=e112]:
+          - cell "3" [ref=e113]
+          - cell "Contact List" [ref=e114]
+          - cell "NIP-02" [ref=e115]
+          - cell "Follow lists" [ref=e116]
+        - row "5 Deletion NIP-09 Delete events" [ref=e117]:
+          - cell "5" [ref=e118]
+          - cell "Deletion" [ref=e119]
+          - cell "NIP-09" [ref=e120]
+          - cell "Delete events" [ref=e121]
+        - row "6 Repost NIP-18 Simple reposts" [ref=e122]:
+          - cell "6" [ref=e123]
+          - cell "Repost" [ref=e124]
+          - cell "NIP-18" [ref=e125]
+          - cell "Simple reposts" [ref=e126]
+        - row "7 Reaction NIP-25 Likes/reactions" [ref=e127]:
+          - cell "7" [ref=e128]
+          - cell "Reaction" [ref=e129]
+          - cell "NIP-25" [ref=e130]
+          - cell "Likes/reactions" [ref=e131]
+        - row "16 Generic Repost NIP-18 Reshare any event" [ref=e132]:
+          - cell "16" [ref=e133]
+          - cell "Generic Repost" [ref=e134]
+          - cell "NIP-18" [ref=e135]
+          - cell "Reshare any event" [ref=e136]
+        - row "1111 Comment NIP-22 Comments on videos" [ref=e137]:
+          - cell "1111" [ref=e138]
+          - cell "Comment" [ref=e139]
+          - cell "NIP-22" [ref=e140]
+          - cell "Comments on videos" [ref=e141]
+        - row "10000 Mute List NIP-51 Blocked content" [ref=e142]:
+          - cell "10000" [ref=e143]
+          - cell "Mute List" [ref=e144]
+          - cell "NIP-51" [ref=e145]
+          - cell "Blocked content" [ref=e146]
+        - row "10003 Bookmark List NIP-51 Saved bookmarks" [ref=e147]:
+          - cell "10003" [ref=e148]
+          - cell "Bookmark List" [ref=e149]
+          - cell "NIP-51" [ref=e150]
+          - cell "Saved bookmarks" [ref=e151]
+        - row "30003 Bookmark Set NIP-51 Categorized bookmarks" [ref=e152]:
+          - cell "30003" [ref=e153]
+          - cell "Bookmark Set" [ref=e154]
+          - cell "NIP-51" [ref=e155]
+          - cell "Categorized bookmarks" [ref=e156]
+        - row "30005 Curation Set NIP-51 Video playlists" [ref=e157]:
+          - cell "30005" [ref=e158]
+          - cell "Curation Set" [ref=e159]
+          - cell "NIP-51" [ref=e160]
+          - cell "Video playlists" [ref=e161]
+        - row "34235 Horizontal Video NIP-71 Long-form video" [ref=e162]:
+          - cell "34235" [ref=e163]
+          - cell "Horizontal Video" [ref=e164]
+          - cell "NIP-71" [ref=e165]
+          - cell "Long-form video" [ref=e166]
+        - row "34236 Vertical Video NIP-71 Short-form video" [ref=e167]:
+          - cell "34236" [ref=e168]
+          - cell "Vertical Video" [ref=e169]
+          - cell "NIP-71" [ref=e170]
+          - cell "Short-form video" [ref=e171]
+        - row "34237 Video Chapters NIP-71 Chapter markers" [ref=e172]:
+          - cell "34237" [ref=e173]
+          - cell "Video Chapters" [ref=e174]
+          - cell "NIP-71" [ref=e175]
+          - cell "Chapter markers" [ref=e176]
+    - heading "Replaceable Events" [level=3] [ref=e177]
+    - list [ref=e178]:
+      - listitem [ref=e179]:
+        - strong [ref=e180]: Kinds 0, 3, 10000-19999
+        - text: ": Replaceable by pubkey - latest wins"
+      - listitem [ref=e181]:
+        - strong [ref=e182]: Kinds 30000-39999
+        - text: ": Parameterized replaceable - requires"
+        - code [ref=e183]: d
+        - text: tag
+        - list [ref=e184]:
+          - listitem [ref=e185]:
+            - text: "Address format:"
+            - code [ref=e186]: kind:pubkey:d-tag
+            - text: (e.g.,
+            - code [ref=e187]: 34236:abc123:my-video
+            - text: )
+          - listitem [ref=e188]:
+            - text: The relay REJECTS parameterized replaceable events missing a
+            - code [ref=e189]: d
+            - text: tag
+    - separator [ref=e190]
+    - heading "WebSocket Protocol (NIP-01)" [level=2] [ref=e191]
+    - heading "Connection" [level=3] [ref=e192]
+    - code [ref=e194]: const ws = new WebSocket('wss://relay.divine.video');
+    - heading "Client Messages" [level=3] [ref=e195]
+    - heading "EVENT - Publish an event" [level=4] [ref=e196]
+    - code [ref=e198]: "[\"EVENT\", <event-object>]"
+    - heading "REQ - Subscribe to events" [level=4] [ref=e199]
+    - code [ref=e201]: "[\"REQ\", \"<subscription-id>\", <filter1>, <filter2>, ...]"
+    - heading "CLOSE - Close subscription" [level=4] [ref=e202]
+    - code [ref=e204]: "[\"CLOSE\", \"<subscription-id>\"]"
+    - heading "COUNT - Count matching events (NIP-45)" [level=4] [ref=e205]
+    - code [ref=e207]: "[\"COUNT\", \"<subscription-id>\", <filter>]"
+    - heading "Relay Messages" [level=3] [ref=e208]
+    - heading "EVENT - Receive matching events" [level=4] [ref=e209]
+    - code [ref=e211]: "[\"EVENT\", \"<subscription-id>\", <event-object>]"
+    - heading "OK - Event publish result" [level=4] [ref=e212]
+    - code [ref=e214]: "[\"OK\", \"<event-id>\", true, \"\"] [\"OK\", \"<event-id>\", false, \"blocked: pubkey is banned\"]"
+    - heading "EOSE - End of stored events" [level=4] [ref=e215]
+    - code [ref=e217]: "[\"EOSE\", \"<subscription-id>\"]"
+    - paragraph [ref=e218]:
+      - strong [ref=e219]: "After EOSE:"
+      - text: The subscription stays open! You'll continue receiving new EVENT messages for any newly published events that match your filter. EOSE just means "I've sent you all the historical/stored events."
+    - heading "COUNT - Count response" [level=4] [ref=e220]
+    - code [ref=e222]: "[\"COUNT\", \"<subscription-id>\", {\"count\": 42}]"
+    - heading "CLOSED - Subscription closed" [level=4] [ref=e223]
+    - code [ref=e225]: "[\"CLOSED\", \"<subscription-id>\", \"rate limited\"]"
+    - heading "Filter Structure" [level=3] [ref=e226]
+    - code [ref=e228]: "{ \"ids\": [\"<id-prefix>\", ...], \"authors\": [\"<pubkey-prefix>\", ...], \"kinds\": [34235, 34236], \"#e\": [\"<event-id>\", ...], \"#p\": [\"<pubkey>\", ...], \"#t\": [\"hashtag\", ...], \"#d\": [\"identifier\", ...], \"since\": 1700000000, \"until\": 1700100000, \"limit\": 50, \"search\": \"full text query\" }"
+    - paragraph [ref=e229]:
+      - strong [ref=e230]: "Notes:"
+    - list [ref=e231]:
+      - listitem [ref=e232]:
+        - code [ref=e233]: ids
+        - text: and
+        - code [ref=e234]: authors
+        - text: must be exact 64-char hex strings
+      - listitem [ref=e235]:
+        - text: Tag filters use
+        - code [ref=e236]: "#"
+        - text: prefix (e.g.,
+        - code [ref=e237]: "#e"
+        - text: ","
+        - code [ref=e238]: "#p"
+        - text: ","
+        - code [ref=e239]: "#t"
+        - text: ","
+        - code [ref=e240]: "#d"
+        - text: )
+      - listitem [ref=e241]:
+        - code [ref=e242]: search
+        - text: enables NIP-50 full-text search
+    - 'heading "Example: Subscribe to Recent Videos" [level=3] [ref=e243]'
+    - code [ref=e245]: "[\"REQ\", \"videos-feed\", { \"kinds\": [34235, 34236], \"limit\": 50 }]"
+    - 'heading "Example: Subscribe to Comments on a Video" [level=3] [ref=e246]'
+    - code [ref=e248]: "[\"REQ\", \"video-comments\", { \"kinds\": [1111], \"#E\": [\"<video-event-id>\"] }]"
+    - separator [ref=e249]
+    - heading "Video Events (NIP-71)" [level=2] [ref=e250]
+    - heading "Structure" [level=3] [ref=e251]
+    - code [ref=e253]: "{ \"kind\": 34236, \"tags\": [ [\"d\", \"unique-video-id\"], [\"title\", \"My Amazing Video\"], [\"imeta\", \"url https://example.com/video.mp4\", \"m video/mp4\", \"dim 1080x1920\", \"duration 30\", \"x sha256hash\", \"image https://example.com/thumb.jpg\", \"size 5242880\", \"blurhash LEHV6nWB2yk8pyoJadR*.7kCMdnj\" ], [\"t\", \"nostr\"], [\"t\", \"bitcoin\"] ], \"content\": \"Video description here\" }"
+    - heading "Required Tags" [level=3] [ref=e254]
+    - table [ref=e255]:
+      - rowgroup [ref=e256]:
+        - row "Tag Description" [ref=e257]:
+          - columnheader "Tag" [ref=e258]
+          - columnheader "Description" [ref=e259]
+      - rowgroup [ref=e260]:
+        - row "d Unique identifier (REQUIRED for all parameterized replaceable)" [ref=e261]:
+          - cell "d" [ref=e262]:
+            - code [ref=e263]: d
+          - cell "Unique identifier (REQUIRED for all parameterized replaceable)" [ref=e264]
+        - row "title Video title" [ref=e265]:
+          - cell "title" [ref=e266]:
+            - code [ref=e267]: title
+          - cell "Video title" [ref=e268]
+        - row "Source Either imeta with url or legacy url tag" [ref=e269]:
+          - cell "Source" [ref=e270]
+          - cell "Either imeta with url or legacy url tag" [ref=e271]:
+            - text: Either
+            - code [ref=e272]: imeta
+            - text: with
+            - code [ref=e273]: url
+            - text: or legacy
+            - code [ref=e274]: url
+            - text: tag
+        - row "Thumbnail Either imeta with image, or thumb/thumbnail/image tag" [ref=e275]:
+          - cell "Thumbnail" [ref=e276]
+          - cell "Either imeta with image, or thumb/thumbnail/image tag" [ref=e277]:
+            - text: Either
+            - code [ref=e278]: imeta
+            - text: with
+            - code [ref=e279]: image
+            - text: ", or"
+            - code [ref=e280]: thumb
+            - text: /
+            - code [ref=e281]: thumbnail
+            - text: /
+            - code [ref=e282]: image
+            - text: tag
+    - heading "imeta Tag Format" [level=3] [ref=e283]
+    - paragraph [ref=e284]:
+      - text: The
+      - code [ref=e285]: imeta
+      - text: "tag packs media metadata in a single tag:"
+    - code [ref=e287]: "[\"imeta\", \"url <video-url>\", # Required \"m <mime-type>\", # video/mp4, video/webm, etc. \"dim <width>x<height>\", # Dimensions \"duration <seconds>\", # Duration in seconds \"x <sha256-hash>\", # File hash \"image <thumbnail-url>\", # Thumbnail \"size <bytes>\", # File size \"blurhash <hash>\", # Placeholder blur \"alt <description>\" # Accessibility text ]"
+    - separator [ref=e288]
+    - heading "Comment Events (NIP-22)" [level=2] [ref=e289]
+    - paragraph [ref=e290]: "Comments use uppercase tags for root scope and lowercase for parent:"
+    - code [ref=e292]: "{ \"kind\": 1111, \"tags\": [ [\"E\", \"<video-event-id>\"], [\"K\", \"34236\"], [\"P\", \"<video-author-pubkey>\"], [\"e\", \"<parent-event-id>\"], [\"k\", \"34236\"], [\"p\", \"<parent-author-pubkey>\"] ], \"content\": \"Great video!\" }"
+    - paragraph [ref=e293]:
+      - strong [ref=e294]: "Required tags:"
+    - list [ref=e295]:
+      - listitem [ref=e296]:
+        - code [ref=e297]: K
+        - text: "- Root event kind (the video)"
+      - listitem [ref=e298]:
+        - code [ref=e299]: k
+        - text: "- Parent event kind (video for top-level, 1111 for reply)"
+      - listitem [ref=e300]:
+        - code [ref=e301]: E
+        - text: "- Root event ID (always the video)"
+      - listitem [ref=e302]:
+        - code [ref=e303]: e
+        - text: "- Parent event ID (video or comment being replied to)"
+    - separator [ref=e304]
+    - heading "Reactions (NIP-25)" [level=2] [ref=e305]
+    - paragraph [ref=e306]: "Like/react to a video:"
+    - code [ref=e308]: "{ \"kind\": 7, \"tags\": [ [\"e\", \"<video-event-id>\"], [\"p\", \"<video-author-pubkey>\"], [\"k\", \"34236\"] ], \"content\": \"+\" }"
+    - paragraph [ref=e309]:
+      - strong [ref=e310]: "Content values:"
+    - list [ref=e311]:
+      - listitem [ref=e312]:
+        - code [ref=e313]: +
+        - text: or empty - Like
+      - listitem [ref=e314]:
+        - code [ref=e315]: "-"
+        - text: "- Dislike"
+      - listitem [ref=e316]:
+        - text: Emoji - Custom reaction (e.g.,
+        - code [ref=e317]: 🔥
+        - text: ","
+        - code [ref=e318]: ❤️
+        - text: )
+    - separator [ref=e319]
+    - heading "Reposts (NIP-18)" [level=2] [ref=e320]
+    - heading "Simple Repost (Kind 6)" [level=3] [ref=e321]
+    - paragraph [ref=e322]: "For kind 1 text notes only:"
+    - code [ref=e324]: "{ \"kind\": 6, \"tags\": [ [\"e\", \"<event-id>\", \"<relay-url>\"], [\"p\", \"<author-pubkey>\"] ], \"content\": \"\" }"
+    - heading "Generic Repost (Kind 16)" [level=3] [ref=e325]
+    - paragraph [ref=e326]: "For any event kind including videos:"
+    - code [ref=e328]: "{ \"kind\": 16, \"tags\": [ [\"e\", \"<video-event-id>\", \"<relay-url>\"], [\"p\", \"<video-author-pubkey>\"], [\"k\", \"34236\"] ], \"content\": \"\" }"
+    - paragraph [ref=e329]:
+      - strong [ref=e330]: Use kind 16 for reposting videos.
+    - separator [ref=e331]
+    - heading "Deletion (NIP-09)" [level=2] [ref=e332]
+    - paragraph [ref=e333]: "Delete your own events:"
+    - code [ref=e335]: "{ \"kind\": 5, \"tags\": [ [\"e\", \"<event-id-to-delete>\"], [\"e\", \"<another-event-id>\"], [\"a\", \"34236:<your-pubkey>:<d-tag>\"] ], \"content\": \"optional reason\" }"
+    - list [ref=e336]:
+      - listitem [ref=e337]:
+        - text: Use
+        - code [ref=e338]: e
+        - text: tags for specific event IDs
+      - listitem [ref=e339]:
+        - text: Use
+        - code [ref=e340]: a
+        - text: tags for addressable events (kind:pubkey:d-tag format)
+      - listitem [ref=e341]: You can only delete events YOU authored
+      - listitem [ref=e342]: Relay will reject deletion of others' events
+    - separator [ref=e343]
+    - heading "Profile Events (Kind 0)" [level=2] [ref=e344]
+    - paragraph [ref=e345]: "User metadata is stored in kind 0 with JSON content:"
+    - code [ref=e347]: "{ \"kind\": 0, \"tags\": [], \"content\": \"{\\\"name\\\":\\\"username\\\",\\\"display_name\\\":\\\"Display Name\\\",\\\"picture\\\":\\\"https://example.com/avatar.jpg\\\",\\\"banner\\\":\\\"https://example.com/banner.jpg\\\",\\\"about\\\":\\\"Bio text\\\",\\\"nip05\\\":\\\"user@domain.com\\\",\\\"lud16\\\":\\\"user@getalby.com\\\",\\\"website\\\":\\\"https://example.com\\\"}\" }"
+    - paragraph [ref=e348]:
+      - strong [ref=e349]: "Profile JSON fields:"
+    - table [ref=e350]:
+      - rowgroup [ref=e351]:
+        - row "Field Description" [ref=e352]:
+          - columnheader "Field" [ref=e353]
+          - columnheader "Description" [ref=e354]
+      - rowgroup [ref=e355]:
+        - row "name Username (lowercase, no spaces)" [ref=e356]:
+          - cell "name" [ref=e357]:
+            - code [ref=e358]: name
+          - cell "Username (lowercase, no spaces)" [ref=e359]
+        - row "display_name Display name" [ref=e360]:
+          - cell "display_name" [ref=e361]:
+            - code [ref=e362]: display_name
+          - cell "Display name" [ref=e363]
+        - row "picture Avatar URL" [ref=e364]:
+          - cell "picture" [ref=e365]:
+            - code [ref=e366]: picture
+          - cell "Avatar URL" [ref=e367]
+        - row "banner Banner image URL" [ref=e368]:
+          - cell "banner" [ref=e369]:
+            - code [ref=e370]: banner
+          - cell "Banner image URL" [ref=e371]
+        - row "about Bio/description" [ref=e372]:
+          - cell "about" [ref=e373]:
+            - code [ref=e374]: about
+          - cell "Bio/description" [ref=e375]
+        - row "nip05 NIP-05 identifier (user@domain.com)" [ref=e376]:
+          - cell "nip05" [ref=e377]:
+            - code [ref=e378]: nip05
+          - cell "NIP-05 identifier (user@domain.com)" [ref=e379]:
+            - text: NIP-05 identifier (
+            - link "user@domain.com" [ref=e380] [cursor=pointer]:
+              - /url: mailto:user@domain.com
+            - text: )
+        - row "lud16 Lightning address" [ref=e381]:
+          - cell "lud16" [ref=e382]:
+            - code [ref=e383]: lud16
+          - cell "Lightning address" [ref=e384]
+        - row "website Website URL" [ref=e385]:
+          - cell "website" [ref=e386]:
+            - code [ref=e387]: website
+          - cell "Website URL" [ref=e388]
+    - separator [ref=e389]
+    - heading "Contact Lists (Kind 3)" [level=2] [ref=e390]
+    - paragraph [ref=e391]: "Follow list stored in tags:"
+    - code [ref=e393]: "{ \"kind\": 3, \"tags\": [ [\"p\", \"<pubkey-1>\", \"<relay-url>\", \"<petname>\"], [\"p\", \"<pubkey-2>\", \"<relay-url>\", \"<petname>\"], [\"p\", \"<pubkey-3>\"] ], \"content\": \"\" }"
+    - paragraph [ref=e394]:
+      - text: Each
+      - code [ref=e395]: p
+      - text: tag is a followed pubkey. Relay URL and petname are optional.
+    - separator [ref=e396]
+    - heading "Addressable Event References" [level=2] [ref=e397]
+    - paragraph [ref=e398]:
+      - text: For parameterized replaceable events (kinds 30000-39999), use the
+      - code [ref=e399]: a
+      - text: "tag:"
+    - code [ref=e401]: "[\"a\", \"<kind>:<pubkey>:<d-tag>\", \"<relay-url>\"]"
+    - paragraph [ref=e402]: "Example - reference a video in a playlist:"
+    - code [ref=e404]: "[\"a\", \"34236:abc123def456...:my-video-id\", \"wss://relay.divine.video\"]"
+    - paragraph [ref=e405]:
+      - strong [ref=e406]: "Querying by address:"
+    - code [ref=e408]: "[\"REQ\", \"sub-id\", { \"#a\": [\"34236:abc123def456...:my-video-id\"] }]"
+    - separator [ref=e409]
+    - heading "Curation Sets / Playlists (Kind 30005)" [level=2] [ref=e410]
+    - paragraph [ref=e411]: "Create a video playlist:"
+    - code [ref=e413]: "{ \"kind\": 30005, \"tags\": [ [\"d\", \"my-playlist\"], [\"title\", \"My Favorite Videos\"], [\"description\", \"A collection of great content\"], [\"image\", \"https://example.com/playlist-cover.jpg\"], [\"a\", \"34236:pubkey1:video-d-tag-1\", \"wss://relay.divine.video\"], [\"a\", \"34236:pubkey2:video-d-tag-2\", \"wss://relay.divine.video\"], [\"e\", \"video-event-id-3\"] ], \"content\": \"\" }"
+    - paragraph [ref=e414]:
+      - strong [ref=e415]: "Tags:"
+    - list [ref=e416]:
+      - listitem [ref=e417]:
+        - code [ref=e418]: d
+        - text: "- Playlist identifier (REQUIRED)"
+      - listitem [ref=e419]:
+        - code [ref=e420]: title
+        - text: or
+        - code [ref=e421]: name
+        - text: "- Playlist title"
+      - listitem [ref=e422]:
+        - code [ref=e423]: description
+        - text: "- Playlist description"
+      - listitem [ref=e424]:
+        - code [ref=e425]: image
+        - text: "- Cover image URL"
+      - listitem [ref=e426]:
+        - code [ref=e427]: a
+        - text: tags - References to videos by address (preferred)
+      - listitem [ref=e428]:
+        - code [ref=e429]: e
+        - text: tags - References to videos by event ID
+    - separator [ref=e430]
+    - heading "Bookmarks (NIP-51)" [level=2] [ref=e431]
+    - heading "Bookmark List (Kind 10003)" [level=3] [ref=e432]
+    - paragraph [ref=e433]: "Simple list of bookmarked content:"
+    - code [ref=e435]: "{ \"kind\": 10003, \"tags\": [ [\"e\", \"<video-id-1>\"], [\"a\", \"34236:<pubkey>:<d-tag>\"] ], \"content\": \"\" }"
+    - heading "Bookmark Set (Kind 30003)" [level=3] [ref=e436]
+    - paragraph [ref=e437]: "Categorized bookmarks with a name:"
+    - code [ref=e439]: "{ \"kind\": 30003, \"tags\": [ [\"d\", \"watch-later\"], [\"title\", \"Watch Later\"], [\"e\", \"<video-id-1>\"], [\"a\", \"34236:<pubkey>:<d-tag>\"] ], \"content\": \"\" }"
+    - separator [ref=e440]
+    - heading "REST API Reference" [level=2] [ref=e441]
+    - heading "Request Headers" [level=3] [ref=e442]
+    - paragraph [ref=e443]: "For all POST requests:"
+    - code [ref=e445]: "Content-Type: application/json"
+    - heading "Timestamps" [level=3] [ref=e446]
+    - paragraph [ref=e447]:
+      - strong [ref=e448]: "Important:"
+      - text: "The REST API returns timestamps in two formats depending on the endpoint:"
+    - list [ref=e449]:
+      - listitem [ref=e450]:
+        - text: "Most list endpoints: ISO 8601 string ("
+        - code [ref=e451]: "\"2024-01-15T10:30:00Z\""
+        - text: )
+      - listitem [ref=e452]:
+        - text: Raw event endpoints (
+        - code [ref=e453]: "/api/event/{id}"
+        - text: ","
+        - code [ref=e454]: "/api/videos/{id}"
+        - text: "): Unix timestamp integer"
+    - paragraph [ref=e455]:
+      - text: Always check the response structure. When in doubt, the
+      - code [ref=e456]: created_at
+      - text: field can be parsed as either.
+    - heading "Videos" [level=3] [ref=e457]
+    - heading "GET /api/videos" [level=4] [ref=e458]
+    - paragraph [ref=e459]: List videos with sorting and filtering.
+    - paragraph [ref=e460]:
+      - strong [ref=e461]: "Query Parameters:"
+    - table [ref=e462]:
+      - rowgroup [ref=e463]:
+        - row "Param Type Description" [ref=e464]:
+          - columnheader "Param" [ref=e465]
+          - columnheader "Type" [ref=e466]
+          - columnheader "Description" [ref=e467]
+      - rowgroup [ref=e468]:
+        - row "sort string recent (default), trending, popular, loops, likes, comments, engagement, published" [ref=e469]:
+          - cell "sort" [ref=e470]:
+            - code [ref=e471]: sort
+          - cell "string" [ref=e472]
+          - cell "recent (default), trending, popular, loops, likes, comments, engagement, published" [ref=e473]:
+            - code [ref=e474]: recent
+            - text: (default),
+            - code [ref=e475]: trending
+            - text: ","
+            - code [ref=e476]: popular
+            - text: ","
+            - code [ref=e477]: loops
+            - text: ","
+            - code [ref=e478]: likes
+            - text: ","
+            - code [ref=e479]: comments
+            - text: ","
+            - code [ref=e480]: engagement
+            - text: ","
+            - code [ref=e481]: published
+        - row "kind number Filter by kind (34235 or 34236)" [ref=e482]:
+          - cell "kind" [ref=e483]:
+            - code [ref=e484]: kind
+          - cell "number" [ref=e485]
+          - cell "Filter by kind (34235 or 34236)" [ref=e486]
+        - row "limit number Max results (1-100, default 50)" [ref=e487]:
+          - cell "limit" [ref=e488]:
+            - code [ref=e489]: limit
+          - cell "number" [ref=e490]
+          - cell "Max results (1-100, default 50)" [ref=e491]
+        - row "offset number Skip N results for pagination (use with limit)" [ref=e492]:
+          - cell "offset" [ref=e493]:
+            - code [ref=e494]: offset
+          - cell "number" [ref=e495]
+          - cell "Skip N results for pagination (use with limit)" [ref=e496]:
+            - text: Skip N results for pagination (use with
+            - code [ref=e497]: limit
+            - text: )
+        - row "tag string Filter by hashtag" [ref=e498]:
+          - cell "tag" [ref=e499]:
+            - code [ref=e500]: tag
+          - cell "string" [ref=e501]
+          - cell "Filter by hashtag" [ref=e502]
+        - row "before number Unix timestamp for pagination" [ref=e503]:
+          - cell "before" [ref=e504]:
+            - code [ref=e505]: before
+          - cell "number" [ref=e506]
+          - cell "Unix timestamp for pagination" [ref=e507]
+        - row "after number Videos created after timestamp" [ref=e508]:
+          - cell "after" [ref=e509]:
+            - code [ref=e510]: after
+          - cell "number" [ref=e511]
+          - cell "Videos created after timestamp" [ref=e512]
+        - row "platform string Filter by platform (e.g., vine)" [ref=e513]:
+          - cell "platform" [ref=e514]:
+            - code [ref=e515]: platform
+          - cell "string" [ref=e516]
+          - cell "Filter by platform (e.g., vine)" [ref=e517]:
+            - text: Filter by platform (e.g.,
+            - code [ref=e518]: vine
+            - text: )
+        - row "has_embedded_stats boolean Only videos with loop counts" [ref=e519]:
+          - cell "has_embedded_stats" [ref=e520]:
+            - code [ref=e521]: has_embedded_stats
+          - cell "boolean" [ref=e522]
+          - cell "Only videos with loop counts" [ref=e523]
+        - row "d_tag string Filter by exact NIP-33 d tag" [ref=e524]:
+          - cell "d_tag" [ref=e525]:
+            - code [ref=e526]: d_tag
+          - cell "string" [ref=e527]
+          - cell "Filter by exact NIP-33 d tag" [ref=e528]:
+            - text: Filter by exact NIP-33
+            - code [ref=e529]: d
+            - text: tag
+        - row "classic boolean Shortcut for before + sort by loops" [ref=e530]:
+          - cell "classic" [ref=e531]:
+            - code [ref=e532]: classic
+          - cell "boolean" [ref=e533]
+          - cell "Shortcut for before + sort by loops" [ref=e534]:
+            - text: Shortcut for
+            - code [ref=e535]: before
+            - text: + sort by loops
+        - row "nsfw string Set to show to include default-hidden moderation labels on /api/videos" [ref=e536]:
+          - cell "nsfw" [ref=e537]:
+            - code [ref=e538]: nsfw
+          - cell "string" [ref=e539]
+          - cell "Set to show to include default-hidden moderation labels on /api/videos" [ref=e540]:
+            - text: Set to
+            - code [ref=e541]: show
+            - text: to include default-hidden moderation labels on
+            - code [ref=e542]: /api/videos
+        - row "label string Filter by any effective content label, including moderation labels and discovery labels such as topic:music" [ref=e543]:
+          - cell "label" [ref=e544]:
+            - code [ref=e545]: label
+          - cell "string" [ref=e546]
+          - cell "Filter by any effective content label, including moderation labels and discovery labels such as topic:music" [ref=e547]:
+            - text: Filter by any effective content label, including moderation labels and discovery labels such as
+            - code [ref=e548]: topic:music
+        - row "category string Convenience alias for label=topic:<category>" [ref=e549]:
+          - cell "category" [ref=e550]:
+            - code [ref=e551]: category
+          - cell "string" [ref=e552]
+          - cell "Convenience alias for label=topic:<category>" [ref=e553]:
+            - text: Convenience alias for
+            - code [ref=e554]: label=topic:<category>
+    - paragraph [ref=e555]:
+      - strong [ref=e556]: "Note on sort options:"
+    - list [ref=e557]:
+      - listitem [ref=e558]:
+        - code [ref=e559]: recent
+        - text: "- Newest first (default)"
+      - listitem [ref=e560]:
+        - code [ref=e561]: trending
+        - text: or
+        - code [ref=e562]: popular
+        - text: "- Sorted by engagement/trending score"
+      - listitem [ref=e563]:
+        - code [ref=e564]: loops
+        - text: "- Sorted by embedded loop count (primarily Vine archive data)"
+      - listitem [ref=e565]:
+        - code [ref=e566]: likes
+        - text: ","
+        - code [ref=e567]: comments
+        - text: ","
+        - code [ref=e568]: engagement
+        - text: ","
+        - code [ref=e569]: published
+        - text: "- Alternate ranking modes for discovery/creator views"
+    - paragraph [ref=e570]:
+      - strong [ref=e571]: "Note:"
+      - text: When
+      - code [ref=e572]: sort=loops
+      - text: ", the response includes additional fields like"
+      - code [ref=e573]: embedded_likes
+      - text: ","
+      - code [ref=e574]: sha256
+      - text: ","
+      - code [ref=e575]: platform
+      - text: ", etc., plus"
+      - code [ref=e576]: reactions
+      - text: ","
+      - code [ref=e577]: comments
+      - text: ","
+      - code [ref=e578]: reposts
+      - text: ", and"
+      - code [ref=e579]: engagement_score
+      - text: . When filters like
+      - code [ref=e580]: before
+      - text: ","
+      - code [ref=e581]: after
+      - text: ","
+      - code [ref=e582]: platform
+      - text: ", or"
+      - code [ref=e583]: has_embedded_stats
+      - text: are used, these also use the extended response format. All response formats now include
+      - code [ref=e584]: loops
+      - text: (safe loop count).
+    - paragraph [ref=e585]:
+      - strong [ref=e586]: "Response:"
+    - code [ref=e588]: "[ { \"id\": \"64-char-hex\", \"pubkey\": \"64-char-hex\", \"created_at\": \"2024-01-15T10:30:00Z\", \"kind\": 34236, \"d_tag\": \"my-video\", \"title\": \"Video Title\", \"content\": \"Description\", \"thumbnail\": \"https://...\", \"video_url\": \"https://...\", \"reactions\": 150, \"comments\": 42, \"reposts\": 10, \"engagement_score\": 254, \"loops\": 5000, \"views\": 12345, \"author_name\": \"CreatorName\", \"author_avatar\": \"https://...\", \"published_at\": 1705314600, \"language\": \"en\", \"text_track_ref\": \"39307:pubkey:d-tag\", \"text_track_content\": \"WEBVTT...\", \"tags\": [[\"d\", \"my-video\"], [\"verification\", \"human\"], [\"platform\", \"vine\"]], \"verification\": \"human\", \"proofmode\": \"proofmode-v1\", \"device_attestation\": \"apple\", \"pgp_fingerprint\": \"ABCD1234\", \"c2pa_manifest_id\": \"manifest-123\", \"platform\": \"vine\", \"client\": \"divine-web\", \"moderation_status\": \"human_made\", \"ai_score\": 0.03, \"ai_source\": \"content_labels\", \"ai_checked_at\": 1705314700, \"trending_score\": 0.85, \"content_labels\": [\"safe\"] } ]"
+    - paragraph [ref=e589]:
+      - strong [ref=e590]:
+        - text: Note on
+        - code [ref=e591]: content_labels
+        - text: ":"
+      - code [ref=e592]: content_labels
+      - text: is a mixed-purpose field. It can contain moderation labels such as
+      - code [ref=e593]: nudity
+      - text: or
+      - code [ref=e594]: violence
+      - text: ", and generic classifier/discovery labels such as"
+      - code [ref=e595]: topic:music
+      - text: or
+      - code [ref=e596]: activity:listening-to-music
+      - text: . There is no separate
+      - code [ref=e597]: moderation_labels
+      - text: field today. See
+      - link "Content Moderation" [ref=e598] [cursor=pointer]:
+        - /url: "#content-moderation"
+      - text: below for the stable moderation vocabulary, merge rules, and server/client responsibility split.
+    - paragraph [ref=e599]:
+      - strong [ref=e600]: "Note on safety filtering:"
+      - code [ref=e601]: /api/videos
+      - text: supports legacy
+      - code [ref=e602]: nsfw=show
+      - text: . There is no stable per-label hide parameter such as
+      - code [ref=e603]: exclude_label
+      - text: or
+      - code [ref=e604]: exclude_moderation_labels
+      - text: today.
+    - paragraph [ref=e605]:
+      - strong [ref=e606]:
+        - text: Note on
+        - code [ref=e607]: views
+        - text: ":"
+      - text: The
+      - code [ref=e608]: views
+      - text: field is the total view count from the view tracking system. It is included in all video list endpoints (
+      - code [ref=e609]: /api/videos
+      - text: ","
+      - code [ref=e610]: "/api/users/{pubkey}/videos"
+      - text: ","
+      - code [ref=e611]: /api/search
+      - text: ","
+      - code [ref=e612]: /api/videos/bulk
+      - text: ", etc.)."
+    - paragraph [ref=e613]:
+      - strong [ref=e614]:
+        - text: Note on
+        - code [ref=e615]: loops
+        - text: ":"
+      - text: The
+      - code [ref=e616]: loops
+      - text: "field uses safe loop logic: prefers computed loops from view tracking, falls back to capped embedded loops for pre-2025 videos (Vine imports), and 0 for newer videos without view data."
+    - paragraph [ref=e617]:
+      - strong [ref=e618]: "Note on list/feed metadata fields:"
+      - text: Public video list endpoints (
+      - code [ref=e619]: /api/videos
+      - text: ","
+      - code [ref=e620]: "/api/users/{pubkey}/videos"
+      - text: ","
+      - code [ref=e621]: "/api/users/{pubkey}/feed"
+      - text: ","
+      - code [ref=e622]: /api/search
+      - text: ") include:"
+    - list [ref=e623]:
+      - listitem [ref=e624]:
+        - text: full
+        - code [ref=e625]: tags
+        - text: from the source video event,
+      - listitem [ref=e626]:
+        - text: badge-critical extracted fields (
+        - code [ref=e627]: verification
+        - text: ","
+        - code [ref=e628]: proofmode
+        - text: ","
+        - code [ref=e629]: device_attestation
+        - text: ","
+        - code [ref=e630]: pgp_fingerprint
+        - text: ","
+        - code [ref=e631]: c2pa_manifest_id
+        - text: ","
+        - code [ref=e632]: platform
+        - text: ","
+        - code [ref=e633]: client
+        - text: ","
+        - code [ref=e634]: text_track_ref
+        - text: ","
+        - code [ref=e635]: text_track_content
+        - text: ),
+      - listitem [ref=e636]:
+        - text: public moderation fields (
+        - code [ref=e637]: moderation_status
+        - text: ","
+        - code [ref=e638]: ai_score
+        - text: ","
+        - code [ref=e639]: ai_source
+        - text: ","
+        - code [ref=e640]: ai_checked_at
+        - text: ),
+      - listitem [ref=e641]:
+        - code [ref=e642]: language
+        - text: from NIP-32 self-labeling tags.
+    - heading "GET /api/videos/events" [level=4] [ref=e643]
+    - paragraph [ref=e644]: List videos with full verifiable Nostr events.
+    - paragraph [ref=e645]:
+      - strong [ref=e646]: "Query Parameters:"
+    - table [ref=e647]:
+      - rowgroup [ref=e648]:
+        - row "Param Type Description" [ref=e649]:
+          - columnheader "Param" [ref=e650]
+          - columnheader "Type" [ref=e651]
+          - columnheader "Description" [ref=e652]
+      - rowgroup [ref=e653]:
+        - row "sort string recent (default), trending, popular, or loops" [ref=e654]:
+          - cell "sort" [ref=e655]:
+            - code [ref=e656]: sort
+          - cell "string" [ref=e657]
+          - cell "recent (default), trending, popular, or loops" [ref=e658]:
+            - code [ref=e659]: recent
+            - text: (default),
+            - code [ref=e660]: trending
+            - text: ","
+            - code [ref=e661]: popular
+            - text: ", or"
+            - code [ref=e662]: loops
+        - row "kind number Filter by kind (34235 or 34236)" [ref=e663]:
+          - cell "kind" [ref=e664]:
+            - code [ref=e665]: kind
+          - cell "number" [ref=e666]
+          - cell "Filter by kind (34235 or 34236)" [ref=e667]
+        - row "limit number Max results (1-100, default 50)" [ref=e668]:
+          - cell "limit" [ref=e669]:
+            - code [ref=e670]: limit
+          - cell "number" [ref=e671]
+          - cell "Max results (1-100, default 50)" [ref=e672]
+        - row "before number Unix timestamp for cursor-based pagination" [ref=e673]:
+          - cell "before" [ref=e674]:
+            - code [ref=e675]: before
+          - cell "number" [ref=e676]
+          - cell "Unix timestamp for cursor-based pagination" [ref=e677]
+        - row "d_tag string Filter by exact NIP-33 d tag" [ref=e678]:
+          - cell "d_tag" [ref=e679]:
+            - code [ref=e680]: d_tag
+          - cell "string" [ref=e681]
+          - cell "Filter by exact NIP-33 d tag" [ref=e682]:
+            - text: Filter by exact NIP-33
+            - code [ref=e683]: d
+            - text: tag
+        - row "tag string Filter by hashtag (t tag)" [ref=e684]:
+          - cell "tag" [ref=e685]:
+            - code [ref=e686]: tag
+          - cell "string" [ref=e687]
+          - cell "Filter by hashtag (t tag)" [ref=e688]:
+            - text: Filter by hashtag (
+            - code [ref=e689]: t
+            - text: tag)
+        - row "platform string Filter by platform (e.g., vine)" [ref=e690]:
+          - cell "platform" [ref=e691]:
+            - code [ref=e692]: platform
+          - cell "string" [ref=e693]
+          - cell "Filter by platform (e.g., vine)" [ref=e694]:
+            - text: Filter by platform (e.g.,
+            - code [ref=e695]: vine
+            - text: )
+        - row "classic boolean If true and sort is omitted, defaults to loops" [ref=e696]:
+          - cell "classic" [ref=e697]:
+            - code [ref=e698]: classic
+          - cell "boolean" [ref=e699]
+          - cell "If true and sort is omitted, defaults to loops" [ref=e700]:
+            - text: If true and
+            - code [ref=e701]: sort
+            - text: is omitted, defaults to
+            - code [ref=e702]: loops
+    - paragraph [ref=e703]:
+      - strong [ref=e704]: "Response:"
+    - code [ref=e706]: "{ \"videos\": [ { \"event\": { /* full Nostr event */ }, \"stats\": { \"reactions\": 150, \"comments\": 42, \"reposts\": 10, \"engagement_score\": 254, \"author_name\": \"CreatorName\", \"author_avatar\": \"https://...\", \"text_track_ref\": \"\", \"text_track_content\": \"\", \"content_labels\": [\"safe\"] } } ], \"next_cursor\": \"1700000000\", \"has_more\": true }"
+    - 'heading "GET /api/videos/{id}" [level=4] [ref=e707]'
+    - paragraph [ref=e708]: Get a single video with event and stats.
+    - paragraph [ref=e709]:
+      - text: The
+      - code [ref=e710]: "{id}"
+      - text: "parameter accepts either:"
+    - list [ref=e711]:
+      - listitem [ref=e712]:
+        - strong [ref=e713]: Event ID
+        - text: ": 64-character hex Nostr event ID (fast primary key lookup)"
+      - listitem [ref=e714]:
+        - strong [ref=e715]: D-tag
+        - text: ": Addressable event identifier that stays stable across edits (fallback lookup)"
+    - paragraph [ref=e716]: This means shared video URLs survive edits — when a user edits video metadata, the event ID changes but the d-tag stays the same.
+    - paragraph [ref=e717]:
+      - strong [ref=e718]: "Response:"
+    - code [ref=e720]: "{ \"event\": { \"id\": \"64-char-hex\", \"pubkey\": \"64-char-hex\", \"created_at\": 1700000000, \"kind\": 34236, \"content\": \"Description\", \"tags\": [[\"d\", \"...\"], [\"text-track\", \"https://...\", \"subtitles\", \"en\", \"text/vtt\"], ...], \"sig\": \"128-char-hex\" }, \"stats\": { \"reactions\": 150, \"comments\": 42, \"reposts\": 10, \"engagement_score\": 254, \"author_name\": \"CreatorName\", \"author_avatar\": \"https://...\", \"trending_score\": 0.85, \"embedded_loops\": 0, \"text_track_ref\": \"https://cdn.example.com/subtitles/en.vtt\", \"text_track_content\": \"WEBVTT\\n\\n00:00:01.000 --> 00:00:04.000\\nHello world\", \"content_labels\": [\"safe\"] } }"
+    - list [ref=e721]:
+      - listitem [ref=e722]:
+        - code [ref=e723]: text_track_ref
+        - text: ": URL from the video event's"
+        - code [ref=e724]: text-track
+        - text: tag (empty string if none)
+      - listitem [ref=e725]:
+        - code [ref=e726]: text_track_content
+        - text: ": WebVTT subtitle content from associated Kind 39307 event (empty string if none)"
+    - 'heading "GET /api/videos/{id}/stats" [level=4] [ref=e727]'
+    - paragraph [ref=e728]: Get engagement and view stats (reactions, comments, reposts, views, loops).
+    - paragraph [ref=e729]:
+      - strong [ref=e730]: "Response:"
+    - code [ref=e732]: "{ \"id\": \"64-char-hex\", \"pubkey\": \"64-char-hex\", \"created_at\": \"2024-01-15T10:30:00Z\", \"kind\": 34236, \"d_tag\": \"my-video\", \"title\": \"Video Title\", \"content\": \"Description\", \"thumbnail\": \"https://...\", \"video_url\": \"https://...\", \"reactions\": 150, \"comments\": 42, \"reposts\": 10, \"engagement_score\": 254, \"loops\": 5000, \"views\": 12345, \"author_name\": \"CreatorName\", \"author_avatar\": \"https://...\", \"published_at\": 1705314600, \"expiration_at\": null, \"language\": \"en\", \"text_track_ref\": \"39307:pubkey:d-tag\", \"text_track_content\": \"WEBVTT...\", \"tags\": [[\"d\", \"my-video\"], [\"verification\", \"human\"]], \"verification\": \"human\", \"proofmode\": \"proofmode-v1\", \"device_attestation\": \"apple\", \"pgp_fingerprint\": \"ABCD1234\", \"c2pa_manifest_id\": \"manifest-123\", \"platform\": \"vine\", \"client\": \"divine-web\", \"moderation_status\": \"human_made\", \"ai_score\": 0.03, \"ai_source\": \"content_labels\", \"ai_checked_at\": 1705314700, \"content_labels\": [\"safe\"] }"
+    - 'heading "GET /api/videos/{id}/views" [level=4] [ref=e733]'
+    - paragraph [ref=e734]: Get view statistics.
+    - paragraph [ref=e735]:
+      - strong [ref=e736]: "Response:"
+    - code [ref=e738]: "{ \"views\": 1000, \"unique_viewers\": 750, \"total_watch_time\": 45000, \"avg_completion\": 0.75 }"
+    - 'heading "GET /api/videos/{id}/analytics" [level=4] [ref=e739]'
+    - paragraph [ref=e740]: Get post-detail analytics for a single video.
+    - paragraph [ref=e741]:
+      - strong [ref=e742]: "Query:"
+      - code [ref=e743]: window
+      - text: "- Time window:"
+      - code [ref=e744]: 7d
+      - text: ","
+      - code [ref=e745]: 28d
+      - text: ","
+      - code [ref=e746]: 30d
+      - text: (default),
+      - code [ref=e747]: 90d
+      - text: ", or"
+      - code [ref=e748]: all
+    - paragraph [ref=e749]:
+      - strong [ref=e750]: "Response:"
+    - code [ref=e752]: "{ \"id\": \"64-char-hex\", \"window\": \"30d\", \"summary\": { \"views\": 12345, \"unique_viewers\": 6789, \"reactions\": 150, \"comments\": 42, \"reposts\": 10, \"shares\": null, \"saves\": null, \"followers_gained\": null, \"profile_visits\": null, \"total_watch_seconds\": 45000.5, \"avg_watch_seconds\": 12.3, \"completion_rate\": 0.74, \"rewatch_rate\": 0.11, \"engagement_rate\": 0.016, \"has_view_data\": true }, \"traffic_sources\": { \"for_you\": 0.42, \"following\": 0.18, \"profile\": 0.12, \"search\": 0.09, \"hashtag\": 0.07, \"external\": 0.08, \"shares\": 0.04 }, \"retention_curve\": [ { \"second\": 0, \"viewer_pct\": 1.0 }, { \"second\": 3, \"viewer_pct\": 0.86 } ] }"
+    - paragraph [ref=e753]:
+      - strong [ref=e754]: "Notes:"
+    - list [ref=e755]:
+      - listitem [ref=e756]:
+        - code [ref=e757]: window
+        - text: defaults to
+        - code [ref=e758]: 30d
+      - listitem [ref=e759]:
+        - text: Summary fields may be
+        - code [ref=e760]: "null"
+        - text: when view-tracking data is unavailable for the selected period
+    - 'heading "GET /api/videos/{id}/comments" [level=4] [ref=e761]'
+    - paragraph [ref=e762]: Get NIP-22 comments (Kind 1111) for a video. Accepts event ID or d-tag.
+    - paragraph [ref=e763]:
+      - strong [ref=e764]: "Parameters:"
+    - table [ref=e765]:
+      - rowgroup [ref=e766]:
+        - row "Param Type Default Description" [ref=e767]:
+          - columnheader "Param" [ref=e768]
+          - columnheader "Type" [ref=e769]
+          - columnheader "Default" [ref=e770]
+          - columnheader "Description" [ref=e771]
+      - rowgroup [ref=e772]:
+        - 'row "sort string newest Sort order: newest or oldest" [ref=e773]':
+          - cell "sort" [ref=e774]:
+            - code [ref=e775]: sort
+          - cell "string" [ref=e776]
+          - cell "newest" [ref=e777]:
+            - code [ref=e778]: newest
+          - 'cell "Sort order: newest or oldest" [ref=e779]':
+            - text: "Sort order:"
+            - code [ref=e780]: newest
+            - text: or
+            - code [ref=e781]: oldest
+        - row "limit number 25 Max comments (max 100)" [ref=e782]:
+          - cell "limit" [ref=e783]:
+            - code [ref=e784]: limit
+          - cell "number" [ref=e785]
+          - cell "25" [ref=e786]:
+            - code [ref=e787]: "25"
+          - cell "Max comments (max 100)" [ref=e788]
+        - row "offset number 0 Pagination offset" [ref=e789]:
+          - cell "offset" [ref=e790]:
+            - code [ref=e791]: offset
+          - cell "number" [ref=e792]
+          - cell "0" [ref=e793]:
+            - code [ref=e794]: "0"
+          - cell "Pagination offset" [ref=e795]
+    - paragraph [ref=e796]:
+      - strong [ref=e797]: "Response:"
+    - code [ref=e799]: "{ \"comments\": [ { \"id\": \"abc123...\", \"pubkey\": \"def456...\", \"created_at\": 1700000000, \"kind\": 1111, \"content\": \"Great video!\", \"sig\": \"sig_hex...\", \"tags\": [[\"E\",\"video_id\"],[\"K\",\"34236\"]], \"reply_to_event_id\": null, \"reply_to_pubkey\": null, \"author_name\": \"Alice\", \"author_avatar\": \"https://example.com/alice.jpg\" } ], \"total\": 42 }"
+    - paragraph [ref=e800]:
+      - strong [ref=e801]: "Notes:"
+    - list [ref=e802]:
+      - listitem [ref=e803]:
+        - code [ref=e804]: reply_to_event_id
+        - text: /
+        - code [ref=e805]: reply_to_pubkey
+        - text: are null for top-level comments, populated for replies
+      - listitem [ref=e806]: Author metadata comes from Kind 0 profiles
+      - listitem [ref=e807]: 30s cache
+    - separator [ref=e808]
+    - 'heading "GET /api/videos/{id}/live-views" [level=4] [ref=e809]'
+    - paragraph [ref=e810]: Server-Sent Events (SSE) stream for real-time view count updates.
+    - paragraph [ref=e811]:
+      - strong [ref=e812]: "Content-Type:"
+      - code [ref=e813]: text/event-stream
+    - paragraph [ref=e814]: This endpoint streams updates every ~2.5 seconds. No authentication required.
+    - paragraph [ref=e815]:
+      - strong [ref=e816]: "Event format:"
+    - code [ref=e818]: "event: view_update data: {\"views\": 1500, \"loops\": 1125.5, \"viewers_now\": 12}"
+    - paragraph [ref=e819]:
+      - strong [ref=e820]: "Fields:"
+    - table [ref=e821]:
+      - rowgroup [ref=e822]:
+        - row "Field Type Description" [ref=e823]:
+          - columnheader "Field" [ref=e824]
+          - columnheader "Type" [ref=e825]
+          - columnheader "Description" [ref=e826]
+      - rowgroup [ref=e827]:
+        - row "views number Total view count" [ref=e828]:
+          - cell "views" [ref=e829]:
+            - code [ref=e830]: views
+          - cell "number" [ref=e831]
+          - cell "Total view count" [ref=e832]
+        - row "loops float Total computed loops (from watch time)" [ref=e833]:
+          - cell "loops" [ref=e834]:
+            - code [ref=e835]: loops
+          - cell "float" [ref=e836]
+          - cell "Total computed loops (from watch time)" [ref=e837]
+        - row "viewers_now number Currently active viewers (5-min TTL window)" [ref=e838]:
+          - cell "viewers_now" [ref=e839]:
+            - code [ref=e840]: viewers_now
+          - cell "number" [ref=e841]
+          - cell "Currently active viewers (5-min TTL window)" [ref=e842]
+    - paragraph [ref=e843]:
+      - strong [ref=e844]: "Usage:"
+    - code [ref=e846]: "const eventSource = new EventSource('/api/videos/' + videoId + '/live-views'); eventSource.addEventListener('view_update', (event) => { const stats = JSON.parse(event.data); updateViewCounter(stats.views); updateLoopCounter(stats.loops); updateActiveViewers(stats.viewers_now); }); eventSource.addEventListener('error', (event) => { console.warn('Live view error:', event.data); }); // Clean up when done eventSource.close();"
+    - paragraph [ref=e847]:
+      - strong [ref=e848]: "Note:"
+      - text: The stream includes a keep-alive ping every 15 seconds. Connection will stay open indefinitely until the client closes it.
+    - separator [ref=e849]
+    - heading "POST /api/videos/stats/bulk" [level=4] [ref=e850]
+    - paragraph [ref=e851]: Get stats for multiple videos. Maximum 100 event IDs per request.
+    - paragraph [ref=e852]:
+      - strong [ref=e853]: "Request:"
+    - code [ref=e855]: "{ \"event_ids\": [\"id1\", \"id2\", \"id3\"] }"
+    - paragraph [ref=e856]:
+      - strong [ref=e857]: "Response:"
+    - code [ref=e859]: "{ \"stats\": { \"id1\": { \"reactions\": 150, \"comments\": 42, \"reposts\": 10, \"engagement_score\": 254, \"views\": 1234, \"loops\": 987.5, \"embedded_loops\": 5000 }, \"id2\": { \"reactions\": 80, \"comments\": 15, \"reposts\": 5, \"engagement_score\": 120, \"views\": 0, \"loops\": 0.0, \"embedded_loops\": null } }, \"missing\": [\"id3\"] }"
+    - heading "POST /api/videos/bulk" [level=4] [ref=e860]
+    - paragraph [ref=e861]: Get multiple videos with full stats.
+    - paragraph [ref=e862]:
+      - strong [ref=e863]: "Request:"
+    - code [ref=e865]: "{ \"event_ids\": [\"id1\", \"id2\"], \"from_event\": { \"kind\": 30005, \"pubkey\": \"curator-pubkey\", \"d_tag\": \"playlist-name\" } }"
+    - paragraph [ref=e866]:
+      - strong [ref=e867]: "Response:"
+    - code [ref=e869]: "{ \"videos\": [ { \"id\": \"64-char-hex\", \"pubkey\": \"64-char-hex\", \"created_at\": \"2024-01-15T10:30:00Z\", \"kind\": 34236, \"d_tag\": \"my-video\", \"title\": \"Video Title\", \"content\": \"Description\", \"thumbnail\": \"https://...\", \"video_url\": \"https://...\", \"reactions\": 150, \"comments\": 42, \"reposts\": 10, \"engagement_score\": 254, \"author_name\": \"CreatorName\", \"author_avatar\": \"https://...\", \"content_labels\": [\"safe\"] } ], \"missing\": [\"id-that-wasnt-found\"], \"source_event_id\": \"64-char-hex\" }"
+    - heading "Events" [level=3] [ref=e870]
+    - 'heading "GET /api/event/{id}" [level=4] [ref=e871]'
+    - paragraph [ref=e872]: Get any Nostr event by ID.
+    - paragraph [ref=e873]:
+      - strong [ref=e874]: "Response:"
+    - code [ref=e876]: "{ \"id\": \"64-char-hex\", \"pubkey\": \"64-char-hex\", \"created_at\": 1700000000, \"kind\": 0, \"tags\": [], \"content\": \"{}\", \"sig\": \"128-char-hex\" }"
+    - heading "Users" [level=3] [ref=e877]
+    - 'heading "GET /api/users/{pubkey}" [level=4] [ref=e878]'
+    - paragraph [ref=e879]: Get user profile and statistics.
+    - paragraph [ref=e880]:
+      - strong [ref=e881]: "Query:"
+      - text: "No"
+      - code [ref=e882]: include
+      - text: parameter is currently supported on this endpoint.
+    - paragraph [ref=e883]:
+      - strong [ref=e884]: "Response:"
+    - code [ref=e886]: "{ \"pubkey\": \"64-char-hex\", \"profile\": { \"profile_updated\": \"2024-01-15T10:30:00Z\", \"name\": \"username\", \"display_name\": \"Display Name\", \"picture\": \"https://...\", \"banner\": \"https://...\", \"about\": \"Bio text\", \"nip05\": \"user@domain.com\", \"lud16\": \"user@getalby.com\", \"website\": \"https://...\" }, \"social\": { \"follower_count\": 1000, \"following_count\": 500 }, \"stats\": { \"video_count\": 50, \"horizontal_videos\": 10, \"vertical_videos\": 40, \"note_count\": 100, \"reaction_count\": 200, \"comment_count\": 50, \"repost_count\": 30, \"first_activity\": \"2023-06-01T00:00:00Z\", \"last_activity\": \"2024-01-15T10:30:00Z\", \"total_events\": 1200 }, \"engagement\": { \"total_reactions\": 5000, \"total_comments\": 1200, \"total_reposts\": 300, \"unique_reactors\": 2500, \"unique_commenters\": 800, \"unique_reposters\": 200 } }"
+    - paragraph [ref=e887]:
+      - strong [ref=e888]: "Note:"
+      - text: "Badge awards and external identity claims are exposed through dedicated endpoints:"
+      - code [ref=e889]: "GET /api/users/{pubkey}/badges"
+      - text: and
+      - code [ref=e890]: "GET /api/users/{pubkey}/identities"
+      - text: .
+    - 'heading "GET /api/users/{pubkey}/videos" [level=4] [ref=e891]'
+    - paragraph [ref=e892]: Get videos by a user.
+    - paragraph [ref=e893]:
+      - strong [ref=e894]: "Query:"
+      - code [ref=e895]: limit
+      - text: (1-100, default 50),
+      - code [ref=e896]: offset
+      - text: (skip N results),
+      - code [ref=e897]: before
+      - text: (timestamp cursor),
+      - code [ref=e898]: sort
+      - text: (
+      - code [ref=e899]: recent
+      - text: default,
+      - code [ref=e900]: trending
+      - text: ","
+      - code [ref=e901]: popular
+      - text: ","
+      - code [ref=e902]: loops
+      - text: ","
+      - code [ref=e903]: likes
+      - text: ","
+      - code [ref=e904]: comments
+      - text: ","
+      - code [ref=e905]: published
+      - text: )
+    - paragraph [ref=e906]:
+      - strong [ref=e907]: "Note:"
+      - text: When
+      - code [ref=e908]: sort=loops
+      - text: ", the response uses the extended format with"
+      - code [ref=e909]: embedded_likes
+      - text: ","
+      - code [ref=e910]: platform
+      - text: ", etc., plus"
+      - code [ref=e911]: reactions
+      - text: ","
+      - code [ref=e912]: comments
+      - text: ","
+      - code [ref=e913]: reposts
+      - text: ", and"
+      - code [ref=e914]: engagement_score
+      - text: (same as the main
+      - code [ref=e915]: /api/videos?sort=loops
+      - text: response). All formats include
+      - code [ref=e916]: loops
+      - text: and
+      - code [ref=e917]: views
+      - text: .
+    - paragraph [ref=e918]:
+      - strong [ref=e919]: "Note:"
+      - text: The response objects include the same metadata fields as
+      - code [ref=e920]: /api/videos
+      - text: ", including"
+      - code [ref=e921]: tags
+      - text: ", extracted badge tag fields, and moderation fields ("
+      - code [ref=e922]: moderation_status
+      - text: ","
+      - code [ref=e923]: ai_score
+      - text: ","
+      - code [ref=e924]: ai_source
+      - text: ","
+      - code [ref=e925]: ai_checked_at
+      - text: ).
+    - paragraph [ref=e926]:
+      - strong [ref=e927]: "Note:"
+      - text: This endpoint returns
+      - code [ref=e928]: content_labels
+      - text: on each item, but it does not currently expose
+      - code [ref=e929]: nsfw
+      - text: ","
+      - code [ref=e930]: content_safety
+      - text: ", or"
+      - code [ref=e931]: exclude_label
+      - text: query parameters. Treat it as a label-returning endpoint, not a preference-aware safety-filter endpoint.
+    - paragraph [ref=e932]:
+      - strong [ref=e933]: "Response:"
+    - code [ref=e935]: "[ { \"id\": \"64-char-hex\", \"pubkey\": \"64-char-hex\", \"created_at\": \"2024-01-15T10:30:00Z\", \"kind\": 34236, \"d_tag\": \"my-video\", \"title\": \"Video Title\", \"content\": \"Description\", \"thumbnail\": \"https://...\", \"video_url\": \"https://...\", \"reactions\": 150, \"comments\": 42, \"reposts\": 10, \"engagement_score\": 254, \"loops\": 5000, \"views\": 12345, \"author_name\": \"CreatorName\", \"author_avatar\": \"https://...\", \"tags\": [[\"d\", \"my-video\"], [\"verification\", \"human\"]], \"moderation_status\": \"human_made\", \"ai_score\": 0.03, \"ai_source\": \"content_labels\", \"ai_checked_at\": 1705314700, \"content_labels\": [\"safe\"] } ]"
+    - 'heading "GET /api/users/{pubkey}/collabs" [level=4] [ref=e936]'
+    - paragraph [ref=e937]:
+      - text: Get videos where a user appears as a collaborator (
+      - code [ref=e938]: p
+      - text: tag) but is not the author.
+    - paragraph [ref=e939]:
+      - strong [ref=e940]: "Query:"
+      - code [ref=e941]: limit
+      - text: (1-100, default 50),
+      - code [ref=e942]: offset
+      - text: (skip N results),
+      - code [ref=e943]: sort
+      - text: (
+      - code [ref=e944]: recent
+      - text: default,
+      - code [ref=e945]: popular
+      - text: ","
+      - code [ref=e946]: likes
+      - text: ","
+      - code [ref=e947]: comments
+      - text: ","
+      - code [ref=e948]: published
+      - text: )
+    - paragraph [ref=e949]:
+      - strong [ref=e950]: "Response:"
+      - text: Same schema as
+      - code [ref=e951]: "GET /api/users/{pubkey}/videos"
+      - text: .
+    - 'heading "GET /api/users/{pubkey}/followers" [level=4] [ref=e952]'
+    - paragraph [ref=e953]: Get user's followers (paginated).
+    - paragraph [ref=e954]:
+      - strong [ref=e955]: "Query:"
+      - code [ref=e956]: limit
+      - text: (1-100, default 50),
+      - code [ref=e957]: offset
+      - text: (skip N results),
+      - code [ref=e958]: include
+      - text: (set to
+      - code [ref=e959]: profiles
+      - text: to include full user data)
+    - paragraph [ref=e960]:
+      - strong [ref=e961]: "Response (default):"
+    - code [ref=e963]: "{ \"followers\": [ \"pubkey1-64-char-hex\", \"pubkey2-64-char-hex\", \"pubkey3-64-char-hex\" ], \"total\": 1500, \"offset\": 0, \"limit\": 50 }"
+    - paragraph [ref=e964]:
+      - strong [ref=e965]:
+        - text: Response (with
+        - code [ref=e966]: include=profiles
+        - text: "):"
+    - code [ref=e968]: "{ \"followers\": [ { \"pubkey\": \"64-char-hex\", \"profile\": { \"name\": \"username\", \"display_name\": \"Display Name\", \"picture\": \"https://...\", \"about\": \"Bio text\" }, \"social\": { \"follower_count\": 500, \"following_count\": 200 }, \"stats\": { ... }, \"engagement\": { ... } } ], \"total\": 1500, \"offset\": 0, \"limit\": 50 }"
+    - 'heading "GET /api/users/{pubkey}/following" [level=4] [ref=e969]'
+    - paragraph [ref=e970]: Get who the user follows.
+    - paragraph [ref=e971]:
+      - strong [ref=e972]: "Query:"
+      - code [ref=e973]: limit
+      - text: (1-100, default 50),
+      - code [ref=e974]: offset
+      - text: (skip N results),
+      - code [ref=e975]: include
+      - text: (set to
+      - code [ref=e976]: profiles
+      - text: to include full user data)
+    - paragraph [ref=e977]:
+      - strong [ref=e978]: "Response (default):"
+    - code [ref=e980]: "{ \"following\": [ \"pubkey1-64-char-hex\", \"pubkey2-64-char-hex\", \"pubkey3-64-char-hex\" ], \"total\": 250 }"
+    - paragraph [ref=e981]:
+      - strong [ref=e982]:
+        - text: Response (with
+        - code [ref=e983]: include=profiles
+        - text: "):"
+    - code [ref=e985]: "{ \"following\": [ { \"pubkey\": \"64-char-hex\", \"profile\": { \"name\": \"username\", \"display_name\": \"Display Name\", \"picture\": \"https://...\", \"about\": \"Bio text\" }, \"social\": { \"follower_count\": 500, \"following_count\": 200 }, \"stats\": { ... }, \"engagement\": { ... } } ], \"total\": 250, \"offset\": 0, \"limit\": 50 }"
+    - 'heading "GET /api/users/{pubkey}/social" [level=4] [ref=e986]'
+    - paragraph [ref=e987]: Get follower/following counts only (lightweight endpoint for social stats).
+    - paragraph [ref=e988]:
+      - strong [ref=e989]: "Response:"
+    - code [ref=e991]: "{ \"follower_count\": 1500, \"following_count\": 250 }"
+    - 'heading "GET /api/users/{pubkey}/feed" [level=4] [ref=e992]'
+    - paragraph [ref=e993]:
+      - text: Get the user's
+      - strong [ref=e994]: home feed
+      - text: "- personalized video feed from followed accounts. This is the main timeline showing content from people the user follows."
+    - paragraph [ref=e995]:
+      - strong [ref=e996]: "Query Parameters:"
+    - table [ref=e997]:
+      - rowgroup [ref=e998]:
+        - row "Param Type Description" [ref=e999]:
+          - columnheader "Param" [ref=e1000]
+          - columnheader "Type" [ref=e1001]
+          - columnheader "Description" [ref=e1002]
+      - rowgroup [ref=e1003]:
+        - row "sort string recent (default), trending, likes, comments, or published" [ref=e1004]:
+          - cell "sort" [ref=e1005]:
+            - code [ref=e1006]: sort
+          - cell "string" [ref=e1007]
+          - cell "recent (default), trending, likes, comments, or published" [ref=e1008]:
+            - code [ref=e1009]: recent
+            - text: (default),
+            - code [ref=e1010]: trending
+            - text: ","
+            - code [ref=e1011]: likes
+            - text: ","
+            - code [ref=e1012]: comments
+            - text: ", or"
+            - code [ref=e1013]: published
+        - row "limit number Max results (1-1000, default 50)" [ref=e1014]:
+          - cell "limit" [ref=e1015]:
+            - code [ref=e1016]: limit
+          - cell "number" [ref=e1017]
+          - cell "Max results (1-1000, default 50)" [ref=e1018]
+        - row "before number Unix timestamp cursor for pagination" [ref=e1019]:
+          - cell "before" [ref=e1020]:
+            - code [ref=e1021]: before
+          - cell "number" [ref=e1022]
+          - cell "Unix timestamp cursor for pagination" [ref=e1023]
+        - row "offset number Skip N results for offset-based pagination" [ref=e1024]:
+          - cell "offset" [ref=e1025]:
+            - code [ref=e1026]: offset
+          - cell "number" [ref=e1027]
+          - cell "Skip N results for offset-based pagination" [ref=e1028]
+    - paragraph [ref=e1029]:
+      - strong [ref=e1030]: "Note:"
+      - code [ref=e1031]: videos
+      - text: in this response use the same schema as
+      - code [ref=e1032]: /api/videos
+      - text: ", including"
+      - code [ref=e1033]: tags
+      - text: ", extracted badge fields, and public moderation metadata."
+    - paragraph [ref=e1034]:
+      - strong [ref=e1035]: "Note:"
+      - text: This endpoint returns
+      - code [ref=e1036]: content_labels
+      - text: on each video, but it does not currently expose
+      - code [ref=e1037]: nsfw
+      - text: ","
+      - code [ref=e1038]: content_safety
+      - text: ", or"
+      - code [ref=e1039]: exclude_label
+      - text: query parameters.
+    - paragraph [ref=e1040]:
+      - strong [ref=e1041]: "Response:"
+    - code [ref=e1043]: "{ \"videos\": [...], \"next_cursor\": \"1700000000\", \"has_more\": true }"
+    - 'heading "GET /api/users/{pubkey}/notifications" [level=4] [ref=e1044]'
+    - paragraph [ref=e1045]: Get user notifications (requires NIP-98 auth).
+    - paragraph [ref=e1046]:
+      - strong [ref=e1047]: "Query:"
+    - list [ref=e1048]:
+      - listitem [ref=e1049]:
+        - code [ref=e1050]: types
+        - text: "- Filter by type (comma-separated):"
+        - code [ref=e1051]: reaction
+        - text: ","
+        - code [ref=e1052]: reply
+        - text: ","
+        - code [ref=e1053]: repost
+        - text: ","
+        - code [ref=e1054]: mention
+        - text: ","
+        - code [ref=e1055]: follow
+        - text: ","
+        - code [ref=e1056]: zap
+      - listitem [ref=e1057]:
+        - code [ref=e1058]: unread_only
+        - text: "- Only show unread (default false)"
+      - listitem [ref=e1059]:
+        - code [ref=e1060]: limit
+        - text: "- Max results (default 50)"
+      - listitem [ref=e1061]:
+        - code [ref=e1062]: before
+        - text: "- Cursor for pagination (timestamp)"
+    - paragraph [ref=e1063]:
+      - strong [ref=e1064]: "Response:"
+    - code [ref=e1066]: "{ \"notifications\": [ { \"source_pubkey\": \"64-char-hex\", \"source_event_id\": \"64-char-hex\", \"source_kind\": 7, \"source_created_at\": 1700000000, \"referenced_event_id\": \"64-char-hex\", \"notification_type\": \"reaction\", \"created_at\": 1700000000, \"read\": false } ], \"unread_count\": 5, \"next_cursor\": \"1699999000\", \"has_more\": true }"
+    - paragraph [ref=e1067]:
+      - strong [ref=e1068]: "Notification Types:"
+    - list [ref=e1069]:
+      - listitem [ref=e1070]:
+        - code [ref=e1071]: reaction
+        - text: "- Someone liked your video"
+      - listitem [ref=e1072]:
+        - code [ref=e1073]: reply
+        - text: "- Someone commented on your video"
+      - listitem [ref=e1074]:
+        - code [ref=e1075]: repost
+        - text: "- Someone reposted your video"
+      - listitem [ref=e1076]:
+        - code [ref=e1077]: mention
+        - text: "- Someone mentioned you"
+      - listitem [ref=e1078]:
+        - code [ref=e1079]: follow
+        - text: "- Someone followed you"
+      - listitem [ref=e1080]:
+        - code [ref=e1081]: zap
+        - text: "- Someone zapped you (lightning payment)"
+    - 'heading "POST /api/users/{pubkey}/notifications/read" [level=4] [ref=e1082]'
+    - paragraph [ref=e1083]: Mark notifications as read (requires NIP-98 auth).
+    - paragraph [ref=e1084]:
+      - strong [ref=e1085]: "Request:"
+    - code [ref=e1087]: "{ \"notification_ids\": [\"event-id-1\", \"event-id-2\"] }"
+    - paragraph [ref=e1088]: "To mark ALL as read, send empty array or omit:"
+    - code [ref=e1090]: "{ \"notification_ids\": [] }"
+    - paragraph [ref=e1091]:
+      - strong [ref=e1092]: "Response:"
+    - code [ref=e1094]: "{ \"marked_count\": 5, \"marked_all\": true }"
+    - 'heading "GET /api/users/{pubkey}/identities" [level=4] [ref=e1095]'
+    - paragraph [ref=e1096]: Get a user's NIP-39 external identity claims.
+    - paragraph [ref=e1097]:
+      - strong [ref=e1098]: "Response:"
+    - code [ref=e1100]: "{ \"identities\": [ { \"platform\": \"github\", \"username\": \"alice\", \"proof\": \"https://github.com/alice\" }, { \"platform\": \"twitter\", \"username\": \"alice_dev\", \"proof\": \"\" } ] }"
+    - 'heading "GET /api/users/{pubkey}/analytics" [level=4] [ref=e1101]'
+    - paragraph [ref=e1102]: Get creator analytics for your own content (requires NIP-98 auth).
+    - paragraph [ref=e1103]:
+      - strong [ref=e1104]: "Query:"
+      - code [ref=e1105]: period
+      - text: "- Time period:"
+      - code [ref=e1106]: 7d
+      - text: ","
+      - code [ref=e1107]: 30d
+      - text: (default),
+      - code [ref=e1108]: 90d
+      - text: ", or"
+      - code [ref=e1109]: all
+    - paragraph [ref=e1110]:
+      - strong [ref=e1111]: "Response:"
+    - code [ref=e1113]: "{ \"total_views\": 50000, \"total_loops\": 37500.5, \"total_watch_time\": 125000, \"unique_viewers\": 12000, \"videos\": [ { \"id\": \"64-char-hex\", \"views\": 10000, \"loops\": 7500.25, \"unique_viewers\": 3000, \"avg_completion\": 0.85 } ], \"daily_stats\": [ { \"date\": \"2024-01-15\", \"views\": 1500, \"loops\": 1125.0 } ], \"period\": \"30d\" }"
+    - 'heading "GET /api/users/{pubkey}/recommendations" [level=4] [ref=e1114]'
+    - paragraph [ref=e1115]: Get personalized video recommendations for a user. Uses Gorse ML recommendation engine when available, with fallback to popular/recent videos.
+    - paragraph [ref=e1116]:
+      - strong [ref=e1117]: "Query Parameters:"
+    - list [ref=e1118]:
+      - listitem [ref=e1119]:
+        - code [ref=e1120]: limit
+        - text: "- Max results (1-100, default 20)"
+      - listitem [ref=e1121]:
+        - code [ref=e1122]: category
+        - text: "- Filter by hashtag/category"
+      - listitem [ref=e1123]:
+        - code [ref=e1124]: fallback
+        - text: "- Strategy when personalization unavailable: \"popular\" (default) or \"recent\""
+    - paragraph [ref=e1125]:
+      - strong [ref=e1126]: "Response:"
+    - code [ref=e1128]: "{ \"videos\": [ { \"id\": \"event-id\", \"pubkey\": \"creator-pubkey\", \"title\": \"Video Title\", \"thumbnail\": \"https://...\", \"reactions\": 42, \"comments\": 5, \"reposts\": 2, \"author_name\": \"CreatorName\", \"author_avatar\": \"https://...\", \"content_labels\": [\"safe\"] } ], \"source\": \"personalized\" // or \"popular\", \"recent\" }"
+    - paragraph [ref=e1129]:
+      - strong [ref=e1130]: "Source Values:"
+    - list [ref=e1131]:
+      - listitem [ref=e1132]:
+        - code [ref=e1133]: personalized
+        - text: "- ML-based recommendations from Gorse"
+      - listitem [ref=e1134]:
+        - code [ref=e1135]: popular
+        - text: "- Fallback: 60% trending + 40% recent (shuffled)"
+      - listitem [ref=e1136]:
+        - code [ref=e1137]: recent
+        - text: "- Fallback: most recent videos"
+    - paragraph [ref=e1138]:
+      - strong [ref=e1139]: "Note:"
+      - text: Cold-start users (no interaction history) automatically receive fallback recommendations.
+    - paragraph [ref=e1140]:
+      - strong [ref=e1141]: "Note:"
+      - text: Recommendations do not currently expose
+      - code [ref=e1142]: nsfw
+      - text: ","
+      - code [ref=e1143]: content_safety
+      - text: ", or per-label hide parameters."
+    - 'heading "GET /api/users/{pubkey}/badges" [level=4] [ref=e1144]'
+    - paragraph [ref=e1145]: Get NIP-58 badges awarded to a user.
+    - paragraph [ref=e1146]:
+      - strong [ref=e1147]: "Query:"
+      - code [ref=e1148]: accepted_only
+      - text: "- boolean, default"
+      - code [ref=e1149]: "true"
+      - text: . When
+      - code [ref=e1150]: "true"
+      - text: ", only accepted badge awards are returned."
+    - paragraph [ref=e1151]:
+      - strong [ref=e1152]: "Response:"
+    - code [ref=e1154]: "{ \"badges\": [ { \"definition\": { \"d_tag\": \"founding-creator\", \"creator_pubkey\": \"64-char-hex\", \"name\": \"Founding Creator\", \"description\": \"Early contributor to divine.video\", \"image\": \"https://example.com/badges/founding-creator.png\", \"thumb\": \"https://example.com/badges/founding-creator-thumb.png\", \"created_at\": \"2025-01-15T10:30:00Z\", \"coordinate\": \"30009:64-char-hex:founding-creator\" }, \"award_event_id\": \"64-char-hex\", \"awarded_at\": \"2025-01-20T12:00:00Z\", \"awarded_by\": \"64-char-hex\" } ] }"
+    - 'heading "GET /api/badges/{creator_pubkey}/{d_tag}" [level=4] [ref=e1155]'
+    - paragraph [ref=e1156]: Get the badge definition metadata for a single badge.
+    - paragraph [ref=e1157]:
+      - strong [ref=e1158]: "Response:"
+    - code [ref=e1160]: "{ \"d_tag\": \"founding-creator\", \"creator_pubkey\": \"64-char-hex\", \"name\": \"Founding Creator\", \"description\": \"Early contributor to divine.video\", \"image\": \"https://example.com/badges/founding-creator.png\", \"thumb\": \"https://example.com/badges/founding-creator-thumb.png\", \"created_at\": \"2025-01-15T10:30:00Z\", \"coordinate\": \"30009:64-char-hex:founding-creator\" }"
+    - 'heading "GET /api/users/{pubkey}/identities" [level=4] [ref=e1161]'
+    - paragraph [ref=e1162]: Get a user's external identity claims published via NIP-39.
+    - paragraph [ref=e1163]:
+      - strong [ref=e1164]: "Response:"
+    - code [ref=e1166]: "{ \"identities\": [ { \"platform\": \"github\", \"username\": \"rabble\", \"proof\": \"https://gist.github.com/rabble/identity-proof\" }, { \"platform\": \"mastodon\", \"username\": \"@rabble@mastodon.social\", \"proof\": \"https://mastodon.social/@rabble/1234567890\" } ] }"
+    - heading "GET /api/users/top" [level=4] [ref=e1167]
+    - paragraph [ref=e1168]: Get top creators ranked by total loop count.
+    - paragraph [ref=e1169]:
+      - strong [ref=e1170]: "Query Parameters:"
+    - table [ref=e1171]:
+      - rowgroup [ref=e1172]:
+        - row "Param Type Description" [ref=e1173]:
+          - columnheader "Param" [ref=e1174]
+          - columnheader "Type" [ref=e1175]
+          - columnheader "Description" [ref=e1176]
+      - rowgroup [ref=e1177]:
+        - 'row "platform string vine for classic Viners, all for everyone (default: all)" [ref=e1178]':
+          - cell "platform" [ref=e1179]:
+            - code [ref=e1180]: platform
+          - cell "string" [ref=e1181]
+          - 'cell "vine for classic Viners, all for everyone (default: all)" [ref=e1182]':
+            - code [ref=e1183]: vine
+            - text: for classic Viners,
+            - code [ref=e1184]: all
+            - text: "for everyone (default: all)"
+        - row "limit number Max results (1-100, default 50)" [ref=e1185]:
+          - cell "limit" [ref=e1186]:
+            - code [ref=e1187]: limit
+          - cell "number" [ref=e1188]
+          - cell "Max results (1-100, default 50)" [ref=e1189]
+    - paragraph [ref=e1190]:
+      - strong [ref=e1191]: "Response:"
+    - code [ref=e1193]: "[ { \"pubkey\": \"64-char-hex\", \"name\": \"King Bach\", \"picture\": \"https://...\", \"total_loops\": 5000000, \"video_count\": 150, \"platform\": \"vine\" } ]"
+    - paragraph [ref=e1194]:
+      - strong [ref=e1195]: "Note:"
+      - text: This is different from
+      - code [ref=e1196]: /api/leaderboard/creators
+      - text: which ranks by views over time periods. This endpoint ranks by embedded loop counts (primarily for Vine archive data).
+    - heading "POST /api/users/bulk" [level=4] [ref=e1197]
+    - paragraph [ref=e1198]: Get multiple users in one request.
+    - paragraph [ref=e1199]:
+      - strong [ref=e1200]: "Request:"
+    - code [ref=e1202]: "{ \"pubkeys\": [\"pk1\", \"pk2\"], \"from_event\": { \"kind\": 3, \"pubkey\": \"user-pubkey\" } }"
+    - paragraph [ref=e1203]:
+      - strong [ref=e1204]: "Response:"
+    - code [ref=e1206]: "{ \"users\": [ { \"pubkey\": \"64-char-hex\", \"profile\": { \"profile_updated\": \"2024-01-15T10:30:00Z\", \"name\": \"username\", \"display_name\": \"Display Name\", \"picture\": \"https://...\", \"banner\": \"https://...\", \"about\": \"Bio text\", \"nip05\": \"user@domain.com\", \"lud16\": \"user@getalby.com\", \"website\": \"https://...\" }, \"social\": { \"follower_count\": 1000, \"following_count\": 500 }, \"stats\": { \"video_count\": 50, \"horizontal_videos\": 10, \"vertical_videos\": 40, \"note_count\": 100, \"reaction_count\": 200, \"comment_count\": 50, \"repost_count\": 30, \"first_activity\": \"2023-06-01T00:00:00Z\", \"last_activity\": \"2024-01-15T10:30:00Z\", \"total_events\": 1200 }, \"engagement\": { \"total_reactions\": 5000, \"total_comments\": 1200, \"total_reposts\": 300, \"unique_reactors\": 2500, \"unique_commenters\": 800, \"unique_reposters\": 200 } } ], \"missing\": [\"pk-that-wasnt-found\"], \"source_event_id\": \"64-char-hex\" }"
+    - paragraph [ref=e1207]:
+      - strong [ref=e1208]:
+        - text: The
+        - code [ref=e1209]: from_event
+        - text: "pattern:"
+    - paragraph [ref=e1210]:
+      - text: Instead of providing explicit
+      - code [ref=e1211]: pubkeys
+      - text: ", you can reference an event that contains pubkeys:"
+    - list [ref=e1212]:
+      - listitem [ref=e1213]:
+        - code [ref=e1214]: "kind: 3"
+        - text: "- Resolve pubkeys from a user's contact list (follow list)"
+        - list [ref=e1215]:
+          - listitem [ref=e1216]:
+            - text: Fetches all
+            - code [ref=e1217]: p
+            - text: tags from the user's kind 3 event
+          - listitem [ref=e1218]: "Useful for: \"Get profiles of everyone this user follows\""
+    - code [ref=e1220]: "// Get profiles of everyone alice follows { \"from_event\": { \"kind\": 3, \"pubkey\": \"alice-pubkey\" } }"
+    - paragraph [ref=e1221]:
+      - text: Similarly,
+      - code [ref=e1222]: /api/videos/bulk
+      - text: "supports:"
+    - list [ref=e1223]:
+      - listitem [ref=e1224]:
+        - code [ref=e1225]: "kind: 30005"
+        - text: "- Resolve videos from a curation set/playlist"
+        - list [ref=e1226]:
+          - listitem [ref=e1227]:
+            - text: Fetches all
+            - code [ref=e1228]: e
+            - text: and
+            - code [ref=e1229]: a
+            - text: tags from the playlist
+    - code [ref=e1231]: "// Get all videos in a playlist { \"from_event\": { \"kind\": 30005, \"pubkey\": \"curator-pubkey\", \"d_tag\": \"playlist-name\" } }"
+    - heading "Search" [level=3] [ref=e1232]
+    - heading "GET /api/search" [level=4] [ref=e1233]
+    - paragraph [ref=e1234]: Search videos by hashtag or text.
+    - paragraph [ref=e1235]:
+      - strong [ref=e1236]: "Query:"
+    - list [ref=e1237]:
+      - listitem [ref=e1238]:
+        - code [ref=e1239]: tag
+        - text: "- Search by hashtag"
+      - listitem [ref=e1240]:
+        - code [ref=e1241]: q
+        - text: "- Full-text search"
+      - listitem [ref=e1242]:
+        - code [ref=e1243]: limit
+        - text: "- Max results (1-100, default 50)"
+      - listitem [ref=e1244]:
+        - code [ref=e1245]: offset
+        - text: "- Skip N results for pagination"
+      - listitem [ref=e1246]:
+        - code [ref=e1247]: label
+        - text: "- Filter by any effective content label (for example"
+        - code [ref=e1248]: nudity
+        - text: or
+        - code [ref=e1249]: topic:music
+        - text: )
+    - paragraph [ref=e1250]:
+      - strong [ref=e1251]: "Note:"
+      - text: Search does not currently expose
+      - code [ref=e1252]: nsfw=show
+      - text: ","
+      - code [ref=e1253]: content_safety
+      - text: ", or per-label hide parameters."
+    - paragraph [ref=e1254]:
+      - strong [ref=e1255]: "Response:"
+    - code [ref=e1257]: "[ { \"id\": \"64-char-hex\", \"pubkey\": \"64-char-hex\", \"created_at\": \"2024-01-15T10:30:00Z\", \"kind\": 34236, \"d_tag\": \"my-video\", \"title\": \"Video Title\", \"content\": \"Description\", \"thumbnail\": \"https://...\", \"video_url\": \"https://...\", \"reactions\": 150, \"comments\": 42, \"reposts\": 10, \"engagement_score\": 254, \"loops\": 5000, \"views\": 12345, \"language\": \"en\", \"tags\": [[\"d\", \"my-video\"], [\"verification\", \"human\"]], \"moderation_status\": \"human_made\", \"ai_score\": 0.03, \"ai_source\": \"content_labels\", \"ai_checked_at\": 1705314700, \"author_name\": \"CreatorName\", \"author_avatar\": \"https://...\", \"content_labels\": [\"safe\"] } ]"
+    - heading "GET /api/search/profiles" [level=4] [ref=e1258]
+    - paragraph [ref=e1259]: Search user profiles by name, display_name, nip05, or about/bio.
+    - paragraph [ref=e1260]:
+      - strong [ref=e1261]: "Query:"
+      - code [ref=e1262]: q
+      - text: (required),
+      - code [ref=e1263]: limit
+      - text: (1-100, default 50),
+      - code [ref=e1264]: offset
+      - text: (skip N results),
+      - code [ref=e1265]: sort_by
+      - text: ("followers" or "relevance", default "relevance"),
+      - code [ref=e1266]: has_videos
+      - text: (boolean, filter to users with video content)
+    - paragraph [ref=e1267]:
+      - strong [ref=e1268]: "Relevance ranking (default):"
+    - list [ref=e1269]:
+      - listitem [ref=e1270]: "Tier 1: exact name match"
+      - listitem [ref=e1271]: "Tier 2: prefix match"
+      - listitem [ref=e1272]:
+        - text: "Tier 3: substring match (includes handles like"
+        - code [ref=e1273]: jackandjackofficial
+        - text: for query
+        - code [ref=e1274]: jack
+        - text: )
+      - listitem [ref=e1275]: "Then social signals as tie-breakers: follower count, video count, and profile picture presence"
+      - listitem [ref=e1276]: "NIP-05 signals: verified identifiers are boosted; empty/squatter-like unverified profiles are penalized"
+    - paragraph [ref=e1277]:
+      - code [ref=e1278]: sort_by=followers
+      - text: keeps follower count as the primary sort key.
+    - paragraph [ref=e1279]:
+      - strong [ref=e1280]: "Response:"
+    - code [ref=e1282]: "[ { \"pubkey\": \"64-char-hex\", \"name\": \"username\", \"display_name\": \"Display Name\", \"nip05\": \"user@domain.com\", \"about\": \"Bio text\", \"picture\": \"https://example.com/avatar.jpg\", \"banner\": \"https://example.com/banner.jpg\", \"follower_count\": 1234, \"video_count\": 42, \"nip05_verified\": 1 } ]"
+    - heading "Hashtags" [level=3] [ref=e1283]
+    - heading "GET /api/hashtags" [level=4] [ref=e1284]
+    - paragraph [ref=e1285]: Get popular hashtags.
+    - paragraph [ref=e1286]:
+      - strong [ref=e1287]: "Query:"
+      - code [ref=e1288]: limit
+      - text: (1-100, default 50),
+      - code [ref=e1289]: offset
+      - text: (default 0),
+      - code [ref=e1290]: q
+      - text: (optional, case-insensitive substring filter, max 100 chars)
+    - paragraph [ref=e1291]:
+      - strong [ref=e1292]: "Response:"
+    - code [ref=e1294]: "[ { \"hashtag\": \"nostr\", \"video_count\": 500, \"unique_creators\": 150, \"total_loops\": 125000, \"last_used\": \"2024-01-15T10:30:00Z\", \"thumbnail\": \"https://...\" }, { \"hashtag\": \"bitcoin\", \"video_count\": 300, \"unique_creators\": 80, \"total_loops\": 75000, \"last_used\": \"2024-01-14T18:45:00Z\", \"thumbnail\": \"https://...\" } ]"
+    - heading "GET /api/hashtags/trending" [level=4] [ref=e1295]
+    - paragraph [ref=e1296]: Get trending hashtags (time-weighted by recent activity).
+    - paragraph [ref=e1297]:
+      - strong [ref=e1298]: "Query:"
+      - code [ref=e1299]: limit
+      - text: (1-100, default 50),
+      - code [ref=e1300]: offset
+      - text: (default 0),
+      - code [ref=e1301]: q
+      - text: (optional, case-insensitive substring filter, max 100 chars)
+    - paragraph [ref=e1302]:
+      - strong [ref=e1303]: "Response:"
+    - code [ref=e1305]: "[ { \"hashtag\": \"nostr\", \"video_count\": 500, \"videos_24h\": 50, \"videos_7d\": 200, \"unique_creators\": 150, \"last_used\": \"2024-01-15T10:30:00Z\", \"trending_score\": 8500, \"thumbnail\": \"https://...\" } ]"
+    - heading "Categories" [level=3] [ref=e1306]
+    - heading "GET /api/categories" [level=4] [ref=e1307]
+    - paragraph [ref=e1308]: Get popular content categories with video counts. Categories are derived from VLM (Vision-Language Model) classification of video content.
+    - paragraph [ref=e1309]:
+      - strong [ref=e1310]: "Query:"
+      - code [ref=e1311]: limit
+      - text: (1-100, default 50),
+      - code [ref=e1312]: offset
+      - text: (default 0),
+      - code [ref=e1313]: q
+      - text: (optional, case-insensitive substring filter)
+    - paragraph [ref=e1314]:
+      - strong [ref=e1315]: "Response:"
+    - code [ref=e1317]: "[ { \"name\": \"music\", \"video_count\": 1500 }, { \"name\": \"comedy\", \"video_count\": 1200 }, { \"name\": \"dance\", \"video_count\": 800 } ]"
+    - paragraph [ref=e1318]:
+      - strong [ref=e1319]: "Common categories:"
+      - text: music, comedy, dance, sports, food, animals, fashion, gaming, nature, travel, education, technology, art, beauty, fitness, pets, cooking, DIY, news, entertainment
+    - heading "Filtering videos by category" [level=4] [ref=e1320]
+    - paragraph [ref=e1321]:
+      - text: Use the
+      - code [ref=e1322]: category
+      - text: "query parameter on the videos endpoint:"
+    - code [ref=e1324]: GET /api/videos?category=music
+    - paragraph [ref=e1325]:
+      - text: This is a convenience shorthand for
+      - code [ref=e1326]: label=topic:music
+      - text: . The
+      - code [ref=e1327]: category
+      - text: parameter maps to the underlying label system.
+    - heading "Stats" [level=3] [ref=e1328]
+    - heading "GET /api/stats" [level=4] [ref=e1329]
+    - paragraph [ref=e1330]: Get platform statistics.
+    - paragraph [ref=e1331]:
+      - strong [ref=e1332]: "Response:"
+    - code [ref=e1334]: "{ \"total_events\": 162586, \"total_videos\": 18919, \"vine_videos\": 15000 }"
+    - heading "Leaderboards" [level=3] [ref=e1335]
+    - paragraph [ref=e1336]: Leaderboards show top videos and creators ranked by views for different time periods.
+    - heading "Time Periods" [level=4] [ref=e1337]
+    - table [ref=e1338]:
+      - rowgroup [ref=e1339]:
+        - row "Value Description Aliases" [ref=e1340]:
+          - columnheader "Value" [ref=e1341]
+          - columnheader "Description" [ref=e1342]
+          - columnheader "Aliases" [ref=e1343]
+      - rowgroup [ref=e1344]:
+        - row "day Last 24 hours daily, today, 24h" [ref=e1345]:
+          - cell "day" [ref=e1346]:
+            - code [ref=e1347]: day
+          - cell "Last 24 hours" [ref=e1348]
+          - cell "daily, today, 24h" [ref=e1349]:
+            - code [ref=e1350]: daily
+            - text: ","
+            - code [ref=e1351]: today
+            - text: ","
+            - code [ref=e1352]: 24h
+        - row "week Last 7 days weekly, 7d" [ref=e1353]:
+          - cell "week" [ref=e1354]:
+            - code [ref=e1355]: week
+          - cell "Last 7 days" [ref=e1356]
+          - cell "weekly, 7d" [ref=e1357]:
+            - code [ref=e1358]: weekly
+            - text: ","
+            - code [ref=e1359]: 7d
+        - row "month Last 30 days (default) monthly, 30d" [ref=e1360]:
+          - cell "month" [ref=e1361]:
+            - code [ref=e1362]: month
+          - cell "Last 30 days (default)" [ref=e1363]
+          - cell "monthly, 30d" [ref=e1364]:
+            - code [ref=e1365]: monthly
+            - text: ","
+            - code [ref=e1366]: 30d
+        - row "year Last 365 days yearly, 365d" [ref=e1367]:
+          - cell "year" [ref=e1368]:
+            - code [ref=e1369]: year
+          - cell "Last 365 days" [ref=e1370]
+          - cell "yearly, 365d" [ref=e1371]:
+            - code [ref=e1372]: yearly
+            - text: ","
+            - code [ref=e1373]: 365d
+        - row "alltime All time all, all_time, forever" [ref=e1374]:
+          - cell "alltime" [ref=e1375]:
+            - code [ref=e1376]: alltime
+          - cell "All time" [ref=e1377]
+          - cell "all, all_time, forever" [ref=e1378]:
+            - code [ref=e1379]: all
+            - text: ","
+            - code [ref=e1380]: all_time
+            - text: ","
+            - code [ref=e1381]: forever
+    - heading "GET /api/leaderboard/videos" [level=4] [ref=e1382]
+    - paragraph [ref=e1383]: Get top videos ranked by views for a time period.
+    - paragraph [ref=e1384]:
+      - strong [ref=e1385]: "Parameters:"
+    - list [ref=e1386]:
+      - listitem [ref=e1387]:
+        - code [ref=e1388]: period
+        - text: "(optional): Time period -"
+        - code [ref=e1389]: day
+        - text: ","
+        - code [ref=e1390]: week
+        - text: ","
+        - code [ref=e1391]: month
+        - text: (default),
+        - code [ref=e1392]: year
+        - text: ", or"
+        - code [ref=e1393]: alltime
+      - listitem [ref=e1394]:
+        - code [ref=e1395]: limit
+        - text: "(optional): Max results 1-100, default 50"
+      - listitem [ref=e1396]:
+        - code [ref=e1397]: offset
+        - text: "(optional): Pagination offset, default 0"
+    - paragraph [ref=e1398]:
+      - strong [ref=e1399]: "Example:"
+    - code [ref=e1401]: "# Top videos this week curl \"https://api.divine.video/api/leaderboard/videos?period=week&limit=20\" # Page 2 of monthly leaderboard curl \"https://api.divine.video/api/leaderboard/videos?period=month&limit=50&offset=50\""
+    - paragraph [ref=e1402]:
+      - strong [ref=e1403]: "Response:"
+    - code [ref=e1405]: "{ \"period\": \"week\", \"entries\": [ { \"id\": \"abc123...\", \"pubkey\": \"creator456...\", \"title\": \"Viral Video Title\", \"thumbnail\": \"https://cdn.example.com/thumb.jpg\", \"d_tag\": \"my-video-1\", \"video_url\": \"https://cdn.example.com/video.mp4\", \"kind\": 34236, \"author_name\": \"King Bach\", \"author_avatar\": \"https://cdn.example.com/avatar.jpg\", \"views\": 50000, \"unique_viewers\": 25000, \"loops\": 37500 } ] }"
+    - heading "GET /api/leaderboard/creators" [level=4] [ref=e1406]
+    - paragraph [ref=e1407]: Get top creators (Viners) ranked by total views for a time period.
+    - paragraph [ref=e1408]:
+      - strong [ref=e1409]: "Parameters:"
+    - list [ref=e1410]:
+      - listitem [ref=e1411]:
+        - code [ref=e1412]: period
+        - text: "(optional): Time period -"
+        - code [ref=e1413]: day
+        - text: ","
+        - code [ref=e1414]: week
+        - text: ","
+        - code [ref=e1415]: month
+        - text: (default),
+        - code [ref=e1416]: year
+        - text: ", or"
+        - code [ref=e1417]: alltime
+      - listitem [ref=e1418]:
+        - code [ref=e1419]: limit
+        - text: "(optional): Max results 1-100, default 50"
+      - listitem [ref=e1420]:
+        - code [ref=e1421]: offset
+        - text: "(optional): Pagination offset, default 0"
+    - paragraph [ref=e1422]:
+      - strong [ref=e1423]: "Example:"
+    - code [ref=e1425]: "# Top creators all time curl \"https://api.divine.video/api/leaderboard/creators?period=alltime&limit=100\" # Top creators today curl \"https://api.divine.video/api/leaderboard/creators?period=day\""
+    - paragraph [ref=e1426]:
+      - strong [ref=e1427]: "Response:"
+    - code [ref=e1429]: "{ \"period\": \"alltime\", \"entries\": [ { \"pubkey\": \"creator456...\", \"name\": \"King Bach\", \"display_name\": \"Bach\", \"picture\": \"https://cdn.example.com/avatar.jpg\", \"views\": 5000000, \"unique_viewers\": 1000000, \"loops\": 3750000, \"videos_with_views\": 150 } ] }"
+    - separator [ref=e1430]
+    - heading "RSS Feeds" [level=2] [ref=e1431]
+    - paragraph [ref=e1432]:
+      - text: DiVine provides RSS 2.0 feeds with podcast namespace extensions (
+      - code [ref=e1433]: podcast
+      - text: ","
+      - code [ref=e1434]: itunes
+      - text: ","
+      - code [ref=e1435]: media
+      - text: ","
+      - code [ref=e1436]: atom
+      - text: ). All feeds return
+      - code [ref=e1437]: "Content-Type: application/rss+xml"
+      - text: and are cached for 5 minutes.
+    - heading "Feed Endpoints" [level=3] [ref=e1438]
+    - table [ref=e1439]:
+      - rowgroup [ref=e1440]:
+        - row "Endpoint Description" [ref=e1441]:
+          - columnheader "Endpoint" [ref=e1442]
+          - columnheader "Description" [ref=e1443]
+      - rowgroup [ref=e1444]:
+        - row "GET /feed/latest Latest videos globally" [ref=e1445]:
+          - cell "GET /feed/latest" [ref=e1446]:
+            - code [ref=e1447]: GET /feed/latest
+          - cell "Latest videos globally" [ref=e1448]
+        - row "GET /feed/trending Trending videos" [ref=e1449]:
+          - cell "GET /feed/trending" [ref=e1450]:
+            - code [ref=e1451]: GET /feed/trending
+          - cell "Trending videos" [ref=e1452]
+        - 'row "GET /feed/tag/{hashtag} Videos filtered by hashtag" [ref=e1453]':
+          - 'cell "GET /feed/tag/{hashtag}" [ref=e1454]':
+            - code [ref=e1455]: "GET /feed/tag/{hashtag}"
+          - cell "Videos filtered by hashtag" [ref=e1456]
+        - 'row "GET /feed/category/{category} Videos filtered by category (VLM topic label)" [ref=e1457]':
+          - 'cell "GET /feed/category/{category}" [ref=e1458]':
+            - code [ref=e1459]: "GET /feed/category/{category}"
+          - cell "Videos filtered by category (VLM topic label)" [ref=e1460]
+        - 'row "GET /feed/{npub}/videos A creator''s published videos" [ref=e1461]':
+          - 'cell "GET /feed/{npub}/videos" [ref=e1462]':
+            - code [ref=e1463]: "GET /feed/{npub}/videos"
+          - cell "A creator's published videos" [ref=e1464]
+        - 'row "GET /feed/{npub}/feed Videos from accounts a user follows" [ref=e1465]':
+          - 'cell "GET /feed/{npub}/feed" [ref=e1466]':
+            - code [ref=e1467]: "GET /feed/{npub}/feed"
+          - cell "Videos from accounts a user follows" [ref=e1468]
+    - paragraph [ref=e1469]:
+      - strong [ref=e1470]: "Notes:"
+    - list [ref=e1471]:
+      - listitem [ref=e1472]:
+        - code [ref=e1473]: "{npub}"
+        - text: must be a valid Nostr npub bech32 string (e.g.,
+        - code [ref=e1474]: npub1...
+        - text: ). Returns 400 for invalid npubs.
+      - listitem [ref=e1475]: All feeds return up to 50 items.
+      - listitem [ref=e1476]:
+        - code [ref=e1477]: /feed/latest
+        - text: is recency-sorted.
+      - listitem [ref=e1478]:
+        - code [ref=e1479]: /feed/trending
+        - text: is trend-sorted.
+      - listitem [ref=e1480]:
+        - code [ref=e1481]: "/feed/tag/{hashtag}"
+        - text: and
+        - code [ref=e1482]: "/feed/category/{category}"
+        - text: support
+        - code [ref=e1483]: "?sort="
+        - text: (
+        - code [ref=e1484]: trending
+        - text: default) and
+        - code [ref=e1485]: "?platform="
+        - text: (for example,
+        - code [ref=e1486]: vine
+        - text: ).
+      - listitem [ref=e1487]: No authentication required.
+    - heading "Podcast Namespace Extensions" [level=3] [ref=e1488]
+    - paragraph [ref=e1489]: "Each feed includes:"
+    - list [ref=e1490]:
+      - listitem [ref=e1491]:
+        - code [ref=e1492]: <podcast:medium>video</podcast:medium>
+        - text: — identifies content type
+      - listitem [ref=e1493]:
+        - code [ref=e1494]: <atom:link rel="self">
+        - text: — canonical feed URL
+      - listitem [ref=e1495]:
+        - code [ref=e1496]: "<podcast:socialInteract uri=\"nostr:{naddr}\" protocol=\"nostr\">"
+        - text: — links items to Nostr events
+    - paragraph [ref=e1497]: "Per-item extensions:"
+    - list [ref=e1498]:
+      - listitem [ref=e1499]:
+        - code [ref=e1500]: <enclosure>
+        - text: — video URL with MIME type and file size
+      - listitem [ref=e1501]:
+        - code [ref=e1502]: <itunes:author>
+        - text: — creator display name
+      - listitem [ref=e1503]:
+        - code [ref=e1504]: <itunes:image>
+        - text: — video thumbnail
+      - listitem [ref=e1505]:
+        - code [ref=e1506]: <itunes:duration>
+        - text: — video duration (on hashtag/category feeds with full media metadata)
+      - listitem [ref=e1507]:
+        - code [ref=e1508]: <guid isPermaLink="false">
+        - text: — set to the video's d-tag (addressable event identifier)
+      - listitem [ref=e1509]:
+        - code [ref=e1510]: <link>
+        - text: —
+        - code [ref=e1511]: "https://divine.video/v/{naddr}"
+        - text: deep link
+    - paragraph [ref=e1512]:
+      - text: Creator feeds (
+      - code [ref=e1513]: "/feed/{npub}/videos"
+      - text: ") also include channel-level:"
+    - list [ref=e1514]:
+      - listitem [ref=e1515]:
+        - code [ref=e1516]: <itunes:author>
+        - text: and
+        - code [ref=e1517]: <itunes:image>
+        - text: from the creator's Nostr profile
+      - listitem [ref=e1518]:
+        - code [ref=e1519]: <podcast:guid>
+        - text: set to the creator's npub
+      - listitem [ref=e1520]:
+        - code [ref=e1521]: <image>
+        - text: RSS standard channel image from profile picture
+    - heading "Example Usage" [level=3] [ref=e1522]
+    - code [ref=e1524]: "# Latest videos feed curl https://relay.divine.video/feed/latest # Creator's videos (use their npub) curl https://relay.divine.video/feed/npub1..../videos # Hashtag feed curl https://relay.divine.video/feed/tag/nostr # Category feed curl https://relay.divine.video/feed/category/music"
+    - heading "Caching" [level=3] [ref=e1525]
+    - paragraph [ref=e1526]: "All feed responses include:"
+    - code [ref=e1528]: "Cache-Control: public, max-age=300, stale-while-revalidate=60"
+    - separator [ref=e1529]
+    - heading "Common Patterns" [level=2] [ref=e1530]
+    - heading "Pagination" [level=3] [ref=e1531]
+    - paragraph [ref=e1532]:
+      - strong [ref=e1533]: "Important:"
+      - text: "Different endpoints have different pagination styles:"
+    - paragraph [ref=e1534]:
+      - strong [ref=e1535]: Array endpoints
+      - text: (
+      - code [ref=e1536]: /api/videos
+      - text: ","
+      - code [ref=e1537]: /api/hashtags
+      - text: ") - Return plain arrays:"
+    - code [ref=e1539]: "// Option 1: Use `before` param with last item's created_at timestamp const videos = await fetch('/api/videos?limit=50').then(r => r.json()); // For next page, use last video's timestamp const lastTimestamp = Math.floor(new Date(videos[videos.length - 1].created_at).getTime() / 1000); const nextPage = await fetch(`/api/videos?limit=50&before=${lastTimestamp}`).then(r => r.json()); // Stop when you get fewer results than requested const hasMore = nextPage.length === 50;"
+    - paragraph [ref=e1540]:
+      - strong [ref=e1541]: Offset-based pagination
+      - text: (for
+      - code [ref=e1542]: /api/videos
+      - text: ","
+      - code [ref=e1543]: /api/search
+      - text: "):"
+    - code [ref=e1545]: "// Option 2: Use offset for precise paging (useful for search results) const page1 = await fetch('/api/search?q=nostr&limit=20&offset=0').then(r => r.json()); const page2 = await fetch('/api/search?q=nostr&limit=20&offset=20').then(r => r.json()); const page3 = await fetch('/api/search?q=nostr&limit=20&offset=40').then(r => r.json()); // Works for videos sorted by loops too const topVines = await fetch('/api/videos?sort=loops&platform=vine&limit=50&offset=100').then(r => r.json());"
+    - paragraph [ref=e1546]:
+      - strong [ref=e1547]: Paginated endpoints
+      - text: (
+      - code [ref=e1548]: /api/videos/events
+      - text: ","
+      - code [ref=e1549]: "/api/users/{pk}/feed"
+      - text: ") - Return objects with cursor:"
+    - code [ref=e1551]: "const response = await fetch('/api/videos/events?limit=50').then(r => r.json()); // { videos: [...], next_cursor: \"1700000000\", has_more: true } if (response.has_more) { const nextPage = await fetch(`/api/videos/events?limit=50&before=${response.next_cursor}`); }"
+    - 'heading "Hybrid Approach: Events via WebSocket, Stats via REST" [level=3] [ref=e1552]'
+    - code [ref=e1554]: "// Subscribe to new videos via WebSocket ws.send(JSON.stringify([\"REQ\", \"feed\", { kinds: [34236], limit: 50 }])); // Get engagement + view stats for displayed videos const ids = videos.map(v => v.id); const stats = await fetch('/api/videos/stats/bulk', { method: 'POST', body: JSON.stringify({ event_ids: ids }) });"
+    - heading "Publishing a Video" [level=3] [ref=e1555]
+    - code [ref=e1557]: "const event = { kind: 34236, created_at: Math.floor(Date.now() / 1000), tags: [ [\"d\", crypto.randomUUID()], [\"title\", \"My Video\"], [\"imeta\", \"url https://cdn.example.com/video.mp4\", \"m video/mp4\", \"image https://cdn.example.com/thumb.jpg\" ], [\"t\", \"nostr\"] ], content: \"Video description\" }; // Sign with nostr extension or private key const signedEvent = await window.nostr.signEvent(event); ws.send(JSON.stringify([\"EVENT\", signedEvent]));"
+    - heading "Posting a Comment (Top-Level)" [level=3] [ref=e1558]
+    - code [ref=e1560]: "const comment = { kind: 1111, created_at: Math.floor(Date.now() / 1000), tags: [ [\"E\", videoId], // Root video (always the video) [\"K\", \"34236\"], // Root kind [\"P\", videoAuthorPubkey], // Root author [\"e\", videoId], // Parent = video for top-level [\"k\", \"34236\"], // Parent kind [\"p\", videoAuthorPubkey] // Parent author ], content: \"Great video!\" }; const signedComment = await window.nostr.signEvent(comment); ws.send(JSON.stringify([\"EVENT\", signedComment]));"
+    - heading "Replying to a Comment (Nested)" [level=3] [ref=e1561]
+    - code [ref=e1563]: "const reply = { kind: 1111, created_at: Math.floor(Date.now() / 1000), tags: [ [\"E\", videoId], // Root stays as the video [\"K\", \"34236\"], // Root kind stays as video kind [\"P\", videoAuthorPubkey], // Root author stays as video author [\"e\", parentCommentId], // Parent = the comment being replied to [\"k\", \"1111\"], // Parent kind = comment [\"p\", parentCommentAuthor] // Parent author = comment author ], content: \"I agree with your comment!\" }; const signedReply = await window.nostr.signEvent(reply); ws.send(JSON.stringify([\"EVENT\", signedReply]));"
+    - heading "Liking a Video" [level=3] [ref=e1564]
+    - code [ref=e1566]: "const reaction = { kind: 7, created_at: Math.floor(Date.now() / 1000), tags: [ [\"e\", videoId], [\"p\", videoAuthorPubkey], [\"k\", \"34236\"] ], content: \"+\" }; const signedReaction = await window.nostr.signEvent(reaction); ws.send(JSON.stringify([\"EVENT\", signedReaction]));"
+    - heading "Check if I Already Liked a Video" [level=3] [ref=e1567]
+    - code [ref=e1569]: "// Query for my reactions on this video ws.send(JSON.stringify([\"REQ\", \"my-reaction\", { kinds: [7], authors: [myPubkey], \"#e\": [videoId], limit: 1 }])); // If you get an event back, you've already reacted // If you only get EOSE with no events, you haven't"
+    - heading "Unlike a Video (Delete Reaction)" [level=3] [ref=e1570]
+    - code [ref=e1572]: "// First, find your reaction event ID (from the check above) const deletion = { kind: 5, created_at: Math.floor(Date.now() / 1000), tags: [ [\"e\", reactionEventId] // The ID of your kind 7 event ], content: \"\" }; const signedDeletion = await window.nostr.signEvent(deletion); ws.send(JSON.stringify([\"EVENT\", signedDeletion]));"
+    - heading "Updating a Video (Replaceable Events)" [level=3] [ref=e1573]
+    - paragraph [ref=e1574]:
+      - text: For parameterized replaceable events (kinds 30000-39999), publishing a new event with the
+      - strong [ref=e1575]:
+        - text: same
+        - code [ref=e1576]: d
+        - text: tag
+      - text: "replaces the old one:"
+    - code [ref=e1578]: "// Original video had d-tag \"my-video-id\" // To update it, publish new event with same d-tag: const updatedVideo = { kind: 34236, created_at: Math.floor(Date.now() / 1000), tags: [ [\"d\", \"my-video-id\"], // SAME d-tag = replacement [\"title\", \"Updated Title\"], [\"imeta\", \"url https://...\", \"image https://...\"], [\"t\", \"updated\"] ], content: \"New description\" }; // Sign and publish - relay automatically replaces the old event"
+    - heading "Follow a User" [level=3] [ref=e1579]
+    - paragraph [ref=e1580]: "Following requires a read-modify-write pattern on your kind 3 event:"
+    - code [ref=e1582]: "// 1. Fetch your current contact list ws.send(JSON.stringify([\"REQ\", \"my-follows\", { kinds: [3], authors: [myPubkey], limit: 1 }])); // 2. When you receive it, add the new follow ws.onmessage = (msg) => { const [type, subId, event] = JSON.parse(msg.data); if (type === 'EVENT' && subId === 'my-follows') { // Add new p tag to existing tags const newTags = [ ...event.tags, [\"p\", newFollowPubkey, \"wss://relay.divine.video\"] ]; // 3. Publish updated contact list const updatedContacts = { kind: 3, created_at: Math.floor(Date.now() / 1000), tags: newTags, content: event.content // Preserve relay list if any }; const signed = await window.nostr.signEvent(updatedContacts); ws.send(JSON.stringify([\"EVENT\", signed])); } };"
+    - heading "Unfollow a User" [level=3] [ref=e1583]
+    - paragraph [ref=e1584]: "Same pattern, but filter OUT the p tag:"
+    - code [ref=e1586]: const newTags = event.tags.filter( tag => !(tag[0] === 'p' && tag[1] === unfollowPubkey) );
+    - heading "Check if I'm Following Someone" [level=3] [ref=e1587]
+    - code [ref=e1589]: "// Option 1: Via REST API (check your following list) const following = await fetch(`/api/users/${myPubkey}/following`).then(r => r.json()); const isFollowing = following.following.includes(targetPubkey); // Option 2: Via WebSocket (fetch your kind 3 and check tags) ws.send(JSON.stringify([\"REQ\", \"my-follows\", { kinds: [3], authors: [myPubkey], limit: 1 }])); // Check if any p tag matches targetPubkey"
+    - heading "Check if Someone Follows Me" [level=3] [ref=e1590]
+    - code [ref=e1592]: "// Via REST API const followers = await fetch(`/api/users/${myPubkey}/followers`).then(r => r.json()); const followsMe = followers.followers.includes(targetPubkey); // Or check their kind 3 directly via WebSocket ws.send(JSON.stringify([\"REQ\", \"their-follows\", { kinds: [3], authors: [targetPubkey], limit: 1 }]));"
+    - heading "Get Video Feed with Author Profiles" [level=3] [ref=e1593]
+    - paragraph [ref=e1594]:
+      - text: Videos from
+      - code [ref=e1595]: /api/videos
+      - text: include
+      - code [ref=e1596]: pubkey
+      - text: "but not full profile. Batch-fetch profiles:"
+    - code [ref=e1598]: "// 1. Get videos const videos = await fetch('/api/videos?limit=20').then(r => r.json()); // 2. Collect unique author pubkeys const authorPubkeys = [...new Set(videos.map(v => v.pubkey))]; // 3. Batch fetch profiles const profiles = await fetch('/api/users/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pubkeys: authorPubkeys }) }).then(r => r.json()); // 4. Create lookup map const profileMap = {}; profiles.users.forEach(u => profileMap[u.pubkey] = u.profile); // 5. Enrich videos with author info const enrichedVideos = videos.map(v => ({ ...v, author: profileMap[v.pubkey] || null }));"
+    - heading "Build Comment Thread Hierarchy" [level=3] [ref=e1599]
+    - paragraph [ref=e1600]:
+      - text: Comments have both root (
+      - code [ref=e1601]: E
+      - text: ) and parent (
+      - code [ref=e1602]: e
+      - text: ") tags. Build tree:"
+    - code [ref=e1604]: "// Fetch all comments on a video ws.send(JSON.stringify([\"REQ\", \"comments\", { kinds: [1111], \"#E\": [videoId] }])); // Collect comments, then build tree const comments = []; // Populate from EVENT messages function buildCommentTree(comments, videoId) { const byId = {}; const roots = []; // Index by ID comments.forEach(c => byId[c.id] = { ...c, replies: [] }); // Build hierarchy using lowercase 'e' tag (parent) comments.forEach(c => { const parentTag = c.tags.find(t => t[0] === 'e'); const parentId = parentTag ? parentTag[1] : null; if (parentId === videoId) { // Top-level comment roots.push(byId[c.id]); } else if (byId[parentId]) { // Reply to another comment byId[parentId].replies.push(byId[c.id]); } }); return roots; }"
+    - separator [ref=e1605]
+    - heading "Error Handling" [level=2] [ref=e1606]
+    - heading "WebSocket OK Message Prefixes" [level=3] [ref=e1607]
+    - list [ref=e1608]:
+      - listitem [ref=e1609]:
+        - code [ref=e1610]: "blocked:"
+        - text: "- Policy rejection (banned, rate limited, kind not allowed)"
+      - listitem [ref=e1611]:
+        - code [ref=e1612]: "invalid:"
+        - text: "- Structural issue (missing tags, bad signature)"
+    - heading "REST API Errors" [level=3] [ref=e1613]
+    - code [ref=e1615]: "{ \"error\": \"Video not found\" }"
+    - paragraph [ref=e1616]: "HTTP Status Codes:"
+    - list [ref=e1617]:
+      - listitem [ref=e1618]:
+        - code [ref=e1619]: "200"
+        - text: "- Success"
+      - listitem [ref=e1620]:
+        - code [ref=e1621]: "400"
+        - text: "- Bad request (missing params, validation error)"
+      - listitem [ref=e1622]:
+        - code [ref=e1623]: "401"
+        - text: "- Unauthorized (missing NIP-98 auth)"
+      - listitem [ref=e1624]:
+        - code [ref=e1625]: "403"
+        - text: "- Forbidden (wrong pubkey for protected endpoint)"
+      - listitem [ref=e1626]:
+        - code [ref=e1627]: "404"
+        - text: "- Not found"
+      - listitem [ref=e1628]:
+        - code [ref=e1629]: "500"
+        - text: "- Internal server error"
+    - separator [ref=e1630]
+    - heading "Rate Limits & Best Practices" [level=2] [ref=e1631]
+    - list [ref=e1632]:
+      - listitem [ref=e1633]:
+        - strong [ref=e1634]:
+          - text: Respect
+          - code [ref=e1635]: Cache-Control
+          - text: headers
+        - text: "- Caching varies by endpoint:"
+        - list [ref=e1636]:
+          - listitem [ref=e1637]:
+            - text: "Public list endpoints: 60 seconds ("
+            - code [ref=e1638]: public, max-age=60
+            - text: )
+          - listitem [ref=e1639]:
+            - text: "Stats endpoints: 30 seconds ("
+            - code [ref=e1640]: public, max-age=30
+            - text: )
+          - listitem [ref=e1641]:
+            - text: "Hashtag/leaderboard endpoints: 5 minutes ("
+            - code [ref=e1642]: public, max-age=300
+            - text: )
+          - listitem [ref=e1643]:
+            - text: "Authenticated endpoints: 30-60 seconds ("
+            - code [ref=e1644]: private, max-age=30
+            - text: or
+            - code [ref=e1645]: private, max-age=60
+            - text: )
+          - listitem [ref=e1646]:
+            - text: "Error responses: no cache ("
+            - code [ref=e1647]: no-store
+            - text: )
+      - listitem [ref=e1648]:
+        - strong [ref=e1649]: Use bulk endpoints
+        - text: "- Prefer"
+        - code [ref=e1650]: /api/videos/bulk
+        - text: over multiple single requests
+      - listitem [ref=e1651]:
+        - strong [ref=e1652]: Implement exponential backoff
+        - text: "- On 500 errors or rate limits"
+      - listitem [ref=e1653]:
+        - strong [ref=e1654]: Close WebSocket subscriptions
+        - text: "- Send CLOSE when done to free server resources"
+      - listitem [ref=e1655]:
+        - strong [ref=e1656]: Use pagination
+        - text: "- Don't request more than you need"
+      - listitem [ref=e1657]:
+        - strong [ref=e1658]: Verify signatures client-side
+        - text: "- Events from REST API are verifiable"
+    - heading "WebSocket Connection Lifecycle" [level=3] [ref=e1659]
+    - code [ref=e1661]: "const ws = new WebSocket('wss://relay.divine.video'); ws.onopen = () => { // Connection established - send subscriptions ws.send(JSON.stringify([\"REQ\", \"feed\", { kinds: [34236], limit: 50 }])); }; ws.onmessage = (msg) => { const data = JSON.parse(msg.data); const [type, ...rest] = data; switch (type) { case 'EVENT': const [subId, event] = rest; handleEvent(subId, event); break; case 'EOSE': // End of stored events - live events will follow break; case 'OK': const [eventId, success, message] = rest; handlePublishResult(eventId, success, message); break; case 'CLOSED': const [subId, reason] = rest; // Subscription was closed by relay break; } }; ws.onclose = () => { // Implement reconnection with exponential backoff setTimeout(() => reconnect(), 1000); }; // Clean up when done function cleanup() { ws.send(JSON.stringify([\"CLOSE\", \"feed\"])); ws.close(); }"
+    - separator [ref=e1662]
+    - heading "Authentication (NIP-98)" [level=2] [ref=e1663]
+    - paragraph [ref=e1664]: "Protected endpoints require NIP-98 HTTP auth. These endpoints are:"
+    - list [ref=e1665]:
+      - listitem [ref=e1666]:
+        - code [ref=e1667]: "GET /api/users/{pubkey}/notifications"
+        - text: "- View own notifications"
+      - listitem [ref=e1668]:
+        - code [ref=e1669]: "POST /api/users/{pubkey}/notifications/read"
+        - text: "- Mark notifications read"
+      - listitem [ref=e1670]:
+        - code [ref=e1671]: "GET /api/users/{pubkey}/analytics"
+        - text: "- View own creator analytics"
+      - listitem [ref=e1672]:
+        - code [ref=e1673]: "GET /api/users/{pubkey}/privacy"
+        - text: "- View own privacy settings"
+      - listitem [ref=e1674]:
+        - code [ref=e1675]: "PUT /api/users/{pubkey}/privacy"
+        - text: "- Update privacy settings"
+      - listitem [ref=e1676]:
+        - code [ref=e1677]: "DELETE /api/users/{pubkey}/privacy"
+        - text: "- Remove privacy settings (make account public)"
+      - listitem [ref=e1678]:
+        - code [ref=e1679]: "GET /api/access/{pubkey}"
+        - text: "- Check if you have access to view a user's content"
+      - listitem [ref=e1680]:
+        - code [ref=e1681]: GET /api/moderation/reports
+        - text: "- View moderation reports (admin only)"
+      - listitem [ref=e1682]:
+        - code [ref=e1683]: GET /api/moderation/labels
+        - text: "- View content labels (admin only)"
+      - listitem [ref=e1684]:
+        - code [ref=e1685]: GET /api/moderation/trusted-labelers
+        - text: "- List trusted labelers (admin only)"
+      - listitem [ref=e1686]:
+        - code [ref=e1687]: POST /api/moderation/trusted-labelers
+        - text: "- Add trusted labeler (admin only)"
+      - listitem [ref=e1688]:
+        - code [ref=e1689]: "DELETE /api/moderation/trusted-labelers/{pubkey}"
+        - text: "- Remove trusted labeler (admin only)"
+    - heading "Auth Header Format" [level=3] [ref=e1690]
+    - code [ref=e1692]: "Authorization: Nostr <base64-encoded-signed-event>"
+    - heading "Auth Event Structure (Kind 27235)" [level=3] [ref=e1693]
+    - code [ref=e1695]: "{ \"kind\": 27235, \"created_at\": <unix-timestamp-now>, \"tags\": [ [\"u\", \"https://relay.divine.video/api/users/{pubkey}/analytics?window=30d\"], [\"method\", \"GET\"] ], \"content\": \"\" }"
+    - heading "Required Tags" [level=3] [ref=e1696]
+    - table [ref=e1697]:
+      - rowgroup [ref=e1698]:
+        - row "Tag Required Description" [ref=e1699]:
+          - columnheader "Tag" [ref=e1700]
+          - columnheader "Required" [ref=e1701]
+          - columnheader "Description" [ref=e1702]
+      - rowgroup [ref=e1703]:
+        - row "u Always Full absolute URL including query parameters. Must exactly match the URL being requested (scheme + host + path + query string). Per NIP-98 spec." [ref=e1704]:
+          - cell "u" [ref=e1705]:
+            - code [ref=e1706]: u
+          - cell "Always" [ref=e1707]
+          - cell "Full absolute URL including query parameters. Must exactly match the URL being requested (scheme + host + path + query string). Per NIP-98 spec." [ref=e1708]:
+            - strong [ref=e1709]: Full absolute URL including query parameters.
+            - text: Must exactly match the URL being requested (scheme + host + path + query string). Per NIP-98 spec.
+        - 'row "method Always HTTP method: GET, POST, PUT, or DELETE" [ref=e1710]':
+          - cell "method" [ref=e1711]:
+            - code [ref=e1712]: method
+          - cell "Always" [ref=e1713]
+          - 'cell "HTTP method: GET, POST, PUT, or DELETE" [ref=e1714]':
+            - text: "HTTP method:"
+            - code [ref=e1715]: GET
+            - text: ","
+            - code [ref=e1716]: POST
+            - text: ","
+            - code [ref=e1717]: PUT
+            - text: ", or"
+            - code [ref=e1718]: DELETE
+        - row "payload POST/PUT only SHA256 hex hash of the raw request body bytes. Optional for GET/DELETE (no body)." [ref=e1719]:
+          - cell "payload" [ref=e1720]:
+            - code [ref=e1721]: payload
+          - cell "POST/PUT only" [ref=e1722]
+          - cell "SHA256 hex hash of the raw request body bytes. Optional for GET/DELETE (no body)." [ref=e1723]
+    - heading "Important Rules" [level=3] [ref=e1724]
+    - list [ref=e1725]:
+      - listitem [ref=e1726]:
+        - strong [ref=e1727]: URL must be exact
+        - text: ": The"
+        - code [ref=e1728]: u
+        - text: "tag must be the complete URL including query parameters. Example:"
+        - code [ref=e1729]: https://relay.divine.video/api/users/abc123.../analytics?window=30d
+        - text: — not just the path
+      - listitem [ref=e1730]:
+        - strong [ref=e1731]: Time window
+        - text: ": The"
+        - code [ref=e1732]: created_at
+        - text: must be within 60 seconds of the server's current time (10s clock skew allowed)
+      - listitem [ref=e1733]:
+        - strong [ref=e1734]: Pubkey match
+        - text: ": The event's"
+        - code [ref=e1735]: pubkey
+        - text: must match the
+        - code [ref=e1736]: "{pubkey}"
+        - text: in the URL path — you can only access your own data
+      - listitem [ref=e1737]:
+        - strong [ref=e1738]: Sign the event
+        - text: ": The event must have a valid Nostr signature from the keypair matching the pubkey"
+      - listitem [ref=e1739]:
+        - strong [ref=e1740]: Payload hash
+        - text: ": Only required for requests with a body (POST, PUT). For GET and DELETE, omit the"
+        - code [ref=e1741]: payload
+        - text: tag
+    - heading "Implementation Example" [level=3] [ref=e1742]
+    - code [ref=e1744]: "// Helper: build NIP-98 auth header async function buildNip98Auth(url, method, body = null) { const tags = [ [\"u\", url], // MUST include query params [\"method\", method] ]; // Add payload hash for requests with a body if (body) { const hash = await crypto.subtle.digest( 'SHA-256', new TextEncoder().encode(body) ); const hashHex = Array.from(new Uint8Array(hash)) .map(b => b.toString(16).padStart(2, '0')).join(''); tags.push([\"payload\", hashHex]); } const authEvent = { kind: 27235, created_at: Math.floor(Date.now() / 1000), tags, content: \"\" }; const signed = await window.nostr.signEvent(authEvent); return \"Nostr \" + btoa(JSON.stringify(signed)); } // GET analytics (note: query params included in signed URL) const analyticsUrl = `https://relay.divine.video/api/users/${myPubkey}/analytics?window=30d`; const authHeader = await buildNip98Auth(analyticsUrl, \"GET\"); const res = await fetch(analyticsUrl, { headers: { \"Authorization\": authHeader } }); // GET notifications const notifUrl = `https://relay.divine.video/api/users/${myPubkey}/notifications`; const res2 = await fetch(notifUrl, { headers: { \"Authorization\": await buildNip98Auth(notifUrl, \"GET\") } }); // POST mark notifications read (include payload hash) const readUrl = `https://relay.divine.video/api/users/${myPubkey}/notifications/read`; const body = JSON.stringify({ notification_ids: [\"id1\", \"id2\"] }); const res3 = await fetch(readUrl, { method: \"POST\", headers: { \"Authorization\": await buildNip98Auth(readUrl, \"POST\", body), \"Content-Type\": \"application/json\" }, body }); // PUT privacy settings (include payload hash) const privacyUrl = `https://relay.divine.video/api/users/${myPubkey}/privacy`; const privacyBody = JSON.stringify({ private: true }); const res4 = await fetch(privacyUrl, { method: \"PUT\", headers: { \"Authorization\": await buildNip98Auth(privacyUrl, \"PUT\", privacyBody), \"Content-Type\": \"application/json\" }, body: privacyBody });"
+    - heading "Common Auth Errors" [level=3] [ref=e1745]
+    - table [ref=e1746]:
+      - rowgroup [ref=e1747]:
+        - row "Status Error Likely Cause" [ref=e1748]:
+          - columnheader "Status" [ref=e1749]
+          - columnheader "Error" [ref=e1750]
+          - columnheader "Likely Cause" [ref=e1751]
+      - rowgroup [ref=e1752]:
+        - row "401 URL mismatch The u tag doesn't match the request URL. Check that query params are included and the hostname is correct." [ref=e1753]:
+          - cell "401" [ref=e1754]
+          - cell "URL mismatch" [ref=e1755]:
+            - code [ref=e1756]: URL mismatch
+          - cell "The u tag doesn't match the request URL. Check that query params are included and the hostname is correct." [ref=e1757]:
+            - text: The
+            - code [ref=e1758]: u
+            - text: tag doesn't match the request URL. Check that query params are included and the hostname is correct.
+        - row "401 event expired The created_at is more than 60 seconds old. Generate a fresh event for each request." [ref=e1759]:
+          - cell "401" [ref=e1760]
+          - cell "event expired" [ref=e1761]:
+            - code [ref=e1762]: event expired
+          - cell "The created_at is more than 60 seconds old. Generate a fresh event for each request." [ref=e1763]:
+            - text: The
+            - code [ref=e1764]: created_at
+            - text: is more than 60 seconds old. Generate a fresh event for each request.
+        - row "401 invalid signature The event signature doesn't verify. Ensure you're signing correctly." [ref=e1765]:
+          - cell "401" [ref=e1766]
+          - cell "invalid signature" [ref=e1767]:
+            - code [ref=e1768]: invalid signature
+          - cell "The event signature doesn't verify. Ensure you're signing correctly." [ref=e1769]
+        - row "401 missing 'method' tag The auth event is missing the [\"method\", \"GET\"] tag." [ref=e1770]:
+          - cell "401" [ref=e1771]
+          - cell "missing 'method' tag" [ref=e1772]:
+            - code [ref=e1773]: missing 'method' tag
+          - cell "The auth event is missing the [\"method\", \"GET\"] tag." [ref=e1774]:
+            - text: The auth event is missing the
+            - code [ref=e1775]: "[\"method\", \"GET\"]"
+            - text: tag.
+        - row "401 payload hash mismatch The payload tag doesn't match SHA256 of the actual body sent." [ref=e1776]:
+          - cell "401" [ref=e1777]
+          - cell "payload hash mismatch" [ref=e1778]:
+            - code [ref=e1779]: payload hash mismatch
+          - cell "The payload tag doesn't match SHA256 of the actual body sent." [ref=e1780]:
+            - text: The
+            - code [ref=e1781]: payload
+            - text: tag doesn't match SHA256 of the actual body sent.
+        - 'row "403 You can only view your own The auth event''s pubkey doesn''t match the {pubkey} in the URL path." [ref=e1782]':
+          - cell "403" [ref=e1783]
+          - cell "You can only view your own" [ref=e1784]:
+            - code [ref=e1785]: You can only view your own
+          - 'cell "The auth event''s pubkey doesn''t match the {pubkey} in the URL path." [ref=e1786]':
+            - text: The auth event's pubkey doesn't match the
+            - code [ref=e1787]: "{pubkey}"
+            - text: in the URL path.
+    - separator [ref=e1788]
+    - heading "Useful Queries" [level=2] [ref=e1789]
+    - heading "Get videos by a specific creator" [level=3] [ref=e1790]
+    - code [ref=e1792]: "GET /api/users/{pubkey}/videos?limit=50"
+    - heading "Get trending short-form videos" [level=3] [ref=e1793]
+    - code [ref=e1795]: GET /api/videos?sort=trending&kind=34236&limit=20
+    - heading "Search for videos about Bitcoin" [level=3] [ref=e1796]
+    - code [ref=e1798]: GET /api/search?q=bitcoin&limit=30
+    - heading "Get a user's home feed (personalized timeline)" [level=3] [ref=e1799]
+    - code [ref=e1801]: "GET /api/users/{pubkey}/feed?sort=recent&limit=50"
+    - heading "Get classic Vine archive videos" [level=3] [ref=e1802]
+    - code [ref=e1804]: GET /api/videos?platform=vine&sort=loops&limit=50
+    - heading "Check if specific videos exist" [level=3] [ref=e1805]
+    - code [ref=e1807]: "POST /api/videos/stats/bulk {\"event_ids\": [\"id1\", \"id2\", \"id3\"]}"
+    - heading "Get comments on a video (REST)" [level=3] [ref=e1808]
+    - code [ref=e1810]: "GET /api/videos/{id}/comments?sort=newest&limit=25"
+    - paragraph [ref=e1811]: Use REST when you need a simple paginated comment list with author metadata.
+    - heading "Subscribe to comments on a video (WebSocket)" [level=3] [ref=e1812]
+    - code [ref=e1814]: "[\"REQ\", \"comments\", { \"kinds\": [1111], \"#E\": [\"<video-event-id>\"] }]"
+    - paragraph [ref=e1815]:
+      - text: Use WebSocket when you need live updates or raw Nostr comment events. The
+      - code [ref=e1816]: "#E"
+      - text: (uppercase) tag matches all comments on a video regardless of nesting depth. Use
+      - code [ref=e1817]: "#e"
+      - text: (lowercase) to get direct replies to a specific comment.
+    - heading "Get reactions/comments on MY videos (notifications)" [level=3] [ref=e1818]
+    - paragraph [ref=e1819]:
+      - text: Subscribe to events that tag you in
+      - code [ref=e1820]: p
+      - text: ":"
+    - code [ref=e1822]: "[\"REQ\", \"notifications\", { \"kinds\": [7, 1111, 16], \"#p\": [\"<my-pubkey>\"], \"since\": <last-check-timestamp> }]"
+    - paragraph [ref=e1823]: "This gives you:"
+    - list [ref=e1824]:
+      - listitem [ref=e1825]:
+        - code [ref=e1826]: kind 7
+        - text: "- Reactions on your videos"
+      - listitem [ref=e1827]:
+        - code [ref=e1828]: kind 1111
+        - text: "- Comments on your videos"
+      - listitem [ref=e1829]:
+        - code [ref=e1830]: kind 16
+        - text: "- Reposts of your videos"
+    - paragraph [ref=e1831]:
+      - text: The
+      - code [ref=e1832]: "#p"
+      - text: filter matches because reactions/comments include a
+      - code [ref=e1833]: p
+      - text: tag pointing to the video author.
+    - separator [ref=e1834]
+    - heading "Content Moderation" [level=2] [ref=e1835]
+    - paragraph [ref=e1836]:
+      - text: FunnelCake includes a content moderation system based on NIP-32 (labels) and NIP-56 (reports). Content labels are automatically applied by the divine-moderation-service, which uses a VLM (Vision-Language Model) classifier to analyze video thumbnails and content. Trusted labelers can also tag content with labels like
+      - code [ref=e1837]: nsfw
+      - text: ", and those labels are used to filter content from public endpoints."
+    - heading "Trust And Safety Contract" [level=3] [ref=e1838]
+    - paragraph [ref=e1839]: "The current public contract is:"
+    - list [ref=e1840]:
+      - listitem [ref=e1841]:
+        - code [ref=e1842]: content_labels
+        - text: is a mixed-purpose field. It is not moderation-only.
+      - listitem [ref=e1843]:
+        - text: There is no separate
+        - code [ref=e1844]: moderation_labels
+        - text: field today.
+      - listitem [ref=e1845]:
+        - text: Clients that need a moderation-only view should derive it by intersecting
+        - code [ref=e1846]: content_labels
+        - text: with the published moderation vocabulary below.
+      - listitem [ref=e1847]:
+        - code [ref=e1848]: moderation_status
+        - text: ","
+        - code [ref=e1849]: ai_score
+        - text: ","
+        - code [ref=e1850]: ai_source
+        - text: ", and"
+        - code [ref=e1851]: ai_checked_at
+        - text: are moderation pipeline metadata. They do not replace a moderation-only label array.
+    - paragraph [ref=e1852]: "Live examples seen on production and staging include both moderation labels and discovery labels:"
+    - list [ref=e1853]:
+      - listitem [ref=e1854]:
+        - code [ref=e1855]: "[\"nudity\",\"sexual\",\"profanity\"]"
+      - listitem [ref=e1856]:
+        - code [ref=e1857]: "[\"activity:listening-to-music\",\"topic:gaming\",\"topic:music\"]"
+    - heading "Label Merge And Normalization" [level=3] [ref=e1858]
+    - paragraph [ref=e1859]:
+      - text: All video response objects include a
+      - code [ref=e1860]: content_labels
+      - text: "field (array of strings). The response merger currently:"
+    - list [ref=e1861]:
+      - listitem [ref=e1862]:
+        - text: Reads stored labels from the ClickHouse
+        - code [ref=e1863]: content_labels
+        - text: table.
+      - listitem [ref=e1864]:
+        - text: Merges raw NIP-32
+        - code [ref=e1865]: l
+        - text: tags from the video event itself.
+      - listitem [ref=e1866]:
+        - text: Merges raw kind
+        - code [ref=e1867]: "1985"
+        - text: label events.
+    - paragraph [ref=e1868]: "Normalization rules:"
+    - list [ref=e1869]:
+      - listitem [ref=e1870]:
+        - text: Language self-labels such as
+        - code [ref=e1871]: "[\"l\", \"en\", \"ISO-639-1\"]"
+        - text: are excluded.
+      - listitem [ref=e1872]:
+        - code [ref=e1873]: "[\"l\", \"music\", \"topic\"]"
+        - text: becomes
+        - code [ref=e1874]: topic:music
+        - text: .
+      - listitem [ref=e1875]:
+        - code [ref=e1876]: "[\"l\", \"nudity\", \"content-warning\"]"
+        - text: becomes
+        - code [ref=e1877]: nudity
+        - text: .
+      - listitem [ref=e1878]:
+        - text: Other namespaced labels are represented as
+        - code [ref=e1879]: namespace:value
+        - text: .
+      - listitem [ref=e1880]: Exact duplicate strings are removed. First-seen order is preserved.
+    - paragraph [ref=e1881]: There is no stronger precedence or conflict-resolution contract today beyond exact-string deduping. Clients should not assume semantic synonym handling.
+    - code [ref=e1883]: "{ \"id\": \"64-char-hex\", \"title\": \"Video Title\", \"content_labels\": [\"safe\"] }"
+    - paragraph [ref=e1884]:
+      - text: The field may be an empty array
+      - code [ref=e1885]: "[]"
+      - text: if the video has not yet been classified and has no applicable raw labels.
+    - heading "Stable Moderation Vocabulary" [level=3] [ref=e1886]
+    - paragraph [ref=e1887]:
+      - text: Use this subset of
+      - code [ref=e1888]: content_labels
+      - text: "for trust-and-safety decisions:"
+    - table [ref=e1889]:
+      - rowgroup [ref=e1890]:
+        - row "Class Labels Server behavior today Client guidance" [ref=e1891]:
+          - columnheader "Class" [ref=e1892]
+          - columnheader "Labels" [ref=e1893]
+          - columnheader "Server behavior today" [ref=e1894]
+          - columnheader "Client guidance" [ref=e1895]
+      - rowgroup [ref=e1896]:
+        - row "Always blocked illegal, csam Always hidden on public discovery/search surfaces. No opt-out. Treat as hard block." [ref=e1897]:
+          - cell "Always blocked" [ref=e1898]
+          - cell "illegal, csam" [ref=e1899]:
+            - code [ref=e1900]: illegal
+            - text: ","
+            - code [ref=e1901]: csam
+          - cell "Always hidden on public discovery/search surfaces. No opt-out." [ref=e1902]
+          - cell "Treat as hard block." [ref=e1903]
+        - row "Default-hidden moderation nsfw, nudity, sexual, explicit, pornography, violence, graphic-violence, gore, drugs, spam, scam Hidden by default on public discovery/search surfaces. On /api/videos, returned when opted in via nsfw=show. Safe to map to hide or warn policies." [ref=e1904]:
+          - cell "Default-hidden moderation" [ref=e1905]
+          - cell "nsfw, nudity, sexual, explicit, pornography, violence, graphic-violence, gore, drugs, spam, scam" [ref=e1906]:
+            - code [ref=e1907]: nsfw
+            - text: ","
+            - code [ref=e1908]: nudity
+            - text: ","
+            - code [ref=e1909]: sexual
+            - text: ","
+            - code [ref=e1910]: explicit
+            - text: ","
+            - code [ref=e1911]: pornography
+            - text: ","
+            - code [ref=e1912]: violence
+            - text: ","
+            - code [ref=e1913]: graphic-violence
+            - text: ","
+            - code [ref=e1914]: gore
+            - text: ","
+            - code [ref=e1915]: drugs
+            - text: ","
+            - code [ref=e1916]: spam
+            - text: ","
+            - code [ref=e1917]: scam
+          - cell "Hidden by default on public discovery/search surfaces. On /api/videos, returned when opted in via nsfw=show." [ref=e1918]:
+            - text: Hidden by default on public discovery/search surfaces. On
+            - code [ref=e1919]: /api/videos
+            - text: ", returned when opted in via"
+            - code [ref=e1920]: nsfw=show
+            - text: .
+          - cell "Safe to map to hide or warn policies." [ref=e1921]
+        - row "Namespaced moderation any stored label in the content-warning namespace Treated as default-hidden by server-side set filtering when available in stored moderation data. Treat as moderation-relevant." [ref=e1922]:
+          - cell "Namespaced moderation" [ref=e1923]
+          - cell "any stored label in the content-warning namespace" [ref=e1924]:
+            - text: any stored label in the
+            - code [ref=e1925]: content-warning
+            - text: namespace
+          - cell "Treated as default-hidden by server-side set filtering when available in stored moderation data." [ref=e1926]
+          - cell "Treat as moderation-relevant." [ref=e1927]
+        - 'row "Not part of the stable hide taxonomy examples: safe, profanity, topic:*, activity:*, mood:*, object:*, setting:*, source/archive labels Not part of the documented default server hide contract unless separately documented. Use for discovery, ranking, or client-side warning policy as appropriate." [ref=e1928]':
+          - cell "Not part of the stable hide taxonomy" [ref=e1929]
+          - 'cell "examples: safe, profanity, topic:*, activity:*, mood:*, object:*, setting:*, source/archive labels" [ref=e1930]':
+            - text: "examples:"
+            - code [ref=e1931]: safe
+            - text: ","
+            - code [ref=e1932]: profanity
+            - text: ","
+            - code [ref=e1933]: topic:*
+            - text: ","
+            - code [ref=e1934]: activity:*
+            - text: ","
+            - code [ref=e1935]: mood:*
+            - text: ","
+            - code [ref=e1936]: object:*
+            - text: ","
+            - code [ref=e1937]: setting:*
+            - text: ", source/archive labels"
+          - cell "Not part of the documented default server hide contract unless separately documented." [ref=e1938]
+          - cell "Use for discovery, ranking, or client-side warning policy as appropriate." [ref=e1939]
+    - heading "Server-Side Filtering Contract" [level=3] [ref=e1940]
+    - paragraph [ref=e1941]: "Supported today:"
+    - list [ref=e1942]:
+      - listitem [ref=e1943]:
+        - code [ref=e1944]: /api/videos
+        - list [ref=e1945]:
+          - listitem [ref=e1946]:
+            - code [ref=e1947]: nsfw=show
+            - text: is the only documented opt-in for default-hidden moderation labels.
+          - listitem [ref=e1948]:
+            - code [ref=e1949]: label=
+            - text: is not moderation-only.
+          - listitem [ref=e1950]: Current positive-match behavior checks stored ClickHouse labels plus raw NIP-32 self-labels. It should not be treated as a full parity guarantee with every response-enriched label source.
+          - listitem [ref=e1951]:
+            - code [ref=e1952]: category=
+            - text: is shorthand for
+            - code [ref=e1953]: label=topic:<category>
+            - text: .
+      - listitem [ref=e1954]:
+        - code [ref=e1955]: /api/search
+        - list [ref=e1956]:
+          - listitem [ref=e1957]:
+            - text: Supports
+            - code [ref=e1958]: label=
+            - text: only.
+      - listitem [ref=e1959]:
+        - code [ref=e1960]: "/api/users/{pubkey}/recommendations"
+        - list [ref=e1961]:
+          - listitem [ref=e1962]: Does not expose safety override parameters today.
+    - paragraph [ref=e1963]: "Not yet a stable public contract:"
+    - list [ref=e1964]:
+      - listitem [ref=e1965]:
+        - text: There is no stable
+        - code [ref=e1966]: exclude_label
+        - text: ","
+        - code [ref=e1967]: exclude_moderation_labels
+        - text: ", or"
+        - code [ref=e1968]: content_safety
+        - text: parameter today.
+      - listitem [ref=e1969]: Clients should not depend on undocumented per-label hide controls on the relay.
+    - paragraph [ref=e1970]: "Not supported on these endpoints today:"
+    - list [ref=e1971]:
+      - listitem [ref=e1972]:
+        - code [ref=e1973]: /api/search
+        - text: does not expose
+        - code [ref=e1974]: nsfw=show
+        - text: ","
+        - code [ref=e1975]: content_safety
+        - text: ", or per-label hide parameters."
+      - listitem [ref=e1976]:
+        - code [ref=e1977]: "/api/users/{pubkey}/recommendations"
+        - text: does not expose
+        - code [ref=e1978]: nsfw=show
+        - text: ","
+        - code [ref=e1979]: content_safety
+        - text: ", or per-label hide parameters."
+      - listitem [ref=e1980]:
+        - code [ref=e1981]: "/api/users/{pubkey}/videos"
+        - text: returns
+        - code [ref=e1982]: content_labels
+        - text: ", but does not expose"
+        - code [ref=e1983]: nsfw
+        - text: ","
+        - code [ref=e1984]: content_safety
+        - text: ", or"
+        - code [ref=e1985]: exclude_label
+        - text: .
+      - listitem [ref=e1986]:
+        - code [ref=e1987]: "/api/users/{pubkey}/feed"
+        - text: returns
+        - code [ref=e1988]: content_labels
+        - text: ", but does not expose"
+        - code [ref=e1989]: nsfw
+        - text: ","
+        - code [ref=e1990]: content_safety
+        - text: ", or"
+        - code [ref=e1991]: exclude_label
+        - text: .
+    - heading "Relay vs Client Responsibilities" [level=3] [ref=e1992]
+    - list [ref=e1993]:
+      - listitem [ref=e1994]:
+        - text: Relay responsibility
+        - list [ref=e1995]:
+          - listitem [ref=e1996]:
+            - text: Always block
+            - code [ref=e1997]: illegal
+            - text: and
+            - code [ref=e1998]: csam
+            - text: .
+          - listitem [ref=e1999]: Hide the default-hidden moderation vocabulary by default on endpoints that expose server-side safety filtering.
+      - listitem [ref=e2000]:
+        - text: Client responsibility
+        - list [ref=e2001]:
+          - listitem [ref=e2002]:
+            - text: Treat
+            - code [ref=e2003]: content_labels
+            - text: as mixed-purpose by design.
+          - listitem [ref=e2004]: Use the published moderation subset above for trust-and-safety UI.
+          - listitem [ref=e2005]: Apply warning, blur, confirmation, or additional hide logic for returned content based on product policy.
+          - listitem [ref=e2006]:
+            - text: Do not infer moderation meaning from discovery labels like
+            - code [ref=e2007]: topic:*
+            - text: or
+            - code [ref=e2008]: activity:*
+            - text: .
+    - heading "Endpoint Parity Caveat" [level=3] [ref=e2009]
+    - paragraph [ref=e2010]: The API code uses the same label-enrichment path for list rows, single-video stats, per-user videos, and feed rows. However, deployment parity still needs to be validated per environment.
+    - paragraph [ref=e2011]:
+      - text: "As of March 9, 2026, staging still showed a concrete gap: videos visible via"
+      - code [ref=e2012]: /api/videos?sort=recent&nsfw=show
+      - text: could still return
+      - code [ref=e2013]: "404"
+      - text: from
+      - code [ref=e2014]: "/api/videos/{id}"
+      - text: for the same full event IDs. Treat staging list-vs-single parity as best-effort until that host is refreshed.
+    - heading "NSFW Filtering" [level=3] [ref=e2015]
+    - paragraph [ref=e2016]:
+      - text: By default, public discovery endpoints exclude the default-hidden moderation vocabulary. On
+      - code [ref=e2017]: /api/videos
+      - text: ", the documented opt-in is"
+      - code [ref=e2018]: nsfw=show
+      - text: ":"
+    - code [ref=e2020]: GET /api/videos?nsfw=show
+    - heading "Moderation Endpoints" [level=3] [ref=e2021]
+    - paragraph [ref=e2022]: All moderation endpoints require NIP-98 authentication with an admin pubkey. These are for platform administration, not regular users.
+    - heading "GET /api/moderation/reports" [level=4] [ref=e2023]
+    - paragraph [ref=e2024]: Get aggregated moderation reports (Kind 1984 report events).
+    - paragraph [ref=e2025]:
+      - strong [ref=e2026]: "Query:"
+      - code [ref=e2027]: limit
+      - text: (1-100, default 50),
+      - code [ref=e2028]: offset
+      - text: (default 0)
+    - paragraph [ref=e2029]:
+      - strong [ref=e2030]: "Response:"
+    - code [ref=e2032]: "{ \"reports\": [ { \"target_event_id\": \"64-char-hex\", \"report_count\": 5, \"unique_reporters\": 3, \"latest_report_at\": \"2026-02-24T10:30:00Z\", \"report_types\": [\"spam\", \"nsfw\"] } ], \"total\": 100, \"offset\": 0, \"limit\": 50 }"
+    - heading "GET /api/moderation/labels" [level=4] [ref=e2033]
+    - paragraph [ref=e2034]: Get content labels applied by the VLM classifier and trusted labelers.
+    - paragraph [ref=e2035]:
+      - strong [ref=e2036]: "Query Parameters:"
+    - table [ref=e2037]:
+      - rowgroup [ref=e2038]:
+        - row "Param Type Description" [ref=e2039]:
+          - columnheader "Param" [ref=e2040]
+          - columnheader "Type" [ref=e2041]
+          - columnheader "Description" [ref=e2042]
+      - rowgroup [ref=e2043]:
+        - row "limit number Max results (1-100, default 50)" [ref=e2044]:
+          - cell "limit" [ref=e2045]:
+            - code [ref=e2046]: limit
+          - cell "number" [ref=e2047]
+          - cell "Max results (1-100, default 50)" [ref=e2048]
+        - row "offset number Pagination offset (default 0)" [ref=e2049]:
+          - cell "offset" [ref=e2050]:
+            - code [ref=e2051]: offset
+          - cell "number" [ref=e2052]
+          - cell "Pagination offset (default 0)" [ref=e2053]
+        - row "label string Filter by specific label value (e.g. nsfw, safe, violence)" [ref=e2054]:
+          - cell "label" [ref=e2055]:
+            - code [ref=e2056]: label
+          - cell "string" [ref=e2057]
+          - cell "Filter by specific label value (e.g. nsfw, safe, violence)" [ref=e2058]:
+            - text: Filter by specific label value (e.g.
+            - code [ref=e2059]: nsfw
+            - text: ","
+            - code [ref=e2060]: safe
+            - text: ","
+            - code [ref=e2061]: violence
+            - text: )
+    - paragraph [ref=e2062]:
+      - strong [ref=e2063]: "Response:"
+    - code [ref=e2065]: "{ \"labels\": [ { \"target_event_id\": \"64-char-hex\", \"label_value\": \"nsfw\", \"label_namespace\": \"com.example.labeler\", \"labeler_pubkey\": \"64-char-hex\", \"labeled_at\": \"2026-02-24T10:30:00Z\" } ], \"total\": 50, \"offset\": 0, \"limit\": 50 }"
+    - heading "GET /api/moderation/trusted-labelers" [level=4] [ref=e2066]
+    - paragraph [ref=e2067]: Get the list of trusted labelers whose labels affect content filtering.
+    - paragraph [ref=e2068]:
+      - strong [ref=e2069]: "Response:"
+    - code [ref=e2071]: "{ \"labelers\": [ { \"pubkey\": \"64-char-hex\", \"added_at\": \"2026-02-24T10:30:00Z\", \"reason\": \"Divine official moderator\" } ] }"
+    - heading "POST /api/moderation/trusted-labelers" [level=4] [ref=e2072]
+    - paragraph [ref=e2073]: Add a trusted labeler.
+    - paragraph [ref=e2074]:
+      - strong [ref=e2075]: "Request:"
+    - code [ref=e2077]: "{ \"pubkey\": \"64-char-hex\", \"reason\": \"Trusted community moderator\" }"
+    - paragraph [ref=e2078]:
+      - strong [ref=e2079]: "Response:"
+      - code [ref=e2080]: 200 OK
+      - text: (empty body)
+    - 'heading "DELETE /api/moderation/trusted-labelers/{pubkey}" [level=4] [ref=e2081]'
+    - paragraph [ref=e2082]: Remove a trusted labeler.
+    - paragraph [ref=e2083]:
+      - strong [ref=e2084]: "Response:"
+      - code [ref=e2085]: 200 OK
+      - text: (empty body)
+    - separator [ref=e2086]
+    - heading "Relay Information (NIP-11)" [level=2] [ref=e2087]
+    - paragraph [ref=e2088]:
+      - text: Discover relay capabilities by fetching the root URL with
+      - code [ref=e2089]: "Accept: application/nostr+json"
+      - text: ":"
+    - code [ref=e2091]: "curl -H \"Accept: application/nostr+json\" https://relay.divine.video/"
+    - paragraph [ref=e2092]:
+      - strong [ref=e2093]: "Response:"
+    - code [ref=e2095]: "{ \"name\": \"Divine Video Relay\", \"description\": \"Video-focused Nostr relay\", \"pubkey\": \"relay-admin-pubkey\", \"contact\": \"admin@divine.video\", \"supported_nips\": [1, 9, 11, 22, 25, 33, 40, 45, 50, 51, 71], \"software\": \"funnelcake\", \"version\": \"0.1.0\", \"limitation\": { \"max_content_length\": 102400, \"max_subscriptions\": 20, \"max_filters\": 10, \"max_event_tags\": 2000, \"max_message_length\": 131072 } }"
+    - separator [ref=e2096]
+    - heading "Private Accounts" [level=2] [ref=e2097]
+    - paragraph [ref=e2098]: FunnelCake supports private accounts. When a user makes their account private, their video content is hidden from public queries. Only approved viewers can access private content.
+    - heading "How Private Accounts Affect Queries" [level=3] [ref=e2099]
+    - list [ref=e2100]:
+      - listitem [ref=e2101]:
+        - strong [ref=e2102]: Public video endpoints
+        - text: (
+        - code [ref=e2103]: /api/videos
+        - text: ","
+        - code [ref=e2104]: /api/search
+        - text: ","
+        - code [ref=e2105]: /api/hashtags/trending
+        - text: ","
+        - code [ref=e2106]: /api/leaderboard/*
+        - text: ","
+        - code [ref=e2107]: "/api/users/{pubkey}/feed"
+        - text: "): Videos from private accounts are"
+        - strong [ref=e2108]: excluded
+        - text: from results
+      - listitem [ref=e2109]:
+        - strong [ref=e2110]: User profile endpoint
+        - text: (
+        - code [ref=e2111]: "/api/users/{pubkey}"
+        - text: "): Still returns the profile. Client apps should check and display a \"Private Account\" indicator"
+      - listitem [ref=e2112]:
+        - strong [ref=e2113]: User videos/collabs
+        - text: (
+        - code [ref=e2114]: "/api/users/{pubkey}/videos"
+        - text: ","
+        - code [ref=e2115]: "/api/users/{pubkey}/collabs"
+        - text: "): Returns empty for private accounts"
+      - listitem [ref=e2116]:
+        - strong [ref=e2117]: Direct video lookup
+        - text: (
+        - code [ref=e2118]: "/api/videos/{id}"
+        - text: "): If you have the event ID, you can still access the video (privacy is about discovery, not direct access)"
+    - heading "Privacy Management Endpoints" [level=3] [ref=e2119]
+    - paragraph [ref=e2120]: All privacy management endpoints require NIP-98 authentication. Users can only manage their own privacy settings.
+    - heading "Get Privacy Settings" [level=4] [ref=e2121]
+    - code [ref=e2123]: "GET /api/users/{pubkey}/privacy Authorization: Nostr <base64-encoded-signed-event>"
+    - paragraph [ref=e2124]: "Response:"
+    - code [ref=e2126]: "{ \"pubkey\": \"abc123...\", \"is_private\": true, \"approved_viewers\": [\"viewer_pubkey_1\", \"viewer_pubkey_2\"] }"
+    - paragraph [ref=e2127]:
+      - text: If no privacy settings exist, returns
+      - code [ref=e2128]: "is_private: false"
+      - text: with empty
+      - code [ref=e2129]: approved_viewers
+      - text: .
+    - heading "Update Privacy Settings" [level=4] [ref=e2130]
+    - code [ref=e2132]: "PUT /api/users/{pubkey}/privacy Authorization: Nostr <base64-encoded-signed-event> Content-Type: application/json { \"is_private\": true, \"approved_viewers\": [\"viewer_pubkey_1\", \"viewer_pubkey_2\"] }"
+    - paragraph [ref=e2133]:
+      - strong [ref=e2134]: "Important:"
+      - text: This is a full replacement -- send the complete list of approved viewers each time. Going private takes effect immediately.
+    - heading "Delete Privacy Settings" [level=4] [ref=e2135]
+    - code [ref=e2137]: "DELETE /api/users/{pubkey}/privacy Authorization: Nostr <base64-encoded-signed-event>"
+    - paragraph [ref=e2138]: Makes the account public and removes all privacy settings.
+    - heading "Check Access" [level=4] [ref=e2139]
+    - code [ref=e2141]: "GET /api/access/{pubkey} Authorization: Nostr <base64-encoded-signed-event>"
+    - paragraph [ref=e2142]: "Response:"
+    - code [ref=e2144]: "{ \"pubkey\": \"abc123...\", \"has_access\": true }"
+    - paragraph [ref=e2145]: Returns whether the authenticated viewer has access to the target user's content. Useful for Blossom integration and client apps.
+    - heading "WebSocket Relay (NIP-42)" [level=3] [ref=e2146]
+    - paragraph [ref=e2147]: "The relay supports NIP-42 authentication. On connection, the relay sends an AUTH challenge:"
+    - code [ref=e2149]: "[\"AUTH\", \"<challenge-string>\"]"
+    - paragraph [ref=e2150]: "Clients authenticate by sending a signed event:"
+    - code [ref=e2152]: "[\"AUTH\", { \"kind\": 22242, \"tags\": [ [\"relay\", \"wss://relay.divine.video\"], [\"challenge\", \"<challenge-string>\"] ], \"content\": \"\", ...signed event fields }]"
+    - paragraph [ref=e2153]: After authentication, REQ queries will include content from private accounts that the authenticated user is approved to view.
+    - separator [ref=e2154]
+    - heading "API Documentation Endpoints" [level=2] [ref=e2155]
+    - paragraph [ref=e2156]: "Interactive documentation is available at:"
+    - table [ref=e2157]:
+      - rowgroup [ref=e2158]:
+        - row "Endpoint Description" [ref=e2159]:
+          - columnheader "Endpoint" [ref=e2160]
+          - columnheader "Description" [ref=e2161]
+      - rowgroup [ref=e2162]:
+        - row "/docs Documentation landing page with links to all resources" [ref=e2163]:
+          - cell "/docs" [ref=e2164]:
+            - code [ref=e2165]: /docs
+          - cell "Documentation landing page with links to all resources" [ref=e2166]
+        - row "/docs/llm-guide This LLM API guide rendered as HTML" [ref=e2167]:
+          - cell "/docs/llm-guide" [ref=e2168]:
+            - code [ref=e2169]: /docs/llm-guide
+          - cell "This LLM API guide rendered as HTML" [ref=e2170]
+        - row "/swagger-ui Interactive OpenAPI/Swagger UI with live request testing" [ref=e2171]:
+          - cell "/swagger-ui" [ref=e2172]:
+            - code [ref=e2173]: /swagger-ui
+          - cell "Interactive OpenAPI/Swagger UI with live request testing" [ref=e2174]
+        - row "/openapi.json Raw OpenAPI 3.0 JSON specification" [ref=e2175]:
+          - cell "/openapi.json" [ref=e2176]:
+            - code [ref=e2177]: /openapi.json
+          - cell "Raw OpenAPI 3.0 JSON specification" [ref=e2178]
+    - paragraph [ref=e2179]:
+      - strong [ref=e2180]: "Production URLs:"
+    - list [ref=e2181]:
+      - listitem [ref=e2182]:
+        - code [ref=e2183]: https://relay.divine.video/docs
+      - listitem [ref=e2184]:
+        - code [ref=e2185]: https://relay.divine.video/swagger-ui
+    - paragraph [ref=e2186]:
+      - strong [ref=e2187]: "Staging URLs:"
+    - list [ref=e2188]:
+      - listitem [ref=e2189]:
+        - code [ref=e2190]: https://relay.staging.divine.video/docs
+      - listitem [ref=e2191]:
+        - code [ref=e2192]: https://relay.staging.divine.video/swagger-ui
