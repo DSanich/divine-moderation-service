@@ -3801,7 +3801,7 @@ async function runMigration() {
           result.provider || 'unknown',
           JSON.stringify(result.scores || {}),
           JSON.stringify(result.categories || []),
-          JSON.stringify(result.rawResponse || {}),
+          JSON.stringify({ ...(result.rawResponse || {}), c2pa: result.c2pa || null }),
           new Date().toISOString(),
           result.uploadedBy || null,
           result.nostrContext?.title || null,

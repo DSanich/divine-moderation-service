@@ -11,4 +11,14 @@ describe('swipe review provenance UI hooks', () => {
     expect(swipeReviewHTML).toContain('renderProvenanceBadge');
     expect(swipeReviewHTML).toContain('creator-info-modal');
   });
+
+  it('contains C2PA/ProofMode badge rendering', () => {
+    expect(swipeReviewHTML).toContain('renderC2paBadge');
+    expect(swipeReviewHTML).toContain('formatC2paSupportLine');
+    expect(swipeReviewHTML).toContain('Valid ProofMode');
+    expect(swipeReviewHTML).toContain('Valid C2PA');
+    expect(swipeReviewHTML).toContain('Valid but AI-signed');
+    expect(swipeReviewHTML).toContain('Invalid Proof');
+    expect(swipeReviewHTML).toContain('c2pa-badge');
+  });
 });
