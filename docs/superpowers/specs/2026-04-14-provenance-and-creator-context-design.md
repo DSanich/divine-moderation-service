@@ -93,9 +93,11 @@ Guardrails:
 
 ### ProofMode / C2PA Verification
 
-Verification is performed by `divine-inquisitor` (Rust microservice at `github.com/divinevideo/divine-inquisitor`), **not** by `proofsign.divine.video` (which is the signing side only, no verify endpoint). Divine-moderation-service calls inquisitor with the media URL and normalizes the response into `provenance.proofmode`.
+Verification is performed by `divine-inquisitor` (Rust microservice at `github.com/divinevideo/divine-inquisitor`), **not** by `proofsign.divine.video` (which is the signing side only, no verify endpoint). Divine-moderation-service calls inquisitor with the media URL and normalizes the response into `video.c2pa` on every admin payload.
 
-`provenance.proofmode` shape (replaces the earlier null placeholder):
+Naming note: the C2PA verification result is exposed as a top-level `video.c2pa` field, NOT as `video.provenance.proofmode`. The name `provenance.proofmode` is already taken by Nostr-tag ProofMode data (a different, pre-existing evidence channel from the Nostr event's `["proofmode", ...]` tag). The two can coexist and reinforce each other — `video.provenance.proofmode` for the self-reported Nostr tag, `video.c2pa` for the cryptographically verified manifest inside the media bytes.
+
+`video.c2pa` shape:
 
 ```json
 {
@@ -137,10 +139,10 @@ Response fields consumed: `has_c2pa`, `valid`, `validation_state`, `is_proofmode
 Two targeted, automatic moderation-action rules are driven by provenance. Both are independent of each other and of Hive/RD.
 
 **Rule 1 — ProofMode downgrade:**
-If Hive AI or Reality Defender flag a video as AI-generated AND `provenance.proofmode.state === "valid_proofmode"`, the moderation action downgrades from QUARANTINE to REVIEW. The video stays visible to users while it sits in the moderator review queue.
+If Hive AI or Reality Defender flag a video as AI-generated AND `video.c2pa.state === "valid_proofmode"`, the moderation action downgrades from QUARANTINE to REVIEW. The video stays visible to users while it sits in the moderator review queue.
 
 **Rule 2 — Signed-AI short-circuit:**
-If `provenance.proofmode.state === "valid_ai_signed"` (valid C2PA signature whose `claim_generator` is a known AI-generation tool — Adobe Firefly, DALL·E, Midjourney, Stable Diffusion, Sora, Runway, Ideogram, etc.), the moderation action is forced to QUARANTINE and **Hive is not called at all**. Reality Defender is also skipped. The tool's own cryptographic declaration is authoritative AI evidence, so paying for Hive or polling RD adds cost and latency with no new information. The pipeline call order is therefore: inquisitor first, then short-circuit to QUARANTINE on `valid_ai_signed`, otherwise continue into the existing Hive/RD flow. Humans review every signed-AI QUARANTINE for labeling or approval.
+If `video.c2pa.state === "valid_ai_signed"` (valid C2PA signature whose `claim_generator` is a known AI-generation tool — Adobe Firefly, DALL·E, Midjourney, Stable Diffusion, Sora, Runway, Ideogram, etc.), the moderation action is forced to QUARANTINE and **Hive is not called at all**. Reality Defender is also skipped. The tool's own cryptographic declaration is authoritative AI evidence, so paying for Hive or polling RD adds cost and latency with no new information. The pipeline call order is therefore: inquisitor first, then short-circuit to QUARANTINE on `valid_ai_signed`, otherwise continue into the existing Hive/RD flow. Humans review every signed-AI QUARANTINE for labeling or approval.
 
 This loses Hive's non-AI category scores (nudity, violence, self-harm) on signed-AI content. That's an acceptable trade because moderators review every QUARANTINE manually, the volume of signed-AI content should be small, and an opt-in Hive call can be added at review time if a moderator wants those scores.
 
@@ -262,7 +264,7 @@ When building admin payloads, preserve:
 - `createdAt` / `event.created_at`
 - Vine metadata fields
 - source URL
-- C2PA / ProofMode verification result fetched from divine-inquisitor and normalized into `provenance.proofmode`
+- C2PA / ProofMode verification result fetched from divine-inquisitor and normalized into `video.c2pa`
 
 Existing D1 persistence of `published_at` remains useful, but the admin response builders must stop dropping it.
 

@@ -637,7 +637,7 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
   const cdnUrl = `https://${env.CDN_DOMAIN || 'media.divine.video'}/${hash}`;
   if (hash) {
     const moderatedRow = await env.BLOSSOM_DB.prepare(`
-      SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by
+      SELECT sha256, action, provider, scores, categories, moderated_at, reviewed_by, reviewed_at, review_notes, uploaded_by, raw_response
       FROM moderation_results
       WHERE sha256 = ?
     `).bind(hash).first();
@@ -648,6 +648,7 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
     if (moderatedRow || kvModeration) {
       const moderatedAt = kvModeration?.moderated_at || moderatedRow?.moderated_at || null;
       const storedLookup = buildStoredLookupMetadata(moderatedRow);
+      const storedRaw = parseMaybeJson(moderatedRow?.raw_response, null);
       return enrichAdminLookupVideo({
         sha256: hash,
         action: kvModeration?.action || moderatedRow?.action || 'REVIEW',
@@ -668,7 +669,8 @@ async function getAdminLookupVideo(identifier, env, options = {}) {
         previousAction: kvModeration?.previousAction || null,
         detailedCategories: parseMaybeJson(kvModeration?.detailedCategories, null),
         categoryVerifications: parseMaybeJson(kvModeration?.categoryVerifications, {}) || {},
-        cdnUrl: kvModeration?.cdnUrl || cdnUrl
+        cdnUrl: kvModeration?.cdnUrl || cdnUrl,
+        c2pa: (storedRaw && typeof storedRaw === 'object' && storedRaw.c2pa) || null
       }, env);
     }
 
