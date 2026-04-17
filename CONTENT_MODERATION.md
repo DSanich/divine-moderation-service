@@ -548,9 +548,13 @@ Source files:
   runs the classifier. `loadModel()` / `runInference()` are stubs today; they
   become real ONNX calls once `LOGO_DETECTOR_MODEL_URL` is set and the model is
   trained.
-- `src/moderation/logo_aggregator.mjs` — majority vote across frames. A verdict
-  is emitted when ≥50% of frames flag the **same class in the same corner** at
-  confidence ≥0.7. One-off false positives are discarded by design.
+- `src/moderation/logo_aggregator.mjs` — two-pass majority vote across
+  frames. **Static pass** keyed on `(corner, class)` catches stationary corner
+  marks (Meta sparkle, Veo text, Runway/Kling/Pika/Luma). **Fallback pass**
+  keyed on class alone catches moving watermarks like Sora's wordmark whose
+  corner hops frame-to-frame. A verdict fires when ≥50% of frames flag the
+  same class at confidence ≥0.7. One-off false positives are discarded by
+  design; static matches are preferred over moving matches when both qualify.
 
 ### Class → generator mapping
 

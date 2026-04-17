@@ -105,18 +105,52 @@ describe('aggregateLogoDetections', () => {
     expect(result.confidence).toBeCloseTo((0.9 + 0.85 + 0.8) / 3, 5);
   });
 
-  it('requires the flags to be in the same corner, not scattered across corners', () => {
+  it('detects moving watermarks that hop corners across frames (Sora case)', () => {
+    // Sora's wordmark moves; corner-agreement would miss this even though every
+    // frame flags openai_sora. Fallback class-only vote must catch it.
+    const detections = [
+      ...flagCorner(0, 'TL', 'openai_sora', 0.9),
+      ...flagCorner(1, 'TR', 'openai_sora', 0.88),
+      ...flagCorner(2, 'BL', 'openai_sora', 0.92),
+      ...flagCorner(3, 'BR', 'openai_sora', 0.85)
+    ];
+
+    const result = aggregateLogoDetections(detections);
+    expect(result.detected).toBe(true);
+    expect(result.class).toBe('openai_sora');
+    expect(result.frames_flagged).toBe(4);
+    expect(result.total_frames).toBe(4);
+  });
+
+  it('does not trigger when scattered frames flag different classes', () => {
     const detections = [
       ...flagCorner(0, 'TL', 'meta_sparkle', 0.9),
-      ...flagCorner(1, 'TR', 'meta_sparkle', 0.9),
-      ...flagCorner(2, 'BL', 'meta_sparkle', 0.9),
-      ...flagCorner(3, 'BR', 'meta_sparkle', 0.9)
+      ...flagCorner(1, 'TR', 'openai_sora', 0.9),
+      ...flagCorner(2, 'BL', 'google_veo', 0.9),
+      ...flagCorner(3, 'BR', 'runway', 0.9)
     ];
 
     const result = aggregateLogoDetections(detections);
     expect(result.detected).toBe(false);
     expect(result.class).toBeNull();
     expect(result.total_frames).toBe(4);
+  });
+
+  it('prefers a static (same-corner) verdict over a moving (scattered) one when both qualify', () => {
+    // 3/4 frames flag meta_sparkle in BL (static) AND 3/4 flag openai_sora scattered.
+    // The static corner-consistent winner should win — it's a stronger signal.
+    const detections = [
+      ...flagCorner(0, 'BL', 'meta_sparkle', 0.9),
+      ...flagCorner(1, 'BL', 'meta_sparkle', 0.9),
+      ...flagCorner(2, 'BL', 'meta_sparkle', 0.9),
+      ...flagCorner(0, 'TL', 'openai_sora', 0.95),
+      ...flagCorner(1, 'TR', 'openai_sora', 0.95),
+      ...flagCorner(2, 'BR', 'openai_sora', 0.95)
+    ];
+
+    const result = aggregateLogoDetections(detections);
+    expect(result.detected).toBe(true);
+    expect(result.class).toBe('meta_sparkle');
   });
 
   it('requires the flags to agree on a single class, not a mix', () => {
@@ -195,6 +229,23 @@ describe('aggregateLogoDetections', () => {
     expect(result.class).toBe('openai_sora');
     expect(result.frames_flagged).toBe(2);
     expect(result.confidence).toBeCloseTo(0.95, 5);
+  });
+
+  it('averages confidence only over flags that cleared the 0.7 floor', () => {
+    // Two frames at 0.9 trigger; the third frame's 0.65 is below floor and
+    // must not drag the reported confidence down to (0.9+0.9+0.65)/3.
+    const detections = [
+      ...flagCorner(0, 'BL', 'meta_sparkle', 0.9),
+      ...flagCorner(1, 'BL', 'meta_sparkle', 0.9),
+      ...flagCorner(2, 'BL', 'meta_sparkle', 0.65),
+      ...cleanFrame(3)
+    ];
+
+    const result = aggregateLogoDetections(detections);
+    expect(result.detected).toBe(true);
+    expect(result.class).toBe('meta_sparkle');
+    expect(result.frames_flagged).toBe(2);
+    expect(result.confidence).toBeCloseTo(0.9, 5);
   });
 
   it('counts each frame at most once per corner even with duplicate detections', () => {
