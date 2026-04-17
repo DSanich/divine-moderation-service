@@ -9,7 +9,7 @@ import { notifyBlossom } from './blossom-client.mjs';
 
 describe('notifyBlossom (extracted)', () => {
   const baseEnv = {
-    BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/admin/api/moderate',
+    BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/admin/moderate',
     BLOSSOM_WEBHOOK_SECRET: 'test-secret'
   };
 
