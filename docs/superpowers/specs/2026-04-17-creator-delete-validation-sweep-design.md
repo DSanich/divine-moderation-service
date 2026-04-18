@@ -94,7 +94,7 @@ Node ESM, no transpilation. Runs via `node scripts/sweep-creator-deletes.mjs [fl
 --until=ISO8601            Filter completed_at <  until.
 --concurrency=N            Parallel Blossom calls. Default 5.
 --limit=N                  Cap candidates fetched (no cap by default).
---blossom-url=URL          Blossom base. Default https://media.divine.video.
+--blossom-webhook-url=URL  Blossom moderate webhook URL. Default https://media.divine.video/admin/moderate. Matches the URL the live pipeline POSTs to via notifyBlossom().
 --d1-database=NAME         D1 database name. Default divine-moderation-decisions-prod.
 ```
 
@@ -120,7 +120,7 @@ A single failed validation aborts the run with exit 3 (D1 read aborted) before a
 | `fetchCandidates(config, exec)` | Shells `wrangler d1 execute ... SELECT`, parses JSON. | reads D1. |
 | `fetchUnprocessable(config, exec)` | Shells SELECT for rows with `status='success' AND blob_sha256 IS NULL`. | reads D1. |
 | `fetchPermanentFailures(config, exec)` | Shells SELECT for rows with `status LIKE 'failed:permanent:%'`. | reads D1. |
-| `callBlossomDelete(sha256, config, fetchImpl)` | One POST, returns `{ok, status, body}`. | network. |
+| `callBlossomDelete(sha256, config, notifyImpl)` | Wraps `notifyBlossom(sha256, 'DELETE', {BLOSSOM_WEBHOOK_URL, BLOSSOM_WEBHOOK_SECRET})` from `src/blossom-client.mjs`. Returns `{ok, status, body}`. Reusing the live-pipeline client guarantees identical request shape. | network. |
 | `runWithConcurrency(items, n, fn)` | Bounded parallelism. No external dep. | none (pure orchestration). |
 | `flushDeletedAt(shas, config, exec)` | Shells one `UPDATE ... WHERE blob_sha256 IN (...)`. | writes D1. |
 | `printSummary(results)` | Final stdout summary. | stdout. |
