@@ -297,6 +297,7 @@ export async function sweepCandidates(candidates, cfg, notifyImpl = defaultNotif
   });
 
   for (const r of results) {
+    if (isDraining()) break;  // SIGINT: stop scheduling new work, flush pending, exit
     const row = r.input;
     if (r.error) {
       failures.push({ row, error: r.error.message });
@@ -475,4 +476,39 @@ export async function main(argv, deps = {}) {
   });
   printSummary(s);
   return computeExitCode(s);
+}
+
+// SIGINT handling — best-effort drain.
+// First SIGINT: set DRAINING flag; the orchestrator stops scheduling new flushes once the current
+// runWithConcurrency batch settles, then exits with the partial summary.
+// Second SIGINT: hard exit 130.
+let DRAINING = false;
+let SIGINT_COUNT = 0;
+
+function installSigintHandler() {
+  process.on('SIGINT', () => {
+    SIGINT_COUNT++;
+    if (SIGINT_COUNT === 1) {
+      DRAINING = true;
+      console.error('\n[sweep] SIGINT received — draining in-flight work; press Ctrl-C again to abort.');
+    } else {
+      console.error('\n[sweep] SIGINT received twice — exiting now.');
+      process.exit(130);
+    }
+  });
+}
+
+export function isDraining() { return DRAINING; }
+
+// CLI entrypoint — only runs when invoked directly (not when imported by tests).
+const isMain = typeof process !== 'undefined' && process.argv && import.meta.url === `file://${process.argv[1]}`;
+if (isMain) {
+  installSigintHandler();
+  main(process.argv.slice(2)).then(
+    (code) => process.exit(code),
+    (err) => {
+      console.error(`unexpected error: ${err.stack || err.message}`);
+      process.exit(99);
+    }
+  );
 }
