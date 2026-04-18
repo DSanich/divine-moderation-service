@@ -76,8 +76,10 @@ operator laptop
 -- newly-produced success rows show NULL here until the next sweep run picks
 -- them up, calls Blossom (idempotent if bytes already gone), and stamps.
 -- Semantic: "the validation sweep confirmed bytes were destroyed for this row."
+-- Run exactly once per environment. SQLite (and D1) do not support
+-- "ADD COLUMN IF NOT EXISTS"; a re-run errors with "duplicate column name".
 ALTER TABLE creator_deletions
-  ADD COLUMN IF NOT EXISTS physical_deleted_at TEXT;
+  ADD COLUMN physical_deleted_at TEXT;
 ```
 
 No new index. The sweep query uses the existing `idx_creator_deletions_status` for the status side and applies the `physical_deleted_at IS NULL` filter on top. Sparse-null filter at thousand-row scale doesn't justify a new index.
