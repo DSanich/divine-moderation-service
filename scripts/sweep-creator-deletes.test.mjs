@@ -388,3 +388,66 @@ describe('flushDeletedAt', () => {
       .rejects.toThrow(/d1 unreachable/i);
   });
 });
+
+import { runPreflight, PreflightAbort } from './sweep-creator-deletes.mjs';
+
+describe('runPreflight', () => {
+  const SHA = 'd'.repeat(64);
+  const cfg = parseArgs([]);
+
+  it('returns success for the first row when Blossom returns physical_deleted=true', async () => {
+    const notify = makeFakeNotify(() => ({
+      success: true, status: 200,
+      result: { status: 'success', physical_delete_enabled: true, physical_deleted: true }
+    }));
+    const out = await runPreflight(SHA, cfg, notify);
+    expect(out).toEqual({ kind: 'success' });
+    expect(notify.calls.length).toBe(1);
+  });
+
+  it('throws PreflightAbort with reason="flag-off" when physical_delete_enabled is false', async () => {
+    const notify = makeFakeNotify(() => ({
+      success: true, status: 200,
+      result: { status: 'success', physical_delete_enabled: false, physical_deleted: false }
+    }));
+    await expect(runPreflight(SHA, cfg, notify)).rejects.toMatchObject({
+      name: 'PreflightAbort',
+      reason: 'flag-off'
+    });
+  });
+
+  it('throws PreflightAbort with reason="auth-failure" on 401', async () => {
+    const notify = makeFakeNotify(() => ({ success: false, status: 401, error: 'unauthorized' }));
+    await expect(runPreflight(SHA, cfg, notify)).rejects.toMatchObject({
+      name: 'PreflightAbort',
+      reason: 'auth-failure'
+    });
+  });
+
+  it('throws PreflightAbort with reason="unreachable" on 502', async () => {
+    const notify = makeFakeNotify(() => ({ success: false, status: 502, error: 'bad gateway' }));
+    await expect(runPreflight(SHA, cfg, notify)).rejects.toMatchObject({
+      name: 'PreflightAbort',
+      reason: 'unreachable'
+    });
+  });
+
+  it('throws PreflightAbort with reason="unreachable" on network error', async () => {
+    const notify = makeFakeNotify(() => ({ success: false, networkError: true, error: 'ECONNRESET' }));
+    await expect(runPreflight(SHA, cfg, notify)).rejects.toMatchObject({
+      name: 'PreflightAbort',
+      reason: 'unreachable'
+    });
+  });
+
+  it('throws PreflightAbort with reason="failure" when Blossom returns 200 status:error', async () => {
+    const notify = makeFakeNotify(() => ({
+      success: true, status: 200,
+      result: { status: 'error', error: 'gcs delete failed' }
+    }));
+    await expect(runPreflight(SHA, cfg, notify)).rejects.toMatchObject({
+      name: 'PreflightAbort',
+      reason: 'failure'
+    });
+  });
+});

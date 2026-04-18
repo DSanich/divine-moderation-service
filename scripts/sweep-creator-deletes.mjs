@@ -242,3 +242,32 @@ export async function flushDeletedAt(shas, cfg, runner = defaultRunner, timestam
   const sql = buildUpdateStampSql(shas, timestamp);
   await runWranglerD1(cfg, sql, runner);
 }
+
+export class PreflightAbort extends Error {
+  constructor(reason, message) {
+    super(message);
+    this.name = 'PreflightAbort';
+    this.reason = reason;
+  }
+}
+
+export async function runPreflight(sha256, cfg, notifyImpl = defaultNotify) {
+  const r = await callBlossomDelete(sha256, cfg, notifyImpl);
+  const c = classifyDeleteResult(r);
+  if (c.kind === 'success') return { kind: 'success' };
+  if (c.kind === 'flag-off') {
+    throw new PreflightAbort('flag-off',
+      'Blossom did not byte-delete because ENABLE_PHYSICAL_DELETE is off. ' +
+      'Flip the flag in Blossom config store before sweeping. No D1 writes occurred.');
+  }
+  if (c.kind === 'auth-failure') {
+    throw new PreflightAbort('auth-failure',
+      'Blossom rejected auth — check BLOSSOM_WEBHOOK_SECRET. No D1 writes occurred.');
+  }
+  if (c.kind === 'unreachable') {
+    throw new PreflightAbort('unreachable',
+      `Blossom unreachable: ${c.reason}. No D1 writes occurred.`);
+  }
+  throw new PreflightAbort('failure',
+    `Blossom returned a failure on the first candidate: ${c.reason}. No D1 writes occurred.`);
+}
