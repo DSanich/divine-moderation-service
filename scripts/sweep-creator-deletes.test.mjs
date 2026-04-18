@@ -195,3 +195,96 @@ describe('runWithConcurrency', () => {
     expect(results).toEqual([]);
   });
 });
+
+import { callBlossomDelete, classifyDeleteResult } from './sweep-creator-deletes.mjs';
+
+const SHA_C = 'c'.repeat(64);
+
+function makeFakeNotify(impl) {
+  const calls = [];
+  const fn = async (sha256, action, env) => {
+    calls.push({ sha256, action, env });
+    return impl({ sha256, action, env });
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+describe('callBlossomDelete', () => {
+  it('passes sha + DELETE + env to notifyBlossom and returns a normalized result', async () => {
+    const notify = makeFakeNotify(() => ({
+      success: true,
+      status: 200,
+      result: { status: 'success', physical_delete_enabled: true, physical_deleted: true }
+    }));
+    const cfg = {
+      blossomWebhookUrl: 'https://example/admin/moderate',
+      blossomWebhookSecret: 'secret-xyz'
+    };
+    const r = await callBlossomDelete(SHA_C, cfg, notify);
+    expect(notify.calls).toEqual([{
+      sha256: SHA_C,
+      action: 'DELETE',
+      env: { BLOSSOM_WEBHOOK_URL: cfg.blossomWebhookUrl, BLOSSOM_WEBHOOK_SECRET: cfg.blossomWebhookSecret }
+    }]);
+    expect(r.ok).toBe(true);
+    expect(r.body.physical_deleted).toBe(true);
+  });
+
+  it('surfaces network error from notifyBlossom', async () => {
+    const notify = makeFakeNotify(() => ({ success: false, networkError: true, error: 'ECONNRESET' }));
+    const r = await callBlossomDelete(SHA_C, { blossomWebhookUrl: 'u', blossomWebhookSecret: 's' }, notify);
+    expect(r.ok).toBe(false);
+    expect(r.networkError).toBe(true);
+  });
+
+  it('surfaces 5xx HTTP error', async () => {
+    const notify = makeFakeNotify(() => ({ success: false, error: 'HTTP 502: bad', status: 502 }));
+    const r = await callBlossomDelete(SHA_C, { blossomWebhookUrl: 'u', blossomWebhookSecret: 's' }, notify);
+    expect(r.ok).toBe(false);
+    expect(r.status).toBe(502);
+  });
+});
+
+describe('classifyDeleteResult', () => {
+  it('success when ok && body.status==="success" && body.physical_deleted===true', () => {
+    expect(classifyDeleteResult({
+      ok: true, status: 200,
+      body: { status: 'success', physical_delete_enabled: true, physical_deleted: true }
+    })).toEqual({ kind: 'success' });
+  });
+
+  it('flag-off pre-flight signal when physical_delete_enabled===false', () => {
+    expect(classifyDeleteResult({
+      ok: true, status: 200,
+      body: { status: 'success', physical_delete_enabled: false, physical_deleted: false }
+    })).toEqual({ kind: 'flag-off' });
+  });
+
+  it('failure when body.status==="error"', () => {
+    expect(classifyDeleteResult({
+      ok: true, status: 200,
+      body: { status: 'error', error: 'gcs delete failed' }
+    })).toEqual({ kind: 'failure', reason: 'gcs delete failed' });
+  });
+
+  it('failure when 200 but physical_deleted===false (and flag was on)', () => {
+    expect(classifyDeleteResult({
+      ok: true, status: 200,
+      body: { status: 'success', physical_delete_enabled: true, physical_deleted: false }
+    })).toEqual({ kind: 'failure', reason: 'physical_deleted=false despite flag on' });
+  });
+
+  it('auth-failure on 401/403', () => {
+    expect(classifyDeleteResult({ ok: false, status: 401 })).toEqual({ kind: 'auth-failure' });
+    expect(classifyDeleteResult({ ok: false, status: 403 })).toEqual({ kind: 'auth-failure' });
+  });
+
+  it('unreachable on 5xx', () => {
+    expect(classifyDeleteResult({ ok: false, status: 502 }).kind).toBe('unreachable');
+  });
+
+  it('unreachable on networkError', () => {
+    expect(classifyDeleteResult({ ok: false, networkError: true, error: 'ECONNRESET' }).kind).toBe('unreachable');
+  });
+});

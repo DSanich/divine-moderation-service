@@ -151,3 +151,44 @@ export async function runWithConcurrency(items, concurrency, fn) {
   await Promise.all(workers);
   return results;
 }
+
+import { notifyBlossom as defaultNotify } from '../src/blossom-client.mjs';
+
+/**
+ * Wraps notifyBlossom() so the script reuses the live-pipeline request shape and headers.
+ * notifyImpl is injectable for tests.
+ */
+export async function callBlossomDelete(sha256, cfg, notifyImpl = defaultNotify) {
+  const env = {
+    BLOSSOM_WEBHOOK_URL: cfg.blossomWebhookUrl,
+    BLOSSOM_WEBHOOK_SECRET: cfg.blossomWebhookSecret
+  };
+  const r = await notifyImpl(sha256, 'DELETE', env);
+  if (r.success) {
+    return { ok: true, status: r.status, body: r.result };
+  }
+  return {
+    ok: false,
+    status: r.status,
+    networkError: !!r.networkError,
+    error: r.error
+  };
+}
+
+/**
+ * Classifies a Blossom call result into the action the script should take.
+ * Used by both pre-flight and per-row sweep logic.
+ */
+export function classifyDeleteResult(r) {
+  if (r.ok) {
+    const b = r.body || {};
+    if (b.physical_delete_enabled === false) return { kind: 'flag-off' };
+    if (b.status === 'error') return { kind: 'failure', reason: b.error || 'blossom returned status=error' };
+    if (b.status === 'success' && b.physical_deleted === true) return { kind: 'success' };
+    return { kind: 'failure', reason: 'physical_deleted=false despite flag on' };
+  }
+  if (r.status === 401 || r.status === 403) return { kind: 'auth-failure' };
+  if (r.networkError) return { kind: 'unreachable', reason: r.error || 'network error' };
+  if (r.status >= 500) return { kind: 'unreachable', reason: `HTTP ${r.status}` };
+  return { kind: 'failure', reason: r.error || `HTTP ${r.status}` };
+}
