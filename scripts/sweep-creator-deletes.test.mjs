@@ -22,17 +22,22 @@ describe('parseArgs', () => {
     const cfg = parseArgs([]);
     expect(cfg).toEqual({
       dryRun: false,
+      local: false,
       since: null,
       until: null,
       concurrency: 5,
       limit: null,
       blossomWebhookUrl: 'https://media.divine.video/admin/moderate',
-      d1Database: 'divine-moderation-decisions-prod'
+      d1Database: 'blossom-webhook-events'
     });
   });
 
   it('parses --dry-run as boolean', () => {
     expect(parseArgs(['--dry-run']).dryRun).toBe(true);
+  });
+
+  it('parses --local as boolean', () => {
+    expect(parseArgs(['--local']).local).toBe(true);
   });
 
   it('parses --since and --until as ISO strings via Date round-trip', () => {
@@ -334,6 +339,13 @@ describe('fetchCandidates', () => {
     const runner = makeFakeRunner(() => ({ stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0 }));
     const rows = await fetchCandidates(parseArgs([]), runner);
     expect(rows).toEqual([]);
+  });
+
+  it('passes --local to wrangler when cfg.local is true', async () => {
+    const runner = makeFakeRunner(() => ({ stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0 }));
+    await fetchCandidates(parseArgs(['--local']), runner);
+    expect(runner.calls[0].args).toContain('--local');
+    expect(runner.calls[0].args).not.toContain('--remote');
   });
 
   it('throws when wrangler exits non-zero', async () => {

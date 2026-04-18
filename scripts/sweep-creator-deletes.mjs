@@ -6,7 +6,7 @@
 // ABOUTME: Reads creator_deletions from D1, asks Blossom to destroy bytes, stamps physical_deleted_at.
 
 const DEFAULT_BLOSSOM_WEBHOOK_URL = 'https://media.divine.video/admin/moderate';
-const DEFAULT_D1_DATABASE = 'divine-moderation-decisions-prod';
+const DEFAULT_D1_DATABASE = 'blossom-webhook-events';
 const DEFAULT_CONCURRENCY = 5;
 const FLUSH_BATCH_SIZE = 100;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -47,6 +47,7 @@ function validateNonNegativeInt(value, fieldName) {
 
 export function parseArgs(argv) {
   const dryRun = getFlag(argv, 'dry-run') === true;
+  const local = getFlag(argv, 'local') === true;
   const since = validateIso(getFlag(argv, 'since') || null, 'since');
   const until = validateIso(getFlag(argv, 'until') || null, 'until');
 
@@ -61,7 +62,7 @@ export function parseArgs(argv) {
   const blossomWebhookUrl = getFlag(argv, 'blossom-webhook-url') || DEFAULT_BLOSSOM_WEBHOOK_URL;
   const d1Database = getFlag(argv, 'd1-database') || DEFAULT_D1_DATABASE;
 
-  return { dryRun, since, until, concurrency, limit, blossomWebhookUrl, d1Database };
+  return { dryRun, local, since, until, concurrency, limit, blossomWebhookUrl, d1Database };
 }
 
 export function validateSha256(s) {
@@ -209,7 +210,8 @@ export async function defaultRunner({ command, args }) {
 }
 
 async function runWranglerD1(cfg, sql, runner) {
-  const args = ['d1', 'execute', cfg.d1Database, '--remote', '--json', '--command', sql];
+  const remoteOrLocal = cfg.local ? '--local' : '--remote';
+  const args = ['d1', 'execute', cfg.d1Database, remoteOrLocal, '--json', '--command', sql];
   const r = await runner({ command: 'wrangler', args });
   if (r.status !== 0) {
     throw new Error(`wrangler d1 execute failed (exit ${r.status}): ${r.stderr.trim() || r.stdout.trim()}`);
