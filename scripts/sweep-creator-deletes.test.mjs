@@ -451,3 +451,95 @@ describe('runPreflight', () => {
     });
   });
 });
+
+import { sweepCandidates, summarize, computeExitCode } from './sweep-creator-deletes.mjs';
+
+describe('sweepCandidates', () => {
+  const cfg = parseArgs(['--concurrency=2']);
+  const rowFor = (sha) => ({ kind5_id: `k-${sha.slice(0,4)}`, target_event_id: `t-${sha.slice(0,4)}`, blob_sha256: sha, completed_at: '2026-04-15T00:00:00Z' });
+
+  it('stamps shas where Blossom returned physical_deleted=true', async () => {
+    const okBody = { status: 'success', physical_delete_enabled: true, physical_deleted: true };
+    const notify = makeFakeNotify(() => ({ success: true, status: 200, result: okBody }));
+    const flushed = [];
+    const flushImpl = async (shas) => { flushed.push(...shas); };
+    const candidates = ['a','b','c'].map(c => rowFor(c.repeat(64)));
+    const out = await sweepCandidates(candidates, cfg, notify, flushImpl);
+    expect(out.successes.length).toBe(3);
+    expect(out.failures.length).toBe(0);
+    expect(flushed.sort()).toEqual(candidates.map(r => r.blob_sha256).sort());
+  });
+
+  it('does NOT stamp shas when physical_deleted=false (even on HTTP 200)', async () => {
+    const notify = makeFakeNotify(() => ({
+      success: true, status: 200,
+      result: { status: 'success', physical_delete_enabled: true, physical_deleted: false }
+    }));
+    const flushed = [];
+    const flushImpl = async (shas) => { flushed.push(...shas); };
+    const out = await sweepCandidates([rowFor('e'.repeat(64))], cfg, notify, flushImpl);
+    expect(out.successes.length).toBe(0);
+    expect(out.failures.length).toBe(1);
+    expect(flushed).toEqual([]);
+  });
+
+  it('isolates per-row failures — successful rows still stamp', async () => {
+    const notify = makeFakeNotify(({ sha256 }) => {
+      if (sha256.startsWith('b')) return { success: false, status: 502, error: 'bad gateway' };
+      return { success: true, status: 200, result: { status: 'success', physical_delete_enabled: true, physical_deleted: true } };
+    });
+    const flushed = [];
+    const flushImpl = async (shas) => { flushed.push(...shas); };
+    const candidates = ['a','b','c'].map(c => rowFor(c.repeat(64)));
+    const out = await sweepCandidates(candidates, cfg, notify, flushImpl);
+    expect(out.successes.length).toBe(2);
+    expect(out.failures.length).toBe(1);
+    expect(flushed.sort()).toEqual([candidates[0].blob_sha256, candidates[2].blob_sha256].sort());
+  });
+
+  it('flushes in batches of FLUSH_BATCH_SIZE (default 100)', async () => {
+    const notify = makeFakeNotify(() => ({
+      success: true, status: 200,
+      result: { status: 'success', physical_delete_enabled: true, physical_deleted: true }
+    }));
+    const batches = [];
+    const flushImpl = async (shas) => { batches.push(shas.length); };
+    const candidates = Array.from({ length: 250 }, (_, i) => rowFor(i.toString(16).padStart(64, '0')));
+    await sweepCandidates(candidates, cfg, notify, flushImpl);
+    expect(batches).toEqual([100, 100, 50]);
+  });
+});
+
+describe('summarize', () => {
+  it('aggregates counts and lists for printing', () => {
+    const result = summarize({
+      candidates: [{ blob_sha256: 'a'.repeat(64) }],
+      successes: [{ blob_sha256: 'a'.repeat(64) }],
+      failures: [],
+      unprocessable: [{ kind5_id: 'k1' }],
+      permanentFailures: []
+    });
+    expect(result).toMatchObject({
+      total: 1,
+      stamped: 1,
+      failed: 0,
+      unprocessableCount: 1,
+      permanentFailureCount: 0
+    });
+  });
+});
+
+describe('computeExitCode', () => {
+  it('returns 0 when nothing failed and no unprocessable / perm-failures', () => {
+    expect(computeExitCode({ failed: 0, unprocessableCount: 0, permanentFailureCount: 0 })).toBe(0);
+  });
+  it('returns 1 when failures exist', () => {
+    expect(computeExitCode({ failed: 1, unprocessableCount: 0, permanentFailureCount: 0 })).toBe(1);
+  });
+  it('returns 1 when unprocessable rows exist', () => {
+    expect(computeExitCode({ failed: 0, unprocessableCount: 1, permanentFailureCount: 0 })).toBe(1);
+  });
+  it('returns 1 when permanent failures exist', () => {
+    expect(computeExitCode({ failed: 0, unprocessableCount: 0, permanentFailureCount: 1 })).toBe(1);
+  });
+});

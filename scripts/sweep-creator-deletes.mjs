@@ -271,3 +271,102 @@ export async function runPreflight(sha256, cfg, notifyImpl = defaultNotify) {
   throw new PreflightAbort('failure',
     `Blossom returned a failure on the first candidate: ${c.reason}. No D1 writes occurred.`);
 }
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function emitJsonLine(obj) {
+  console.log(JSON.stringify(obj));
+}
+
+/**
+ * Bulk sweep over candidates. Stamps via flushImpl in batches of FLUSH_BATCH_SIZE.
+ * Per-row JSONL outcome lines are emitted to stdout for grep/jq.
+ *
+ * Returns { successes, failures } as arrays of {row, body?, error?, status?}.
+ */
+export async function sweepCandidates(candidates, cfg, notifyImpl = defaultNotify, flushImpl = null) {
+  const successes = [];
+  const failures = [];
+  let pending = [];
+  const flush = flushImpl || (async (shas) => { await flushDeletedAt(shas, cfg); });
+
+  const results = await runWithConcurrency(candidates, cfg.concurrency, async (row) => {
+    return callBlossomDelete(row.blob_sha256, cfg, notifyImpl);
+  });
+
+  for (const r of results) {
+    const row = r.input;
+    if (r.error) {
+      failures.push({ row, error: r.error.message });
+      emitJsonLine({ ts: nowIso(), sha: row.blob_sha256, kind5: row.kind5_id, target: row.target_event_id, outcome: 'failure', error: r.error.message });
+      continue;
+    }
+    const c = classifyDeleteResult(r.value);
+    if (c.kind === 'success') {
+      successes.push({ row, body: r.value.body });
+      pending.push(row.blob_sha256);
+      emitJsonLine({ ts: nowIso(), sha: row.blob_sha256, kind5: row.kind5_id, target: row.target_event_id, outcome: 'success', http: r.value.status, physical_deleted: true });
+      if (pending.length >= FLUSH_BATCH_SIZE) {
+        await flush(pending);
+        pending = [];
+      }
+    } else {
+      failures.push({ row, error: c.reason || c.kind, status: r.value.status });
+      emitJsonLine({ ts: nowIso(), sha: row.blob_sha256, kind5: row.kind5_id, target: row.target_event_id, outcome: 'failure', http: r.value.status, error: c.reason || c.kind });
+    }
+  }
+
+  if (pending.length > 0) {
+    await flush(pending);
+  }
+  return { successes, failures };
+}
+
+export function summarize({ candidates, successes, failures, unprocessable, permanentFailures }) {
+  return {
+    total: candidates.length,
+    stamped: successes.length,
+    failed: failures.length,
+    unprocessableCount: unprocessable.length,
+    permanentFailureCount: permanentFailures.length,
+    successes,
+    failures,
+    unprocessable,
+    permanentFailures
+  };
+}
+
+export function computeExitCode(s) {
+  if (s.failed > 0 || s.unprocessableCount > 0 || s.permanentFailureCount > 0) return 1;
+  return 0;
+}
+
+export function printSummary(s) {
+  console.log('\n=== SUMMARY ===');
+  console.log(`Total candidates fetched:      ${s.total}`);
+  console.log(`Bytes destroyed + stamped:     ${s.stamped}`);
+  console.log(`Failed (will retry next run):  ${s.failed}`);
+  console.log(`Unprocessable (NULL sha256):   ${s.unprocessableCount}`);
+  console.log(`Permanent failures (manual):   ${s.permanentFailureCount}`);
+
+  if (s.failures.length > 0) {
+    console.log('\n=== FAILURES (will retry) ===');
+    for (const f of s.failures) {
+      console.log(`sha=${f.row.blob_sha256} http=${f.status ?? '-'} kind5=${f.row.kind5_id}: ${f.error}`);
+    }
+  }
+  if (s.unprocessable.length > 0) {
+    console.log('\n=== UNPROCESSABLE (creator intent unfulfilled, NULL sha256) ===');
+    for (const u of s.unprocessable) {
+      console.log(`kind5=${u.kind5_id} target=${u.target_event_id} creator=${u.creator_pubkey} completed_at=${u.completed_at}`);
+    }
+  }
+  if (s.permanentFailures.length > 0) {
+    console.log('\n=== PERMANENT FAILURES (creator intent unfulfilled, status=failed:permanent:*) ===');
+    for (const p of s.permanentFailures) {
+      console.log(`kind5=${p.kind5_id} target=${p.target_event_id} creator=${p.creator_pubkey} status=${p.status} last_error=${p.last_error}`);
+    }
+  }
+}
