@@ -183,6 +183,11 @@ export async function callBlossomDelete(sha256, cfg, notifyImpl = defaultNotify)
 export function classifyDeleteResult(r) {
   if (r.ok) {
     const b = r.body || {};
+    // flag-off is checked before status=error: in the unlikely case a Blossom
+    // response carries both, the flag-off signal is more actionable for the
+    // operator (flip the env var and re-run) than a generic error reason.
+    // Pre-flight aborts on flag-off before any sweep runs; the per-row sweep
+    // never sees flag-off because it would have aborted at pre-flight.
     if (b.physical_delete_enabled === false) return { kind: 'flag-off' };
     if (b.status === 'error') return { kind: 'failure', reason: b.error || 'blossom returned status=error' };
     if (b.status === 'success' && b.physical_deleted === true) return { kind: 'success' };
@@ -283,16 +288,45 @@ function emitJsonLine(obj) {
 }
 
 /**
+ * D1 write failure during sweep. Carries the in-memory pending sha list at the
+ * point of failure so main() can print them for manual reconciliation. Bytes
+ * for these shas were destroyed (Blossom returned physical_deleted=true) but
+ * D1 stamping did not complete — re-running the sweep is safe and will stamp
+ * them on the next pass (Blossom DELETE on already-gone bytes still returns
+ * success).
+ */
+export class D1WriteAbort extends Error {
+  constructor(unflushedShas, originalError) {
+    super(`flushDeletedAt failed: ${originalError.message}`);
+    this.name = 'D1WriteAbort';
+    this.unflushedShas = unflushedShas;
+    this.originalError = originalError;
+  }
+}
+
+/**
  * Bulk sweep over candidates. Stamps via flushImpl in batches of FLUSH_BATCH_SIZE.
  * Per-row JSONL outcome lines are emitted to stdout for grep/jq.
  *
  * Returns { successes, failures } as arrays of {row, body?, error?, status?}.
+ * Throws D1WriteAbort if a flush fails mid-sweep — caller should print the
+ * unflushedShas and exit 4 per the spec.
  */
 export async function sweepCandidates(candidates, cfg, notifyImpl = defaultNotify, flushImpl = null) {
   const successes = [];
   const failures = [];
   let pending = [];
   const flush = flushImpl || (async (shas) => { await flushDeletedAt(shas, cfg); });
+
+  async function flushOrAbort() {
+    if (pending.length === 0) return;
+    try {
+      await flush(pending);
+      pending = [];
+    } catch (e) {
+      throw new D1WriteAbort([...pending], e);
+    }
+  }
 
   const results = await runWithConcurrency(candidates, cfg.concurrency, async (row) => {
     return callBlossomDelete(row.blob_sha256, cfg, notifyImpl);
@@ -312,8 +346,7 @@ export async function sweepCandidates(candidates, cfg, notifyImpl = defaultNotif
       pending.push(row.blob_sha256);
       emitJsonLine({ ts: nowIso(), sha: row.blob_sha256, kind5: row.kind5_id, target: row.target_event_id, outcome: 'success', http: r.value.status, physical_deleted: true });
       if (pending.length >= FLUSH_BATCH_SIZE) {
-        await flush(pending);
-        pending = [];
+        await flushOrAbort();
       }
     } else {
       failures.push({ row, error: c.reason || c.kind, status: r.value.status });
@@ -321,9 +354,7 @@ export async function sweepCandidates(candidates, cfg, notifyImpl = defaultNotif
     }
   }
 
-  if (pending.length > 0) {
-    await flush(pending);
-  }
+  await flushOrAbort();
   return { successes, failures };
 }
 
@@ -444,16 +475,42 @@ export async function main(argv, deps = {}) {
     }
   }
 
-  // Sweep remaining (skip the pre-flight row, then re-add it as a success)
+  // Sweep remaining (skip the pre-flight row, then stamp it separately).
+  //
+  // The pre-flight row's stamp happens AFTER the bulk sweep finishes, not in
+  // the same flush batch. If the process dies between the bulk-sweep flush
+  // and the pre-flight stamp, the pre-flight bytes are gone but the row stays
+  // unstamped — re-running picks it up, calls Blossom (idempotent: returns
+  // physical_deleted=true on already-gone bytes per Blossom PR #85), then
+  // stamps. Same convergence rationale as any unflushed row in the bulk path.
   let sweepResult = { successes: [], failures: [] };
   if (candidates.length > 0) {
     const remaining = candidates.slice(1);
-    sweepResult = await sweepCandidates(remaining, cfg, notify, async (shas) => {
-      await flushDeletedAt(shas, cfg, runner);
-    });
+    try {
+      sweepResult = await sweepCandidates(remaining, cfg, notify, async (shas) => {
+        await flushDeletedAt(shas, cfg, runner);
+      });
+    } catch (e) {
+      if (e instanceof D1WriteAbort) {
+        console.error(`D1 write aborted mid-sweep: ${e.originalError.message}`);
+        console.error(`Bytes destroyed but rows NOT stamped (${e.unflushedShas.length} shas):`);
+        for (const sha of e.unflushedShas) console.error(`  ${sha}`);
+        console.error('Re-run the sweep to stamp these rows (Blossom DELETE is idempotent).');
+        return 4;
+      }
+      throw e;
+    }
     if (preflightSuccess) {
+      try {
+        await flushDeletedAt([candidates[0].blob_sha256], cfg, runner);
+      } catch (e) {
+        console.error(`D1 write aborted on pre-flight stamp: ${e.message}`);
+        console.error(`Bytes destroyed but row NOT stamped (1 sha):`);
+        console.error(`  ${candidates[0].blob_sha256}`);
+        console.error('Re-run the sweep to stamp this row (Blossom DELETE is idempotent).');
+        return 4;
+      }
       sweepResult.successes.unshift({ row: candidates[0], body: null });
-      await flushDeletedAt([candidates[0].blob_sha256], cfg, runner);
       console.log(JSON.stringify({ ts: nowIso(), sha: candidates[0].blob_sha256, kind5: candidates[0].kind5_id, target: candidates[0].target_event_id, outcome: 'success', http: 200, physical_deleted: true, source: 'preflight' }));
     }
   }

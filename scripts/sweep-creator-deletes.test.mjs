@@ -464,7 +464,7 @@ describe('runPreflight', () => {
   });
 });
 
-import { sweepCandidates, summarize, computeExitCode } from './sweep-creator-deletes.mjs';
+import { sweepCandidates, summarize, computeExitCode, D1WriteAbort } from './sweep-creator-deletes.mjs';
 
 describe('sweepCandidates', () => {
   const cfg = parseArgs(['--concurrency=2']);
@@ -507,6 +507,22 @@ describe('sweepCandidates', () => {
     expect(out.successes.length).toBe(2);
     expect(out.failures.length).toBe(1);
     expect(flushed.sort()).toEqual([candidates[0].blob_sha256, candidates[2].blob_sha256].sort());
+  });
+
+  it('throws D1WriteAbort with unflushed shas when flush fails mid-sweep', async () => {
+    const okBody = { status: 'success', physical_delete_enabled: true, physical_deleted: true };
+    const notify = makeFakeNotify(() => ({ success: true, status: 200, result: okBody }));
+    const flushImpl = async () => { throw new Error('d1 unreachable'); };
+    const candidates = ['a','b','c'].map(c => rowFor(c.repeat(64)));
+    let caught;
+    try {
+      await sweepCandidates(candidates, cfg, notify, flushImpl);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(D1WriteAbort);
+    expect(caught.unflushedShas.sort()).toEqual(candidates.map(r => r.blob_sha256).sort());
+    expect(caught.originalError.message).toBe('d1 unreachable');
   });
 
   it('flushes in batches of FLUSH_BATCH_SIZE (default 100)', async () => {
@@ -645,6 +661,25 @@ describe('main (integration)', () => {
     const code = await main([], { runner, notify, blossomWebhookSecret: 'test-secret' });
     expect(notify.calls.length).toBe(0);
     expect(code).toBe(1);
+  });
+
+  it('D1 flush failure mid-sweep: exit 4', async () => {
+    const candidates = ['a', 'b'].map(c => ({ ...candidateRow, blob_sha256: c.repeat(64), kind5_id: `k-${c}`, target_event_id: `t-${c}` }));
+    const notify = makeFakeNotify(() => ({ success: true, status: 200, result: okBody }));
+    const runner = async ({ args }) => {
+      const sql = args[args.indexOf('--command') + 1];
+      if (sql.startsWith('SELECT kind5_id, target_event_id, blob_sha256')) {
+        return { stdout: WRANGLER_RESULT_ENVELOPE(candidates), stderr: '', status: 0 };
+      }
+      if (sql.includes('blob_sha256 IS NULL')) return { stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0 };
+      if (sql.includes("'failed:permanent:%'")) return { stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0 };
+      if (sql.startsWith('UPDATE creator_deletions')) {
+        return { stdout: '', stderr: 'd1 unreachable', status: 1 };
+      }
+      throw new Error(`unexpected sql: ${sql.slice(0, 80)}`);
+    };
+    const code = await main([], { runner, notify, blossomWebhookSecret: 'test-secret' });
+    expect(code).toBe(4);
   });
 
   it('empty everywhere: exit 0', async () => {
