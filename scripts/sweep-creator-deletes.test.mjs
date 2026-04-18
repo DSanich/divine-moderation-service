@@ -5,7 +5,17 @@
 // ABOUTME: Vitest runs under @cloudflare/vitest-pool-workers; nodejs_compat is on so node:child_process imports resolve.
 
 import { describe, it, expect } from 'vitest';
-import { parseArgs } from './sweep-creator-deletes.mjs';
+import {
+  parseArgs,
+  buildSelectCandidatesSql,
+  buildSelectUnprocessableSql,
+  buildSelectPermanentFailuresSql,
+  buildUpdateStampSql,
+  validateSha256
+} from './sweep-creator-deletes.mjs';
+
+const SHA_A = 'a'.repeat(64);
+const SHA_B = 'b'.repeat(64);
 
 describe('parseArgs', () => {
   it('returns defaults when no flags given', () => {
@@ -59,5 +69,87 @@ describe('parseArgs', () => {
     const cfg = parseArgs(['--blossom-webhook-url=http://localhost:7676/admin/moderate', '--d1-database=test-db']);
     expect(cfg.blossomWebhookUrl).toBe('http://localhost:7676/admin/moderate');
     expect(cfg.d1Database).toBe('test-db');
+  });
+});
+
+describe('validateSha256', () => {
+  it('accepts a 64-char lowercase hex string', () => {
+    expect(validateSha256(SHA_A)).toBe(SHA_A);
+  });
+  it('rejects uppercase', () => {
+    expect(() => validateSha256(SHA_A.toUpperCase())).toThrow(/sha256/i);
+  });
+  it('rejects shorter than 64', () => {
+    expect(() => validateSha256('a'.repeat(63))).toThrow(/sha256/i);
+  });
+  it('rejects non-hex characters', () => {
+    expect(() => validateSha256('z'.repeat(64))).toThrow(/sha256/i);
+  });
+  it('rejects null/undefined', () => {
+    expect(() => validateSha256(null)).toThrow(/sha256/i);
+    expect(() => validateSha256(undefined)).toThrow(/sha256/i);
+  });
+});
+
+describe('buildSelectCandidatesSql', () => {
+  it('builds the base select with no optional filters', () => {
+    const sql = buildSelectCandidatesSql({ since: null, until: null, limit: null });
+    expect(sql).toContain("WHERE status = 'success'");
+    expect(sql).toContain('AND physical_deleted_at IS NULL');
+    expect(sql).toContain('AND blob_sha256 IS NOT NULL');
+    expect(sql).not.toContain('completed_at >=');
+    expect(sql).not.toContain('completed_at <');
+    expect(sql).not.toContain('LIMIT');
+  });
+
+  it('includes since when provided', () => {
+    const sql = buildSelectCandidatesSql({ since: '2026-04-01T00:00:00.000Z', until: null, limit: null });
+    expect(sql).toContain("AND completed_at >= '2026-04-01T00:00:00.000Z'");
+  });
+
+  it('includes until when provided', () => {
+    const sql = buildSelectCandidatesSql({ since: null, until: '2026-04-17T00:00:00.000Z', limit: null });
+    expect(sql).toContain("AND completed_at < '2026-04-17T00:00:00.000Z'");
+  });
+
+  it('includes LIMIT when provided', () => {
+    const sql = buildSelectCandidatesSql({ since: null, until: null, limit: 50 });
+    expect(sql).toMatch(/LIMIT 50\b/);
+  });
+});
+
+describe('buildSelectUnprocessableSql', () => {
+  it('builds select for status=success rows with NULL sha', () => {
+    const sql = buildSelectUnprocessableSql();
+    expect(sql).toContain("WHERE status = 'success'");
+    expect(sql).toContain('AND blob_sha256 IS NULL');
+  });
+});
+
+describe('buildSelectPermanentFailuresSql', () => {
+  it('builds select for status LIKE failed:permanent:*', () => {
+    const sql = buildSelectPermanentFailuresSql();
+    expect(sql).toContain("WHERE status LIKE 'failed:permanent:%'");
+  });
+});
+
+describe('buildUpdateStampSql', () => {
+  it('builds an UPDATE with IN-list and NULL guard', () => {
+    const sql = buildUpdateStampSql([SHA_A, SHA_B], '2026-04-17T20:00:00.000Z');
+    expect(sql).toContain("SET physical_deleted_at = '2026-04-17T20:00:00.000Z'");
+    expect(sql).toContain(`WHERE blob_sha256 IN ('${SHA_A}', '${SHA_B}')`);
+    expect(sql).toContain('AND physical_deleted_at IS NULL');
+  });
+
+  it('rejects an empty sha list (caller bug)', () => {
+    expect(() => buildUpdateStampSql([], '2026-04-17T20:00:00.000Z')).toThrow(/empty/i);
+  });
+
+  it('rejects when any sha fails validation', () => {
+    expect(() => buildUpdateStampSql([SHA_A, 'not-hex'], '2026-04-17T20:00:00.000Z')).toThrow(/sha256/i);
+  });
+
+  it('rejects an invalid timestamp', () => {
+    expect(() => buildUpdateStampSql([SHA_A], 'not-iso')).toThrow(/timestamp/i);
   });
 });
