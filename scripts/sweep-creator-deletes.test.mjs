@@ -543,3 +543,102 @@ describe('computeExitCode', () => {
     expect(computeExitCode({ failed: 0, unprocessableCount: 0, permanentFailureCount: 1 })).toBe(1);
   });
 });
+
+import { main } from './sweep-creator-deletes.mjs';
+
+describe('main (integration)', () => {
+  const candidateRow = { kind5_id: 'k1', target_event_id: 't1', blob_sha256: 'a'.repeat(64), completed_at: '2026-04-15T00:00:00Z' };
+  const okBody = { status: 'success', physical_delete_enabled: true, physical_deleted: true };
+
+  function makeRunnerForResults({ candidates = [], unprocessable = [], permanentFailures = [], updates = () => ({stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0}) } = {}) {
+    return async ({ command, args }) => {
+      const sql = args[args.indexOf('--command') + 1];
+      if (sql.startsWith('SELECT kind5_id, target_event_id, blob_sha256')) {
+        return { stdout: WRANGLER_RESULT_ENVELOPE(candidates), stderr: '', status: 0 };
+      }
+      if (sql.includes('blob_sha256 IS NULL')) {
+        return { stdout: WRANGLER_RESULT_ENVELOPE(unprocessable), stderr: '', status: 0 };
+      }
+      if (sql.includes("'failed:permanent:%'")) {
+        return { stdout: WRANGLER_RESULT_ENVELOPE(permanentFailures), stderr: '', status: 0 };
+      }
+      if (sql.startsWith('UPDATE creator_deletions')) {
+        return updates(sql);
+      }
+      throw new Error(`unexpected sql: ${sql.slice(0, 80)}`);
+    };
+  }
+
+  it('dry-run: prints candidates, makes zero notify or D1-write calls', async () => {
+    const notify = makeFakeNotify(() => { throw new Error('should not be called in dry-run'); });
+    let updateCalls = 0;
+    const runner = makeRunnerForResults({
+      candidates: [candidateRow],
+      updates: () => { updateCalls++; return { stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0 }; }
+    });
+    const code = await main(['--dry-run'], { runner, notify, blossomWebhookSecret: 'test-secret' });
+    expect(notify.calls.length).toBe(0);
+    expect(updateCalls).toBe(0);
+    expect(code).toBe(0);
+  });
+
+  it('pre-flight flag-off: aborts with exit 2 and zero D1 writes', async () => {
+    const notify = makeFakeNotify(() => ({
+      success: true, status: 200,
+      result: { status: 'success', physical_delete_enabled: false, physical_deleted: false }
+    }));
+    let updateCalls = 0;
+    const runner = makeRunnerForResults({
+      candidates: [candidateRow],
+      updates: () => { updateCalls++; return { stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0 }; }
+    });
+    const code = await main([], { runner, notify, blossomWebhookSecret: 'test-secret' });
+    expect(notify.calls.length).toBe(1);
+    expect(updateCalls).toBe(0);
+    expect(code).toBe(2);
+  });
+
+  it('pre-flight 401: aborts with exit 2', async () => {
+    const notify = makeFakeNotify(() => ({ success: false, status: 401, error: 'unauthorized' }));
+    const runner = makeRunnerForResults({ candidates: [candidateRow] });
+    const code = await main([], { runner, notify, blossomWebhookSecret: 'test-secret' });
+    expect(code).toBe(2);
+  });
+
+  it('successful sweep: stamps all rows, exit 0', async () => {
+    const notify = makeFakeNotify(() => ({ success: true, status: 200, result: okBody }));
+    const runner = makeRunnerForResults({ candidates: [candidateRow] });
+    const code = await main([], { runner, notify, blossomWebhookSecret: 'test-secret' });
+    expect(code).toBe(0);
+  });
+
+  it('per-row failure: continues sweep, exit 1', async () => {
+    const candidates = ['a', 'b'].map(c => ({ ...candidateRow, blob_sha256: c.repeat(64), kind5_id: `k-${c}`, target_event_id: `t-${c}` }));
+    const notify = makeFakeNotify(({ sha256 }) => {
+      if (sha256.startsWith('b')) return { success: false, status: 502, error: 'bad gateway' };
+      return { success: true, status: 200, result: okBody };
+    });
+    const runner = makeRunnerForResults({ candidates });
+    const code = await main([], { runner, notify, blossomWebhookSecret: 'test-secret' });
+    expect(code).toBe(1);
+  });
+
+  it('empty-candidates short-circuit: still surfaces unprocessable + perm-failures', async () => {
+    const notify = makeFakeNotify(() => { throw new Error('should not be called'); });
+    const runner = makeRunnerForResults({
+      candidates: [],
+      unprocessable: [{ kind5_id: 'k1', target_event_id: 't1', creator_pubkey: 'pub1', completed_at: '2026-04-15T00:00:00Z' }],
+      permanentFailures: []
+    });
+    const code = await main([], { runner, notify, blossomWebhookSecret: 'test-secret' });
+    expect(notify.calls.length).toBe(0);
+    expect(code).toBe(1);
+  });
+
+  it('empty everywhere: exit 0', async () => {
+    const notify = makeFakeNotify(() => { throw new Error('should not be called'); });
+    const runner = makeRunnerForResults({ candidates: [], unprocessable: [], permanentFailures: [] });
+    const code = await main([], { runner, notify, blossomWebhookSecret: 'test-secret' });
+    expect(code).toBe(0);
+  });
+});

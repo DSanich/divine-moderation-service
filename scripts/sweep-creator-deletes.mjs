@@ -370,3 +370,109 @@ export function printSummary(s) {
     }
   }
 }
+
+function readBlossomSecret() {
+  const s = (typeof process !== 'undefined' && process.env) ? process.env.BLOSSOM_WEBHOOK_SECRET : null;
+  if (!s) {
+    throw new Error('BLOSSOM_WEBHOOK_SECRET env var is required');
+  }
+  return s;
+}
+
+/**
+ * Programmatic entrypoint. Returns the exit code (does not call process.exit).
+ * Tests inject { runner, notify, blossomWebhookSecret } to drive the flow without shelling out.
+ */
+export async function main(argv, deps = {}) {
+  const runner = deps.runner || defaultRunner;
+  const notify = deps.notify || defaultNotify;
+
+  let cfg;
+  try {
+    cfg = parseArgs(argv);
+  } catch (e) {
+    console.error(`arg error: ${e.message}`);
+    return 3;
+  }
+
+  try {
+    cfg.blossomWebhookSecret = deps.blossomWebhookSecret ?? readBlossomSecret();
+  } catch (e) {
+    console.error(e.message);
+    return 3;
+  }
+
+  // Fetch candidates
+  let candidates;
+  try {
+    candidates = await fetchCandidates(cfg, runner);
+  } catch (e) {
+    console.error(`fetchCandidates failed: ${e.message}`);
+    return 3;
+  }
+  console.error(`Found ${candidates.length} candidate(s) for sweep.`);
+  if (cfg.since || cfg.until) {
+    console.error(`Window: since=${cfg.since ?? '-'} until=${cfg.until ?? '-'}`);
+  }
+
+  // Dry-run gate
+  if (cfg.dryRun) {
+    for (const r of candidates.slice(0, 20)) {
+      console.log(`[dry-run] sha=${r.blob_sha256} kind5=${r.kind5_id} completed_at=${r.completed_at}`);
+    }
+    if (candidates.length > 20) {
+      console.log(`[dry-run] ... and ${candidates.length - 20} more`);
+    }
+    return 0;
+  }
+
+  // Pre-flight (consumes the first candidate when there are any)
+  let preflightSuccess = null;
+  if (candidates.length > 0) {
+    try {
+      preflightSuccess = await runPreflight(candidates[0].blob_sha256, cfg, notify);
+    } catch (e) {
+      if (e instanceof PreflightAbort) {
+        console.error(`preflight aborted (${e.reason}): ${e.message}`);
+        return 2;
+      }
+      console.error(`preflight error: ${e.message}`);
+      return 2;
+    }
+  }
+
+  // Sweep remaining (skip the pre-flight row, then re-add it as a success)
+  let sweepResult = { successes: [], failures: [] };
+  if (candidates.length > 0) {
+    const remaining = candidates.slice(1);
+    sweepResult = await sweepCandidates(remaining, cfg, notify, async (shas) => {
+      await flushDeletedAt(shas, cfg, runner);
+    });
+    if (preflightSuccess) {
+      sweepResult.successes.unshift({ row: candidates[0], body: null });
+      await flushDeletedAt([candidates[0].blob_sha256], cfg, runner);
+      console.log(JSON.stringify({ ts: nowIso(), sha: candidates[0].blob_sha256, kind5: candidates[0].kind5_id, target: candidates[0].target_event_id, outcome: 'success', http: 200, physical_deleted: true, source: 'preflight' }));
+    }
+  }
+
+  // Surfacing queries
+  let unprocessable = [];
+  let permanentFailures = [];
+  try {
+    unprocessable = await fetchUnprocessable(cfg, runner);
+    permanentFailures = await fetchPermanentFailures(cfg, runner);
+  } catch (e) {
+    console.error(`surfacing query failed: ${e.message}`);
+  }
+
+  // Summary
+  const s = summarize({
+    candidates,
+    successes: sweepResult.successes,
+    failures: sweepResult.failures,
+    unprocessable,
+    permanentFailures
+  });
+  printSummary(s);
+  return computeExitCode(s);
+}
