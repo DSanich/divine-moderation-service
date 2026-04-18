@@ -199,6 +199,29 @@ describe('runWithConcurrency', () => {
     const results = await runWithConcurrency([], 5, async () => { throw new Error('should not run'); });
     expect(results).toEqual([]);
   });
+
+  it('honors drainCheck — stops pulling new items once it returns true', async () => {
+    // 20 items, cap at 2, drain after 3 complete. Remaining items must not run.
+    const processed = [];
+    let drain = false;
+    const fn = async (x) => {
+      processed.push(x);
+      if (processed.length >= 3) drain = true;
+      return x;
+    };
+    const results = await runWithConcurrency(
+      Array.from({ length: 20 }, (_, i) => i),
+      2,
+      fn,
+      () => drain
+    );
+    // We don't know the exact count (concurrency race + post-flag workers finishing
+    // their current item), but it must be bounded well below 20 and the returned
+    // results should correspond to items that actually ran.
+    expect(processed.length).toBeLessThan(20);
+    expect(results.length).toBe(processed.length);
+    for (const r of results) expect(r.value).toBe(r.input);
+  });
 });
 
 import { callBlossomDelete, classifyDeleteResult } from './sweep-creator-deletes.mjs';
@@ -220,7 +243,7 @@ describe('callBlossomDelete', () => {
     const notify = makeFakeNotify(() => ({
       success: true,
       status: 200,
-      result: { status: 'success', physical_delete_enabled: true, physical_deleted: true }
+      result: { success: true, physical_deleted: true, physical_delete_skipped: false }
     }));
     const cfg = {
       blossomWebhookUrl: 'https://example/admin/moderate',
@@ -255,29 +278,35 @@ describe('classifyDeleteResult', () => {
   it('success when ok && body.status==="success" && body.physical_deleted===true', () => {
     expect(classifyDeleteResult({
       ok: true, status: 200,
-      body: { status: 'success', physical_delete_enabled: true, physical_deleted: true }
+      body: { success: true, physical_deleted: true, physical_delete_skipped: false }
     })).toEqual({ kind: 'success' });
   });
 
-  it('flag-off pre-flight signal when physical_delete_enabled===false', () => {
+  it('flag-off pre-flight signal when physical_delete_skipped===true', () => {
     expect(classifyDeleteResult({
       ok: true, status: 200,
-      body: { status: 'success', physical_delete_enabled: false, physical_deleted: false }
+      body: { success: true, physical_deleted: false, physical_delete_skipped: true }
     })).toEqual({ kind: 'flag-off' });
   });
 
-  it('failure when body.status==="error"', () => {
-    expect(classifyDeleteResult({
+  it('failure when 200 but physical_deleted===false (and flag was on)', () => {
+    // success:true but physical_deleted:false with skip:false means Blossom
+    // accepted the call but the byte-delete did not complete. Treat as failure.
+    const out = classifyDeleteResult({
       ok: true, status: 200,
-      body: { status: 'error', error: 'gcs delete failed' }
-    })).toEqual({ kind: 'failure', reason: 'gcs delete failed' });
+      body: { success: true, physical_deleted: false, physical_delete_skipped: false }
+    });
+    expect(out.kind).toBe('failure');
+    expect(out.reason).toMatch(/unexpected Blossom response/);
   });
 
-  it('failure when 200 but physical_deleted===false (and flag was on)', () => {
-    expect(classifyDeleteResult({
+  it('failure when 200 with an unexpected body shape', () => {
+    const out = classifyDeleteResult({
       ok: true, status: 200,
-      body: { status: 'success', physical_delete_enabled: true, physical_deleted: false }
-    })).toEqual({ kind: 'failure', reason: 'physical_deleted=false despite flag on' });
+      body: { success: false, error: 'gcs delete failed' }
+    });
+    expect(out.kind).toBe('failure');
+    expect(out.reason).toMatch(/unexpected Blossom response/);
   });
 
   it('auth-failure on 401/403', () => {
@@ -410,17 +439,17 @@ describe('runPreflight', () => {
   it('returns success for the first row when Blossom returns physical_deleted=true', async () => {
     const notify = makeFakeNotify(() => ({
       success: true, status: 200,
-      result: { status: 'success', physical_delete_enabled: true, physical_deleted: true }
+      result: { success: true, physical_deleted: true, physical_delete_skipped: false }
     }));
     const out = await runPreflight(SHA, cfg, notify);
     expect(out).toEqual({ kind: 'success' });
     expect(notify.calls.length).toBe(1);
   });
 
-  it('throws PreflightAbort with reason="flag-off" when physical_delete_enabled is false', async () => {
+  it('throws PreflightAbort with reason="flag-off" when physical_delete_skipped is true', async () => {
     const notify = makeFakeNotify(() => ({
       success: true, status: 200,
-      result: { status: 'success', physical_delete_enabled: false, physical_deleted: false }
+      result: { success: true, physical_deleted: false, physical_delete_skipped: true }
     }));
     await expect(runPreflight(SHA, cfg, notify)).rejects.toMatchObject({
       name: 'PreflightAbort',
@@ -452,10 +481,10 @@ describe('runPreflight', () => {
     });
   });
 
-  it('throws PreflightAbort with reason="failure" when Blossom returns 200 status:error', async () => {
+  it('throws PreflightAbort with reason="failure" when Blossom returns 200 with an unexpected body', async () => {
     const notify = makeFakeNotify(() => ({
       success: true, status: 200,
-      result: { status: 'error', error: 'gcs delete failed' }
+      result: { success: false, error: 'gcs delete failed' }
     }));
     await expect(runPreflight(SHA, cfg, notify)).rejects.toMatchObject({
       name: 'PreflightAbort',
@@ -464,14 +493,14 @@ describe('runPreflight', () => {
   });
 });
 
-import { sweepCandidates, summarize, computeExitCode, D1WriteAbort } from './sweep-creator-deletes.mjs';
+import { sweepCandidates, summarize, computeExitCode, D1WriteAbort, MidRunFlagOff } from './sweep-creator-deletes.mjs';
 
 describe('sweepCandidates', () => {
   const cfg = parseArgs(['--concurrency=2']);
   const rowFor = (sha) => ({ kind5_id: `k-${sha.slice(0,4)}`, target_event_id: `t-${sha.slice(0,4)}`, blob_sha256: sha, completed_at: '2026-04-15T00:00:00Z' });
 
   it('stamps shas where Blossom returned physical_deleted=true', async () => {
-    const okBody = { status: 'success', physical_delete_enabled: true, physical_deleted: true };
+    const okBody = { success: true, physical_deleted: true, physical_delete_skipped: false };
     const notify = makeFakeNotify(() => ({ success: true, status: 200, result: okBody }));
     const flushed = [];
     const flushImpl = async (shas) => { flushed.push(...shas); };
@@ -485,7 +514,7 @@ describe('sweepCandidates', () => {
   it('does NOT stamp shas when physical_deleted=false (even on HTTP 200)', async () => {
     const notify = makeFakeNotify(() => ({
       success: true, status: 200,
-      result: { status: 'success', physical_delete_enabled: true, physical_deleted: false }
+      result: { success: true, physical_deleted: false, physical_delete_skipped: false }
     }));
     const flushed = [];
     const flushImpl = async (shas) => { flushed.push(...shas); };
@@ -498,7 +527,7 @@ describe('sweepCandidates', () => {
   it('isolates per-row failures — successful rows still stamp', async () => {
     const notify = makeFakeNotify(({ sha256 }) => {
       if (sha256.startsWith('b')) return { success: false, status: 502, error: 'bad gateway' };
-      return { success: true, status: 200, result: { status: 'success', physical_delete_enabled: true, physical_deleted: true } };
+      return { success: true, status: 200, result: { success: true, physical_deleted: true, physical_delete_skipped: false } };
     });
     const flushed = [];
     const flushImpl = async (shas) => { flushed.push(...shas); };
@@ -509,8 +538,33 @@ describe('sweepCandidates', () => {
     expect(flushed.sort()).toEqual([candidates[0].blob_sha256, candidates[2].blob_sha256].sort());
   });
 
+  it('throws MidRunFlagOff when a row reports physical_delete_skipped=true mid-sweep', async () => {
+    // Simulates: operator toggles ENABLE_PHYSICAL_DELETE off between pre-flight
+    // and mid-sweep. First row succeeds; second row reports skip=true; sweep
+    // must abort loudly rather than silently log per-row failures.
+    const notify = makeFakeNotify(({ sha256 }) => {
+      if (sha256.startsWith('b')) {
+        return { success: true, status: 200, result: { success: true, physical_deleted: false, physical_delete_skipped: true } };
+      }
+      return { success: true, status: 200, result: { success: true, physical_deleted: true, physical_delete_skipped: false } };
+    });
+    const flushed = [];
+    const flushImpl = async (shas) => { flushed.push(...shas); };
+    const candidates = ['a','b','c'].map(c => rowFor(c.repeat(64)));
+    let caught;
+    try {
+      await sweepCandidates(candidates, parseArgs(['--concurrency=1']), notify, flushImpl);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(MidRunFlagOff);
+    // Pre-flag-off rows that succeeded must already be flushed (so bytes
+    // destroyed earlier are recorded as stamped).
+    expect(flushed).toContain(candidates[0].blob_sha256);
+  });
+
   it('throws D1WriteAbort with unflushed shas when flush fails mid-sweep', async () => {
-    const okBody = { status: 'success', physical_delete_enabled: true, physical_deleted: true };
+    const okBody = { success: true, physical_deleted: true, physical_delete_skipped: false };
     const notify = makeFakeNotify(() => ({ success: true, status: 200, result: okBody }));
     const flushImpl = async () => { throw new Error('d1 unreachable'); };
     const candidates = ['a','b','c'].map(c => rowFor(c.repeat(64)));
@@ -528,7 +582,7 @@ describe('sweepCandidates', () => {
   it('flushes in batches of FLUSH_BATCH_SIZE (default 100)', async () => {
     const notify = makeFakeNotify(() => ({
       success: true, status: 200,
-      result: { status: 'success', physical_delete_enabled: true, physical_deleted: true }
+      result: { success: true, physical_deleted: true, physical_delete_skipped: false }
     }));
     const batches = [];
     const flushImpl = async (shas) => { batches.push(shas.length); };
@@ -576,7 +630,7 @@ import { main } from './sweep-creator-deletes.mjs';
 
 describe('main (integration)', () => {
   const candidateRow = { kind5_id: 'k1', target_event_id: 't1', blob_sha256: 'a'.repeat(64), completed_at: '2026-04-15T00:00:00Z' };
-  const okBody = { status: 'success', physical_delete_enabled: true, physical_deleted: true };
+  const okBody = { success: true, physical_deleted: true, physical_delete_skipped: false };
 
   function makeRunnerForResults({ candidates = [], unprocessable = [], permanentFailures = [], updates = () => ({stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0}) } = {}) {
     return async ({ command, args }) => {
@@ -613,7 +667,7 @@ describe('main (integration)', () => {
   it('pre-flight flag-off: aborts with exit 2 and zero D1 writes', async () => {
     const notify = makeFakeNotify(() => ({
       success: true, status: 200,
-      result: { status: 'success', physical_delete_enabled: false, physical_deleted: false }
+      result: { success: true, physical_deleted: false, physical_delete_skipped: true }
     }));
     let updateCalls = 0;
     const runner = makeRunnerForResults({

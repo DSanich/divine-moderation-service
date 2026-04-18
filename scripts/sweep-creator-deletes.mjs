@@ -126,13 +126,14 @@ export function buildUpdateStampSql(shas, timestamp) {
   );
 }
 
-export async function runWithConcurrency(items, concurrency, fn) {
+export async function runWithConcurrency(items, concurrency, fn, drainCheck = null) {
   if (items.length === 0) return [];
   const results = new Array(items.length);
   let cursor = 0;
 
   async function worker() {
     while (true) {
+      if (drainCheck && drainCheck()) return;  // honor drain before pulling next item
       const i = cursor++;
       if (i >= items.length) return;
       const input = items[i];
@@ -150,7 +151,9 @@ export async function runWithConcurrency(items, concurrency, fn) {
     workers.push(worker());
   }
   await Promise.all(workers);
-  return results;
+  // Compact: drain leaves holes (unstarted items) in results. Filter them out
+  // so downstream code sees only items that actually ran.
+  return results.filter(r => r !== undefined);
 }
 
 import { notifyBlossom as defaultNotify } from '../src/blossom-client.mjs';
@@ -179,19 +182,32 @@ export async function callBlossomDelete(sha256, cfg, notifyImpl = defaultNotify)
 /**
  * Classifies a Blossom call result into the action the script should take.
  * Used by both pre-flight and per-row sweep logic.
+ *
+ * CONTRACT: this reads the wire shape emitted by divine-blossom at
+ * `src/admin.rs:923-930` and `src/main.rs:4795-4802` (as of 2026-04-18):
+ *   { success: true, sha256, old_status, new_status: "deleted",
+ *     physical_deleted: bool, physical_delete_skipped: bool }
+ *
+ * physical_delete_skipped === true means ENABLE_PHYSICAL_DELETE was OFF on
+ * Blossom (the negation is emitted server-side). For error cases Blossom
+ * returns non-2xx; a 2xx-with-success:false is not in the current contract.
+ *
+ * If Blossom's response shape changes, update this function and its tests
+ * in lockstep. The test fixtures are authored from this same contract and
+ * will not catch drift on their own.
  */
 export function classifyDeleteResult(r) {
   if (r.ok) {
     const b = r.body || {};
-    // flag-off is checked before status=error: in the unlikely case a Blossom
-    // response carries both, the flag-off signal is more actionable for the
-    // operator (flip the env var and re-run) than a generic error reason.
-    // Pre-flight aborts on flag-off before any sweep runs; the per-row sweep
-    // never sees flag-off because it would have aborted at pre-flight.
-    if (b.physical_delete_enabled === false) return { kind: 'flag-off' };
-    if (b.status === 'error') return { kind: 'failure', reason: b.error || 'blossom returned status=error' };
-    if (b.status === 'success' && b.physical_deleted === true) return { kind: 'success' };
-    return { kind: 'failure', reason: 'physical_deleted=false despite flag on' };
+    // flag-off checked first: the signal is more actionable for the operator
+    // ("turn the flag on and re-run") than a generic failure reason, and
+    // catching it mid-sweep lets us abort cleanly instead of silently logging
+    // per-row failures while bytes remain on GCS.
+    if (b.physical_delete_skipped === true) return { kind: 'flag-off' };
+    if (b.success === true && b.physical_deleted === true) return { kind: 'success' };
+    // 2xx with an unexpected body shape — treat as failure so the row stays
+    // unstamped and surfaces in the summary for manual investigation.
+    return { kind: 'failure', reason: `unexpected Blossom response: ${JSON.stringify(b).slice(0, 200)}` };
   }
   if (r.status === 401 || r.status === 403) return { kind: 'auth-failure' };
   if (r.networkError) return { kind: 'unreachable', reason: r.error || 'network error' };
@@ -305,6 +321,21 @@ export class D1WriteAbort extends Error {
 }
 
 /**
+ * Blossom returned physical_delete_skipped=true mid-sweep, meaning someone
+ * toggled ENABLE_PHYSICAL_DELETE off after pre-flight passed. Abort the whole
+ * sweep rather than log per-row failures while bytes remain on GCS. main()
+ * exits 2 (same code as pre-flight flag-off) so the operator's response is
+ * identical: flip the flag back on and re-run.
+ */
+export class MidRunFlagOff extends Error {
+  constructor(sha256) {
+    super(`Blossom reported physical_delete_skipped=true for ${sha256} mid-sweep — ENABLE_PHYSICAL_DELETE was toggled off.`);
+    this.name = 'MidRunFlagOff';
+    this.sha256 = sha256;
+  }
+}
+
+/**
  * Bulk sweep over candidates. Stamps via flushImpl in batches of FLUSH_BATCH_SIZE.
  * Per-row JSONL outcome lines are emitted to stdout for grep/jq.
  *
@@ -330,7 +361,7 @@ export async function sweepCandidates(candidates, cfg, notifyImpl = defaultNotif
 
   const results = await runWithConcurrency(candidates, cfg.concurrency, async (row) => {
     return callBlossomDelete(row.blob_sha256, cfg, notifyImpl);
-  });
+  }, isDraining);
 
   for (const r of results) {
     if (isDraining()) break;  // SIGINT: stop scheduling new work, flush pending, exit
@@ -348,6 +379,12 @@ export async function sweepCandidates(candidates, cfg, notifyImpl = defaultNotif
       if (pending.length >= FLUSH_BATCH_SIZE) {
         await flushOrAbort();
       }
+    } else if (c.kind === 'flag-off') {
+      // Config toggled off between pre-flight and now. Flush what we have
+      // and abort — do not keep calling Blossom and logging failures while
+      // bytes remain on GCS.
+      await flushOrAbort();
+      throw new MidRunFlagOff(row.blob_sha256);
     } else {
       failures.push({ row, error: c.reason || c.kind, status: r.value.status });
       emitJsonLine({ ts: nowIso(), sha: row.blob_sha256, kind5: row.kind5_id, target: row.target_event_id, outcome: 'failure', http: r.value.status, error: c.reason || c.kind });
@@ -497,6 +534,11 @@ export async function main(argv, deps = {}) {
         for (const sha of e.unflushedShas) console.error(`  ${sha}`);
         console.error('Re-run the sweep to stamp these rows (Blossom DELETE is idempotent).');
         return 4;
+      }
+      if (e instanceof MidRunFlagOff) {
+        console.error(`mid-run flag-off aborted sweep: ${e.message}`);
+        console.error('Re-enable ENABLE_PHYSICAL_DELETE on Blossom and re-run the sweep.');
+        return 2;
       }
       throw e;
     }

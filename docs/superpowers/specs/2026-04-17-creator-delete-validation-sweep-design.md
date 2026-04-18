@@ -39,7 +39,7 @@ operator laptop
    │
    └─ scripts/sweep-creator-deletes.mjs
         │
-        ├─ wrangler d1 execute  →  divine-moderation-decisions-prod
+        ├─ wrangler d1 execute  →  blossom-webhook-events
         │     SELECT candidate rows from creator_deletions
         │
         ├─ for each batch (concurrency=N):
@@ -54,7 +54,7 @@ operator laptop
         │             - purge_vcl_cache
         │
         └─ every 100 successes (and at end of run):
-              wrangler d1 execute  →  divine-moderation-decisions-prod
+              wrangler d1 execute  →  blossom-webhook-events
                 UPDATE creator_deletions
                 SET physical_deleted_at = ?
                 WHERE blob_sha256 IN (...) AND physical_deleted_at IS NULL
@@ -97,7 +97,7 @@ Node ESM, no transpilation. Runs via `node scripts/sweep-creator-deletes.mjs [fl
 --concurrency=N            Parallel Blossom calls. Default 5.
 --limit=N                  Cap candidates fetched (no cap by default).
 --blossom-webhook-url=URL  Blossom moderate webhook URL. Default https://media.divine.video/admin/moderate. Matches the URL the live pipeline POSTs to via notifyBlossom().
---d1-database=NAME         D1 database name. Default divine-moderation-decisions-prod.
+--d1-database=NAME         D1 database name. Default blossom-webhook-events (the mod-service `BLOSSOM_DB` binding per wrangler.toml; this is the database that holds the `creator_deletions` table).
 ```
 
 **Required env:**
@@ -105,6 +105,21 @@ Node ESM, no transpilation. Runs via `node scripts/sweep-creator-deletes.mjs [fl
 - `BLOSSOM_WEBHOOK_SECRET` — Bearer token for Blossom `/admin/moderate`.
 - Wrangler must be authed against the production Cloudflare account (script shells out to `wrangler`).
 - Node 20+ (global `fetch`, no `node-fetch` dep).
+
+**Blossom response contract (source of truth):** the sweep reads the wire shape emitted by `divine-blossom/src/admin.rs:923-930` and `src/main.rs:4795-4802`:
+
+```json
+{
+  "success": true,
+  "sha256": "<hex>",
+  "old_status": "<variant>",
+  "new_status": "deleted",
+  "physical_deleted": true,
+  "physical_delete_skipped": false
+}
+```
+
+`physical_delete_skipped: true` means `ENABLE_PHYSICAL_DELETE` is off on Blossom (server emits the negation). Error cases return non-2xx; a 2xx-with-`success:false` is not part of the contract today. If Blossom's response shape changes, `classifyDeleteResult` and its test fixtures must be updated in lockstep — the fixtures will not catch drift on their own.
 
 **SQL injection surface:** `wrangler d1 execute --command` does not accept bind params for ad-hoc SQL, so the script string-interpolates inputs into both SELECT and UPDATE statements. Inputs are validated before interpolation:
 
@@ -138,7 +153,7 @@ Vitest, runs via existing repo config.
 | `runWithConcurrency` | Concurrency cap respected; error in one item does not poison others; every input produces exactly one result entry; result order need not match input order (callers re-associate via the row data carried through). |
 | `callBlossomDelete` | Auth header set; body shape correct; 200 success path; 200-with-`status:'error'` path; 4xx; 5xx; network error. |
 | `flushDeletedAt` | SQL builder produces correct `IN (...)` literal; sha256 hex assumption asserted; no-op on empty list. |
-| `main` (integration) | Pre-flight `physical_delete_enabled=false` aborts with exit 2 and zero D1 writes. Pre-flight 401 aborts with exit 2. Dry-run path makes zero Blossom and zero D1-write calls. Per-row failure does not stop the sweep. D1 stamp only includes rows that returned `physical_deleted:true`. Unprocessable and permanent-failures surfaced in summary. |
+| `main` (integration) | Pre-flight `physical_delete_skipped=true` aborts with exit 2 and zero D1 writes. Pre-flight 401 aborts with exit 2. Dry-run path makes zero Blossom and zero D1-write calls. Per-row failure does not stop the sweep. D1 stamp only includes rows that returned `physical_deleted:true`. Unprocessable and permanent-failures surfaced in summary. |
 
 ## Data flow
 
@@ -161,7 +176,7 @@ Vitest, runs via existing repo config.
 
 4. **Pre-flight.** Issue one Blossom `DELETE` for the first candidate.
 
-   - If response body has `physical_delete_enabled === false`: **abort, exit 2.** Loud message: "Blossom did not byte-delete because `ENABLE_PHYSICAL_DELETE` is off. Flip the flag before sweeping. No D1 writes occurred."
+   - If response body has `physical_delete_skipped === true`: **abort, exit 2.** Loud message: "Blossom did not byte-delete because `ENABLE_PHYSICAL_DELETE` is off. Flip the flag before sweeping. No D1 writes occurred."
    - If 401/403: **abort, exit 2.** "Blossom rejected auth — check `BLOSSOM_WEBHOOK_SECRET`."
    - If 5xx, network error, JSON parse: **abort, exit 2.** "Blossom unreachable — try later."
    - If success with `physical_deleted: true`: pre-flight row joins the in-memory success queue. It is flushed to D1 alongside the bulk-sweep successes (no separate flush call). Continue to step 5 with the remaining candidates.
@@ -232,7 +247,7 @@ Greppable, sortable, pipeable to `jq`. Every row produces exactly one line.
 
 | Failure | Behavior |
 |---|---|
-| Pre-flight: `physical_delete_enabled === false` | Abort, exit 2. Zero D1 writes. |
+| Pre-flight: `physical_delete_skipped === true` | Abort, exit 2. Zero D1 writes. |
 | Pre-flight: Blossom 401/403 | Abort, exit 2. |
 | Pre-flight: Blossom 5xx / network / JSON parse | Abort, exit 2. |
 | `fetchCandidates` wrangler error | Abort, exit 3. No sweep work started. |
@@ -253,7 +268,7 @@ Greppable, sortable, pipeable to `jq`. Every row produces exactly one line.
 ## Operational runbook (future PR companion)
 
 1. Confirm `ENABLE_PHYSICAL_DELETE=true` is set on Blossom config store.
-2. Apply migration 007 to prod D1: `wrangler d1 execute divine-moderation-decisions-prod --file migrations/007-creator-deletions-physical-deleted-at.sql --remote`.
+2. Apply migration 007 to prod D1: `wrangler d1 execute blossom-webhook-events --file migrations/007-creator-deletions-physical-deleted-at.sql --remote`.
 3. Dry-run: `node scripts/sweep-creator-deletes.mjs --dry-run`.
 4. If candidate count looks right, full run: `node scripts/sweep-creator-deletes.mjs`.
 5. Inspect summary. Investigate any `unprocessable` or `permanent-failures` rows by hand.
@@ -262,6 +277,15 @@ Greppable, sortable, pipeable to `jq`. Every row produces exactly one line.
 ## Open questions
 
 - **Whether to surface `failed:transient:*` rows in the summary.** They will be retried by the existing creator-delete cron (mod-service) and the sweep doesn't own them. Probably skip; revisit if ops finds them useful.
+
+## Forward-looking: Blossom contract drift
+
+This sweep reads Blossom's `/admin/moderate` response shape directly (see the "Blossom response contract" section above). Several in-flight and upcoming PRs on `divine-blossom` touch adjacent code paths:
+
+- PR #97 — adding unit coverage for the creator-delete response contract (in flight).
+- Future changes to the moderate webhook response (e.g., new status fields, renamed booleans).
+
+**Re-verify this script's `classifyDeleteResult` and test fixtures against Blossom's live response** once those land. The fixtures are authored from the same contract document as the classifier; they do not catch drift on their own. The source-of-truth reference is pinned in the function's docstring to `divine-blossom/src/admin.rs:923-930` and `src/main.rs:4795-4802` — if those line numbers shift, update both and re-run the sweep against staging before any prod invocation.
 
 ## What this is not
 
