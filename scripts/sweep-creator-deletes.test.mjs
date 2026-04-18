@@ -153,3 +153,45 @@ describe('buildUpdateStampSql', () => {
     expect(() => buildUpdateStampSql([SHA_A], 'not-iso')).toThrow(/timestamp/i);
   });
 });
+
+import { runWithConcurrency } from './sweep-creator-deletes.mjs';
+
+describe('runWithConcurrency', () => {
+  it('runs all items and returns one result per input', async () => {
+    const items = [1, 2, 3, 4, 5];
+    const results = await runWithConcurrency(items, 2, async x => x * 10);
+    expect(results.length).toBe(5);
+    expect(results.map(r => r.value).sort((a, b) => a - b)).toEqual([10, 20, 30, 40, 50]);
+  });
+
+  it('respects concurrency cap (never more than N in flight)', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const work = async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise(r => setTimeout(r, 5));
+      inFlight--;
+    };
+    await runWithConcurrency(new Array(20).fill(0), 3, work);
+    expect(peak).toBeLessThanOrEqual(3);
+  });
+
+  it('isolates per-item errors — one failure does not poison the rest', async () => {
+    const items = [1, 2, 3];
+    const results = await runWithConcurrency(items, 2, async x => {
+      if (x === 2) throw new Error('boom');
+      return x;
+    });
+    expect(results.length).toBe(3);
+    const byInput = Object.fromEntries(results.map(r => [r.input, r]));
+    expect(byInput[1].value).toBe(1);
+    expect(byInput[2].error.message).toBe('boom');
+    expect(byInput[3].value).toBe(3);
+  });
+
+  it('returns immediately on empty input', async () => {
+    const results = await runWithConcurrency([], 5, async () => { throw new Error('should not run'); });
+    expect(results).toEqual([]);
+  });
+});

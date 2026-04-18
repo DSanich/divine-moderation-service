@@ -124,3 +124,30 @@ export function buildUpdateStampSql(shas, timestamp) {
     ` AND physical_deleted_at IS NULL;`
   );
 }
+
+export async function runWithConcurrency(items, concurrency, fn) {
+  if (items.length === 0) return [];
+  const results = new Array(items.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      const input = items[i];
+      try {
+        const value = await fn(input);
+        results[i] = { input, value };
+      } catch (error) {
+        results[i] = { input, error };
+      }
+    }
+  }
+
+  const workers = [];
+  for (let w = 0; w < Math.min(concurrency, items.length); w++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  return results;
+}
