@@ -288,3 +288,103 @@ describe('classifyDeleteResult', () => {
     expect(classifyDeleteResult({ ok: false, networkError: true, error: 'ECONNRESET' }).kind).toBe('unreachable');
   });
 });
+
+import {
+  fetchCandidates,
+  fetchUnprocessable,
+  fetchPermanentFailures,
+  flushDeletedAt
+} from './sweep-creator-deletes.mjs';
+
+function makeFakeRunner(responseFor) {
+  const calls = [];
+  const fn = async ({ command, args }) => {
+    calls.push({ command, args });
+    const sql = args[args.indexOf('--command') + 1];
+    return responseFor(sql);
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+const WRANGLER_RESULT_ENVELOPE = (rows) => JSON.stringify([{ results: rows, success: true, meta: {} }]);
+
+describe('fetchCandidates', () => {
+  it('shells wrangler with the right command, db, and SQL; parses results', async () => {
+    const runner = makeFakeRunner(() => ({
+      stdout: WRANGLER_RESULT_ENVELOPE([
+        { kind5_id: 'k1', target_event_id: 't1', blob_sha256: 'a'.repeat(64), completed_at: '2026-04-15T00:00:00Z' }
+      ]),
+      stderr: '',
+      status: 0
+    }));
+    const cfg = parseArgs([]);
+    const rows = await fetchCandidates(cfg, runner);
+    expect(runner.calls.length).toBe(1);
+    expect(runner.calls[0].command).toBe('wrangler');
+    expect(runner.calls[0].args.slice(0, 5)).toEqual(['d1', 'execute', cfg.d1Database, '--remote', '--json']);
+    expect(runner.calls[0].args[5]).toBe('--command');
+    expect(runner.calls[0].args[6]).toContain("WHERE status = 'success'");
+    expect(rows).toEqual([
+      { kind5_id: 'k1', target_event_id: 't1', blob_sha256: 'a'.repeat(64), completed_at: '2026-04-15T00:00:00Z' }
+    ]);
+  });
+
+  it('returns empty array when wrangler result envelope has zero rows', async () => {
+    const runner = makeFakeRunner(() => ({ stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0 }));
+    const rows = await fetchCandidates(parseArgs([]), runner);
+    expect(rows).toEqual([]);
+  });
+
+  it('throws when wrangler exits non-zero', async () => {
+    const runner = makeFakeRunner(() => ({ stdout: '', stderr: 'auth required', status: 1 }));
+    await expect(fetchCandidates(parseArgs([]), runner)).rejects.toThrow(/auth required/i);
+  });
+
+  it('throws when wrangler stdout is not parseable JSON', async () => {
+    const runner = makeFakeRunner(() => ({ stdout: 'not json', stderr: '', status: 0 }));
+    await expect(fetchCandidates(parseArgs([]), runner)).rejects.toThrow(/parse/i);
+  });
+});
+
+describe('fetchUnprocessable', () => {
+  it('queries for status=success AND blob_sha256 IS NULL', async () => {
+    const runner = makeFakeRunner(() => ({ stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0 }));
+    await fetchUnprocessable(parseArgs([]), runner);
+    const sql = runner.calls[0].args[runner.calls[0].args.indexOf('--command') + 1];
+    expect(sql).toContain('blob_sha256 IS NULL');
+  });
+});
+
+describe('fetchPermanentFailures', () => {
+  it("queries for status LIKE 'failed:permanent:%'", async () => {
+    const runner = makeFakeRunner(() => ({ stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0 }));
+    await fetchPermanentFailures(parseArgs([]), runner);
+    const sql = runner.calls[0].args[runner.calls[0].args.indexOf('--command') + 1];
+    expect(sql).toContain("'failed:permanent:%'");
+  });
+});
+
+describe('flushDeletedAt', () => {
+  it('builds and runs UPDATE with the supplied shas + timestamp', async () => {
+    const runner = makeFakeRunner(() => ({ stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0 }));
+    const ts = '2026-04-17T20:00:00.000Z';
+    await flushDeletedAt(['a'.repeat(64), 'b'.repeat(64)], parseArgs([]), runner, ts);
+    const sql = runner.calls[0].args[runner.calls[0].args.indexOf('--command') + 1];
+    expect(sql).toContain(`SET physical_deleted_at = '${ts}'`);
+    expect(sql).toContain(`'${'a'.repeat(64)}'`);
+    expect(sql).toContain(`'${'b'.repeat(64)}'`);
+  });
+
+  it('is a no-op on empty sha list', async () => {
+    const runner = makeFakeRunner(() => ({ stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0 }));
+    await flushDeletedAt([], parseArgs([]), runner, '2026-04-17T20:00:00.000Z');
+    expect(runner.calls.length).toBe(0);
+  });
+
+  it('throws when wrangler exits non-zero', async () => {
+    const runner = makeFakeRunner(() => ({ stdout: '', stderr: 'd1 unreachable', status: 1 }));
+    await expect(flushDeletedAt(['a'.repeat(64)], parseArgs([]), runner, '2026-04-17T20:00:00.000Z'))
+      .rejects.toThrow(/d1 unreachable/i);
+  });
+});

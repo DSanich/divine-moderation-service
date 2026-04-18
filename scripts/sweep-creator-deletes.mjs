@@ -192,3 +192,53 @@ export function classifyDeleteResult(r) {
   if (r.status >= 500) return { kind: 'unreachable', reason: `HTTP ${r.status}` };
   return { kind: 'failure', reason: r.error || `HTTP ${r.status}` };
 }
+
+/**
+ * Default runner used when the script runs as a CLI. Tests inject a fake.
+ * Uses spawnSync (args is an array, not a string — no shell interpretation).
+ *
+ * The node:child_process import is deferred via dynamic import() so the test
+ * runner (Cloudflare Workers pool) does not try to resolve it during module
+ * collection — Workers compat does not provide node:child_process even with
+ * nodejs_compat. Tests inject a fake runner and never reach this function.
+ */
+export async function defaultRunner({ command, args }) {
+  const { spawnSync } = await import('node:child_process');
+  const r = spawnSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  return { stdout: r.stdout || '', stderr: r.stderr || '', status: r.status ?? 0 };
+}
+
+async function runWranglerD1(cfg, sql, runner) {
+  const args = ['d1', 'execute', cfg.d1Database, '--remote', '--json', '--command', sql];
+  const r = await runner({ command: 'wrangler', args });
+  if (r.status !== 0) {
+    throw new Error(`wrangler d1 execute failed (exit ${r.status}): ${r.stderr.trim() || r.stdout.trim()}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(r.stdout);
+  } catch (e) {
+    throw new Error(`failed to parse wrangler stdout as JSON: ${e.message}`);
+  }
+  if (!Array.isArray(parsed) || !parsed[0]) return [];
+  return parsed[0].results || [];
+}
+
+export async function fetchCandidates(cfg, runner = defaultRunner) {
+  const sql = buildSelectCandidatesSql({ since: cfg.since, until: cfg.until, limit: cfg.limit });
+  return runWranglerD1(cfg, sql, runner);
+}
+
+export async function fetchUnprocessable(cfg, runner = defaultRunner) {
+  return runWranglerD1(cfg, buildSelectUnprocessableSql(), runner);
+}
+
+export async function fetchPermanentFailures(cfg, runner = defaultRunner) {
+  return runWranglerD1(cfg, buildSelectPermanentFailuresSql(), runner);
+}
+
+export async function flushDeletedAt(shas, cfg, runner = defaultRunner, timestamp = new Date().toISOString()) {
+  if (!shas || shas.length === 0) return;
+  const sql = buildUpdateStampSql(shas, timestamp);
+  await runWranglerD1(cfg, sql, runner);
+}
