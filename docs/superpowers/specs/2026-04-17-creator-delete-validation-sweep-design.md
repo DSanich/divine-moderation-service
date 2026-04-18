@@ -71,6 +71,11 @@ operator laptop
 ### 1. Migration `007-creator-deletions-physical-deleted-at.sql`
 
 ```sql
+-- Stamped by scripts/sweep-creator-deletes.mjs only.
+-- The live creator-delete pipeline (process.mjs) does not write this column;
+-- newly-produced success rows show NULL here until the next sweep run picks
+-- them up, calls Blossom (idempotent if bytes already gone), and stamps.
+-- Semantic: "the validation sweep confirmed bytes were destroyed for this row."
 ALTER TABLE creator_deletions
   ADD COLUMN IF NOT EXISTS physical_deleted_at TEXT;
 ```
@@ -84,7 +89,7 @@ Node ESM, no transpilation. Runs via `node scripts/sweep-creator-deletes.mjs [fl
 **CLI flags:**
 
 ```
---dry-run                  List candidates and pre-flight check, no destructive calls.
+--dry-run                  List candidates and parsed window. No network calls, no D1 writes.
 --since=ISO8601            Filter completed_at >= since.
 --until=ISO8601            Filter completed_at <  until.
 --concurrency=N            Parallel Blossom calls. Default 5.
@@ -97,6 +102,15 @@ Node ESM, no transpilation. Runs via `node scripts/sweep-creator-deletes.mjs [fl
 
 - `BLOSSOM_WEBHOOK_SECRET` — Bearer token for Blossom `/admin/moderate`.
 - Wrangler must be authed against the production Cloudflare account (script shells out to `wrangler`).
+- Node 20+ (global `fetch`, no `node-fetch` dep).
+
+**SQL injection surface:** `wrangler d1 execute --command` does not accept bind params for ad-hoc SQL, so the script string-interpolates inputs into both SELECT and UPDATE statements. Inputs are validated before interpolation:
+
+- `blob_sha256` values must match `/^[0-9a-f]{64}$/`. Anything else is rejected before reaching the SQL builder.
+- `--since`, `--until` must parse via `new Date(x).toISOString()` round-trip.
+- `--limit` must be a non-negative integer.
+
+A single failed validation aborts the run with exit 3 (D1 read aborted) before any SQL is built.
 
 **Internal functions** (each its own small unit, deps injected so tests don't shell out or fetch):
 
@@ -119,7 +133,7 @@ Vitest, runs via existing repo config.
 | Unit | Coverage |
 |---|---|
 | `parseArgs` | Defaults; each flag parses; invalid ISO rejected; conflicting flags rejected. |
-| `runWithConcurrency` | Order-independent; concurrency cap respected; error in one item does not poison others; results returned in submission order. |
+| `runWithConcurrency` | Concurrency cap respected; error in one item does not poison others; every input produces exactly one result entry; result order need not match input order (callers re-associate via the row data carried through). |
 | `callBlossomDelete` | Auth header set; body shape correct; 200 success path; 200-with-`status:'error'` path; 4xx; 5xx; network error. |
 | `flushDeletedAt` | SQL builder produces correct `IN (...)` literal; sha256 hex assumption asserted; no-op on empty list. |
 | `main` (integration) | Pre-flight `physical_delete_enabled=false` aborts with exit 2 and zero D1 writes. Pre-flight 401 aborts with exit 2. Dry-run path makes zero Blossom and zero D1-write calls. Per-row failure does not stop the sweep. D1 stamp only includes rows that returned `physical_deleted:true`. Unprocessable and permanent-failures surfaced in summary. |
@@ -139,18 +153,20 @@ Vitest, runs via existing repo config.
     [LIMIT ?limit];
    ```
 
-2. **Dry-run gate.** If `--dry-run`, print candidate count + first 20 shas + parsed window, exit 0. No network calls, no D1 writes. Pre-flight is intentionally skipped in dry-run; if the flag is misconfigured at run-time, the real run's pre-flight will catch it before any rows get stamped.
+2. **Empty-candidates short-circuit.** If 0 candidates, skip the sweep entirely. Still run the surfacing queries (step 8) so the operator sees unprocessable / permanent-failure rows. Exit 0 unless those lists are non-empty, in which case exit 1.
 
-3. **Pre-flight.** Issue one Blossom `DELETE` for the first candidate.
+3. **Dry-run gate.** If `--dry-run`, print candidate count + first 20 shas + parsed window, exit 0. No network calls, no D1 writes. Pre-flight is intentionally skipped in dry-run; if the flag is misconfigured at run-time, the real run's pre-flight will catch it before any rows get stamped.
+
+4. **Pre-flight.** Issue one Blossom `DELETE` for the first candidate.
 
    - If response body has `physical_delete_enabled === false`: **abort, exit 2.** Loud message: "Blossom did not byte-delete because `ENABLE_PHYSICAL_DELETE` is off. Flip the flag before sweeping. No D1 writes occurred."
    - If 401/403: **abort, exit 2.** "Blossom rejected auth — check `BLOSSOM_WEBHOOK_SECRET`."
    - If 5xx, network error, JSON parse: **abort, exit 2.** "Blossom unreachable — try later."
-   - If success with `physical_deleted: true`: stamp this row, continue to step 4 with the remaining candidates.
+   - If success with `physical_deleted: true`: pre-flight row joins the in-memory success queue. It is flushed to D1 alongside the bulk-sweep successes (no separate flush call). Continue to step 5 with the remaining candidates.
 
-4. **Sweep.** `runWithConcurrency(candidates, --concurrency, async row => callBlossomDelete(row.blob_sha256))`.
+5. **Sweep.** `runWithConcurrency(candidates, --concurrency, async row => callBlossomDelete(row.blob_sha256))`.
 
-5. **Strict success criterion** — only stamp `physical_deleted_at` when:
+6. **Strict success criterion** — only stamp `physical_deleted_at` when:
 
    ```
    res.ok
@@ -160,7 +176,7 @@ Vitest, runs via existing repo config.
 
    Anything else → log a failure line, continue. Row stays unstamped and is picked up by the next run.
 
-6. **Periodic flush.** Every 100 successes (and once at end-of-run), call `flushDeletedAt(successShas)`:
+7. **Periodic flush.** Every 100 successes (and once at end-of-run), call `flushDeletedAt(successShas)`:
 
    ```sql
    UPDATE creator_deletions
@@ -171,12 +187,12 @@ Vitest, runs via existing repo config.
 
    The `AND physical_deleted_at IS NULL` clause guards against concurrent operators racing each other.
 
-7. **Surface unfulfilled creator intent.** After the sweep, run two read-only queries (these should be small lists — exception rows, not the bulk):
+8. **Surface unfulfilled creator intent.** After the sweep, run two read-only queries (these should be small lists — exception rows, not the bulk):
 
    - `status='success' AND blob_sha256 IS NULL` → "unprocessable" list. Creator's delete was accepted at the kind 5 layer but we never resolved a sha256, so Blossom was never told. The asset may still be live.
    - `status LIKE 'failed:permanent:%'` → "permanent failures" list. The pipeline gave up on these rows; creator's intent was not fulfilled.
 
-8. **Summary** (always printed):
+9. **Summary** (always printed):
 
    ```
    === SUMMARY ===
@@ -221,7 +237,7 @@ Greppable, sortable, pipeable to `jq`. Every row produces exactly one line.
 | Per-row Blossom 5xx, 4xx, network, timeout, JSON parse | Log failure line, continue. Row stays unstamped. |
 | Per-row Blossom 200 with `status:'error'` or `physical_deleted:false` | Log failure line, continue. Notably: do not stamp. |
 | `flushDeletedAt` wrangler error | Abort, exit 4. Print "in-flight chunk shas not stamped" with the sha list, so operator has them for manual reconciliation. Re-run will re-issue DELETE for those (idempotent on Blossom) and stamp on success. |
-| SIGINT (Ctrl-C) | Flush any in-memory successes before exiting. Print partial summary. Exit 130. |
+| SIGINT (Ctrl-C) | Best-effort: stop scheduling new Blossom calls, await in-flight calls to settle, flush in-memory successes, print partial summary, exit 130. Implemented via `process.on('SIGINT', ...)` setting a "draining" flag that the concurrency loop checks. A second SIGINT exits immediately without flushing (operator override). |
 
 **Exit codes:**
 
