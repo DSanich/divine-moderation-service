@@ -175,13 +175,14 @@ function fetchGiftWraps(relayUrl, filter, env) {
     }, 15000); // 15 second timeout for potentially many events
 
     try {
-      const headers = {};
-      if (env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
-        headers['CF-Access-Client-Id'] = env.CF_ACCESS_CLIENT_ID;
-        headers['CF-Access-Client-Secret'] = env.CF_ACCESS_CLIENT_SECRET;
-      }
-
-      ws = new WebSocket(relayUrl, { headers });
+      // Cloudflare Workers' WebSocket constructor only accepts a subprotocol
+      // string/array as the second argument; passing an options object fails
+      // with "The protocol header token is invalid" and silently breaks the
+      // cron. relay.divine.video is a public Nostr relay that does not require
+      // CF Access, so we don't need to forward those headers here. If we ever
+      // point at a CF-Access-protected relay, switch to the fetch({ Upgrade })
+      // pattern and use the returned response.webSocket.
+      ws = new WebSocket(relayUrl);
       const subscriptionId = 'dm-sync-' + Math.random().toString(36).substring(7);
 
       ws.addEventListener('open', () => {
