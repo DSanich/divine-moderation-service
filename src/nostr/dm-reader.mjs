@@ -89,8 +89,36 @@ export async function syncInbox(env) {
       const content = rumor.content;
       const createdAt = rumor.created_at;
 
-      // Compute conversation ID
-      const conversationId = computeConversationId(moderatorPubkey, senderPubkey);
+      // NIP-17 gift wraps reach the moderator's inbox in two shapes:
+      //   1. Inbound: someone writes to moderator. rumor.pubkey = them,
+      //      rumor's ['p'] tag = moderator.
+      //   2. Outbound self-copy: moderator writes to someone else, client
+      //      also wraps a copy addressed to moderator so sent messages
+      //      aren't lost. rumor.pubkey = moderator, rumor's ['p'] tag =
+      //      real recipient.
+      // Without handling (2), outgoing replies get stored with
+      // sender = recipient = moderator, which produces a separate
+      // conversation_id (moderator+moderator) and breaks threading.
+      const isOutgoing = senderPubkey === moderatorPubkey;
+      let counterpartyPubkey = null;
+      if (isOutgoing) {
+        // Find the real recipient in rumor tags: first 'p' tag whose value
+        // is not the moderator itself. Fall back to moderator if nothing
+        // else is tagged (should not happen in a valid kind-14 rumor).
+        const pTags = Array.isArray(rumor.tags)
+          ? rumor.tags.filter((t) => Array.isArray(t) && t[0] === 'p' && t[1])
+          : [];
+        const other = pTags.find((t) => t[1] !== moderatorPubkey);
+        counterpartyPubkey = other ? other[1] : moderatorPubkey;
+      } else {
+        counterpartyPubkey = senderPubkey;
+      }
+
+      const recipientPubkey = isOutgoing ? counterpartyPubkey : moderatorPubkey;
+      const direction = isOutgoing ? 'outgoing' : 'incoming';
+      // Compute conversation ID against the non-moderator side so inbound
+      // and outbound messages in the same thread share a conversation_id.
+      const conversationId = computeConversationId(moderatorPubkey, counterpartyPubkey);
 
       // Check if this is a structured conversation_report
       let relatedSha256 = null;
@@ -99,8 +127,10 @@ export async function syncInbox(env) {
         if (parsed && parsed.type === 'conversation_report' && parsed.sha256) {
           relatedSha256 = parsed.sha256;
 
-          // Also create entry in user_reports table if available
-          if (env.BLOSSOM_DB) {
+          // Also create entry in user_reports table if available.
+          // Skip for outgoing self-copies: the reporter is the counterparty,
+          // not the moderator (who is echoing their own sent message).
+          if (env.BLOSSOM_DB && !isOutgoing) {
             try {
               await env.BLOSSOM_DB.prepare(`
                 INSERT OR IGNORE INTO user_reports
@@ -123,14 +153,17 @@ export async function syncInbox(env) {
       }
 
       // Log to dm_log (dedup by nostr_event_id)
+      const messageType = relatedSha256
+        ? 'conversation_report'
+        : (isOutgoing ? 'moderator_reply' : 'creator_reply');
       const result = await logDm(env.BLOSSOM_DB, {
         conversationId,
         nostrEventId: giftWrap.id,
         senderPubkey,
-        recipientPubkey: moderatorPubkey,
+        recipientPubkey,
         content,
-        direction: 'incoming',
-        messageType: relatedSha256 ? 'conversation_report' : 'creator_reply',
+        direction,
+        messageType,
         sha256: relatedSha256
       });
 
