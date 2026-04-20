@@ -103,13 +103,22 @@ export async function syncInbox(env) {
       let counterpartyPubkey = null;
       if (isOutgoing) {
         // Find the real recipient in rumor tags: first 'p' tag whose value
-        // is not the moderator itself. Fall back to moderator if nothing
-        // else is tagged (should not happen in a valid kind-14 rumor).
+        // is not the moderator itself. A valid NIP-17 outgoing rumor must
+        // have one; if it doesn't, the gift wrap is malformed and we can't
+        // thread it correctly. Skip rather than store as a self-conversation
+        // that would later disappear from the admin UI.
         const pTags = Array.isArray(rumor.tags)
           ? rumor.tags.filter((t) => Array.isArray(t) && t[0] === 'p' && t[1])
           : [];
         const other = pTags.find((t) => t[1] !== moderatorPubkey);
-        counterpartyPubkey = other ? other[1] : moderatorPubkey;
+        if (!other) {
+          console.warn(
+            `[DM-READER] Outgoing rumor has no non-moderator 'p' tag; skipping event ${giftWrap.id}. rumor.tags=${JSON.stringify(rumor.tags || [])}`
+          );
+          errors++;
+          continue;
+        }
+        counterpartyPubkey = other[1];
       } else {
         counterpartyPubkey = senderPubkey;
       }
