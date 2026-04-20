@@ -44,7 +44,7 @@ export async function logDm(db, { conversationId, sha256, direction, senderPubke
   return { id: result.meta.last_row_id };
 }
 
-export async function getConversations(db, { limit = 20, offset = 0 } = {}) {
+export async function getConversations(db, { limit = 20, offset = 0, moderatorPubkey } = {}) {
   const rows = await db.prepare(`
     SELECT
       conversation_id,
@@ -62,7 +62,21 @@ export async function getConversations(db, { limit = 20, offset = 0 } = {}) {
     ORDER BY last_message_at DESC
     LIMIT ? OFFSET ?
   `).bind(limit, offset).all();
-  return rows.results || [];
+  const results = rows.results || [];
+
+  // The admin messages UI expects participant_pubkey (the other side of the
+  // conversation, not the moderator) plus latest_message / message_type
+  // aliases. We add those without removing the original columns so existing
+  // callers keep working.
+  if (!moderatorPubkey) return results;
+
+  return results.map((row) => ({
+    ...row,
+    participant_pubkey:
+      row.sender_pubkey === moderatorPubkey ? row.recipient_pubkey : row.sender_pubkey,
+    latest_message: row.last_message,
+    message_type: row.last_message_type,
+  }));
 }
 
 export async function getConversation(db, conversationId) {

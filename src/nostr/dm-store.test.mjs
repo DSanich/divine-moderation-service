@@ -237,6 +237,47 @@ describe('DM Store - getConversations', () => {
     const conversations = await getConversations(emptyDb);
     expect(conversations).toEqual([]);
   });
+
+  it('augments rows with participant_pubkey, latest_message, message_type when moderatorPubkey is provided', async () => {
+    const moderator = '8'.repeat(64);
+    const userA = 'a'.repeat(64);
+    const userB = 'b'.repeat(64);
+
+    // Incoming: user -> moderator. participant should be the user.
+    await logDm(mockDb, {
+      conversationId: 'conv_in',
+      direction: 'incoming',
+      senderPubkey: userA,
+      recipientPubkey: moderator,
+      messageType: 'conversation_report',
+      content: 'Report from user A'
+    });
+
+    // Outgoing: moderator -> user. participant should still be the user.
+    await logDm(mockDb, {
+      conversationId: 'conv_out',
+      direction: 'outgoing',
+      senderPubkey: moderator,
+      recipientPubkey: userB,
+      messageType: 'moderator_reply',
+      content: 'Reply to user B'
+    });
+
+    const conversations = await getConversations(mockDb, { moderatorPubkey: moderator });
+
+    expect(conversations).toHaveLength(2);
+    for (const conv of conversations) {
+      // New fields the admin UI expects
+      expect(conv).toHaveProperty('participant_pubkey');
+      expect(conv).toHaveProperty('latest_message');
+      expect(conv).toHaveProperty('message_type');
+      // Participant must never be the moderator
+      expect(conv.participant_pubkey).not.toBe(moderator);
+      // Aliases must mirror the existing columns
+      expect(conv.latest_message).toBe(conv.last_message);
+      expect(conv.message_type).toBe(conv.last_message_type);
+    }
+  });
 });
 
 describe('DM Store - getConversation', () => {
