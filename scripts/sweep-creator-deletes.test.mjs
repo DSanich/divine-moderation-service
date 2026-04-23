@@ -590,6 +590,57 @@ describe('sweepCandidates', () => {
     await sweepCandidates(candidates, cfg, notify, flushImpl);
     expect(batches).toEqual([100, 100, 50]);
   });
+
+  it('preserves completed successes after SIGINT drain flips mid-run', async () => {
+    // Regression for Liz's #106 review: the previous code broke out of the
+    // result-consumption loop as soon as `isDraining()` returned true, so
+    // any successes that completed between the first SIGINT and the
+    // scheduler returning were dropped from `pending` and never flushed
+    // or summarized. The drain check now lives only in
+    // runWithConcurrency; the consumption loop must process everything
+    // the scheduler returns.
+    //
+    // This test simulates: 20 candidates, concurrency 1 (deterministic
+    // ordering), drain flipped ON after 5 complete. The scheduler
+    // returns 5 results (drain stops it from pulling items 6-20); all 5
+    // must land in successes and get flushed.
+    let completedCount = 0;
+    let draining = false;
+    const isDrainingImpl = () => draining;
+    const notify = makeFakeNotify(() => {
+      completedCount++;
+      // Flip the drain flag after 5 successful completions. The
+      // scheduler will stop dequeueing new items; the in-flight batch
+      // has already drained since concurrency=1.
+      if (completedCount === 5) draining = true;
+      return {
+        success: true,
+        status: 200,
+        result: { success: true, physical_deleted: true, physical_delete_skipped: false },
+      };
+    });
+    const flushed = [];
+    const flushImpl = async (shas) => { flushed.push(...shas); };
+    const candidates = Array.from({ length: 20 }, (_, i) =>
+      rowFor(i.toString(16).padStart(64, '0')),
+    );
+
+    const out = await sweepCandidates(
+      candidates,
+      parseArgs(['--concurrency=1']),
+      notify,
+      flushImpl,
+      isDrainingImpl,
+    );
+
+    // All 5 that completed before drain fully took effect must be
+    // preserved in the result and flushed.
+    expect(out.successes.length).toBe(5);
+    expect(out.failures.length).toBe(0);
+    expect(flushed.length).toBe(5);
+    // The remaining 15 candidates were never dequeued (drain stopped them).
+    expect(completedCount).toBe(5);
+  });
 });
 
 describe('summarize', () => {
@@ -623,6 +674,12 @@ describe('computeExitCode', () => {
   });
   it('returns 1 when permanent failures exist', () => {
     expect(computeExitCode({ failed: 0, unprocessableCount: 0, permanentFailureCount: 1 })).toBe(1);
+  });
+  it('returns 1 when the sweep was clean but the surfacing queries failed', () => {
+    // Regression for Liz's #106 review: a silent degradation to exit 0 when
+    // the final unprocessable/permanent-failure readback fails makes the run
+    // look fully successful while operator visibility is actually gone.
+    expect(computeExitCode({ failed: 0, unprocessableCount: 0, permanentFailureCount: 0, surfacingFailed: true })).toBe(1);
   });
 });
 
@@ -741,5 +798,34 @@ describe('main (integration)', () => {
     const runner = makeRunnerForResults({ candidates: [], unprocessable: [], permanentFailures: [] });
     const code = await main([], { runner, notify, blossomWebhookSecret: 'test-secret' });
     expect(code).toBe(0);
+  });
+
+  it('surfacing query failure: exits non-zero even when the sweep itself was clean', async () => {
+    // Regression for Liz's #106 review. The sweep succeeds on the sole
+    // candidate, but the final unprocessable/permanent-failure readback
+    // fails. Previously the code logged a warning and still returned 0
+    // (both lists were empty). Now it must exit non-zero so the run
+    // does not silently look fully successful when operator visibility
+    // into unprocessable / permanent-failure rows has been lost.
+    const notify = makeFakeNotify(() => ({ success: true, status: 200, result: okBody }));
+    const runner = async ({ args }) => {
+      const sql = args[args.indexOf('--command') + 1];
+      if (sql.startsWith('SELECT kind5_id, target_event_id, blob_sha256')) {
+        return { stdout: WRANGLER_RESULT_ENVELOPE([candidateRow]), stderr: '', status: 0 };
+      }
+      if (sql.includes('blob_sha256 IS NULL')) {
+        // Simulate a transient D1 failure on the unprocessable readback.
+        return { stdout: '', stderr: 'd1 surfacing query exploded', status: 1 };
+      }
+      if (sql.includes("'failed:permanent:%'")) {
+        return { stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0 };
+      }
+      if (sql.startsWith('UPDATE creator_deletions')) {
+        return { stdout: WRANGLER_RESULT_ENVELOPE([]), stderr: '', status: 0 };
+      }
+      throw new Error(`unexpected sql: ${sql.slice(0, 80)}`);
+    };
+    const code = await main([], { runner, notify, blossomWebhookSecret: 'test-secret' });
+    expect(code).toBe(1);
   });
 });

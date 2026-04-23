@@ -343,7 +343,7 @@ export class MidRunFlagOff extends Error {
  * Throws D1WriteAbort if a flush fails mid-sweep — caller should print the
  * unflushedShas and exit 4 per the spec.
  */
-export async function sweepCandidates(candidates, cfg, notifyImpl = defaultNotify, flushImpl = null) {
+export async function sweepCandidates(candidates, cfg, notifyImpl = defaultNotify, flushImpl = null, isDrainingImpl = isDraining) {
   const successes = [];
   const failures = [];
   let pending = [];
@@ -359,12 +359,19 @@ export async function sweepCandidates(candidates, cfg, notifyImpl = defaultNotif
     }
   }
 
+  // `runWithConcurrency` honors the drain callback at the scheduler level:
+  // once `isDrainingImpl()` returns true, no new items are dequeued but all
+  // in-flight work is awaited and returned. The result list below therefore
+  // already reflects everything that actually ran (successfully or not),
+  // including completions after the first SIGINT. Do NOT break out of the
+  // loop on drain — that was the pre-review bug (#106 review from Liz): it
+  // dropped post-signal successes before they could be flushed, so the
+  // partial summary understated bytes actually deleted.
   const results = await runWithConcurrency(candidates, cfg.concurrency, async (row) => {
     return callBlossomDelete(row.blob_sha256, cfg, notifyImpl);
-  }, isDraining);
+  }, isDrainingImpl);
 
   for (const r of results) {
-    if (isDraining()) break;  // SIGINT: stop scheduling new work, flush pending, exit
     const row = r.input;
     if (r.error) {
       failures.push({ row, error: r.error.message });
@@ -395,13 +402,14 @@ export async function sweepCandidates(candidates, cfg, notifyImpl = defaultNotif
   return { successes, failures };
 }
 
-export function summarize({ candidates, successes, failures, unprocessable, permanentFailures }) {
+export function summarize({ candidates, successes, failures, unprocessable, permanentFailures, surfacingFailed = false }) {
   return {
     total: candidates.length,
     stamped: successes.length,
     failed: failures.length,
     unprocessableCount: unprocessable.length,
     permanentFailureCount: permanentFailures.length,
+    surfacingFailed,
     successes,
     failures,
     unprocessable,
@@ -411,6 +419,10 @@ export function summarize({ candidates, successes, failures, unprocessable, perm
 
 export function computeExitCode(s) {
   if (s.failed > 0 || s.unprocessableCount > 0 || s.permanentFailureCount > 0) return 1;
+  // Surfacing-query failure: the sweep itself may have been clean, but
+  // operator visibility into unprocessable/permanent-failure rows is gone.
+  // Exit non-zero so the run doesn't look fully successful.
+  if (s.surfacingFailed) return 1;
   return 0;
 }
 
@@ -421,6 +433,9 @@ export function printSummary(s) {
   console.log(`Failed (will retry next run):  ${s.failed}`);
   console.log(`Unprocessable (NULL sha256):   ${s.unprocessableCount}`);
   console.log(`Permanent failures (manual):   ${s.permanentFailureCount}`);
+  if (s.surfacingFailed) {
+    console.log(`Surfacing queries:             FAILED (see stderr) — exit code will be non-zero`);
+  }
 
   if (s.failures.length > 0) {
     console.log('\n=== FAILURES (will retry) ===');
@@ -557,14 +572,19 @@ export async function main(argv, deps = {}) {
     }
   }
 
-  // Surfacing queries
+  // Surfacing queries. If these fail, the operator loses visibility into
+  // unprocessable and permanent-failure rows, which is exactly what this
+  // script is meant to surface. Treat as a non-zero outcome rather than
+  // silently degrading to exit 0 with empty lists.
   let unprocessable = [];
   let permanentFailures = [];
+  let surfacingFailed = false;
   try {
     unprocessable = await fetchUnprocessable(cfg, runner);
     permanentFailures = await fetchPermanentFailures(cfg, runner);
   } catch (e) {
     console.error(`surfacing query failed: ${e.message}`);
+    surfacingFailed = true;
   }
 
   // Summary
@@ -573,7 +593,8 @@ export async function main(argv, deps = {}) {
     successes: sweepResult.successes,
     failures: sweepResult.failures,
     unprocessable,
-    permanentFailures
+    permanentFailures,
+    surfacingFailed
   });
   printSummary(s);
   return computeExitCode(s);
