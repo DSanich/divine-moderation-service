@@ -166,6 +166,8 @@ describe('Moderation Pipeline', () => {
     expect(result.action).toBe('SAFE');
     expect(result.text_scores).toBeNull();
     expect(result.topicProfile).toBeNull();
+    expect(result.transcriptPending).toBe(true);
+    expect(result.transcriptRetryAfterSeconds).toBe(12);
   });
 
   it('keeps benign Hive nudity SAFE while retaining downstream nudity signals', async () => {

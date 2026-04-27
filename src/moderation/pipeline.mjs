@@ -439,12 +439,16 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
   // Step 3.5: Fetch VTT transcript and analyze text content + extract topics
   let textScores = null;
   let topicProfile = null;
+  let transcriptPending = false;
+  let transcriptRetryAfterSeconds = null;
   try {
     const vttUrl = `https://media.divine.video/${sha256}.vtt`;
     console.log(`[MODERATION] Fetching VTT transcript: ${vttUrl}`);
     const vttResponse = await fetchFn(vttUrl);
     if (vttResponse.status === 202) {
       const retryAfterSeconds = getRetryAfterSeconds(vttResponse);
+      transcriptPending = true;
+      transcriptRetryAfterSeconds = retryAfterSeconds;
       console.log(`[MODERATION] VTT transcript for ${sha256} is still pending${retryAfterSeconds !== null ? ` (retry after ${retryAfterSeconds}s)` : ''} - skipping text analysis`);
     } else if (vttResponse.status === 404) {
       console.log(`[MODERATION] No VTT transcript found for ${sha256} (404) - skipping text analysis`);
@@ -605,6 +609,10 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
 
     // Interpreted upstream Video Seal watermark payload
     // Always present so downstream consumers can rely on a stable signal shape
-    videoseal
+    videoseal,
+
+    // Deferred transcript processing state metadata.
+    transcriptPending,
+    transcriptRetryAfterSeconds
   };
 }

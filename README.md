@@ -11,6 +11,7 @@ Content moderation service for Divine 6-second videos using Sightengine API and 
   - **REVIEW**: Borderline content flagged for human review
   - **QUARANTINE**: High risk content, blocked immediately
 - **AI-Generated Content Detection**: Identifies AI-generated videos to maintain authentic content policy
+- **Late Transcript Reprocessing**: Tracks `202 Pending` transcript runs and reprocesses them on cron when transcripts are ready
 - **Nostr Integration**: Publishes NIP-56 (kind 1984) events for human moderation
 - **Cost Optimized**: ~$0.003 per 6-second video
 - **Full Test Coverage**: 40 tests covering all components
@@ -86,6 +87,7 @@ VIOLENCE_THRESHOLD_HIGH = "0.8"
 VIOLENCE_THRESHOLD_MEDIUM = "0.6"
 AI_GENERATED_THRESHOLD_HIGH = "0.8"   # Auto-quarantine AI content
 AI_GENERATED_THRESHOLD_MEDIUM = "0.6" # Flag AI content for review
+TRANSCRIPT_REPROCESS_BATCH_SIZE = "20" # Pending transcript rows to reprocess each cron tick
 
 [[kv_namespaces]]
 binding = "MODERATION_KV"

@@ -20,11 +20,11 @@ import messagesHTML from './admin/messages.html';
 import { initReportsTable } from './reports.mjs';
 import { initUploaderEnforcementTable, getUploaderEnforcement, setUploaderEnforcement, applyUploaderEnforcementToResult } from './uploader-enforcement.mjs';
 import { formatForStorage, formatForGorse, formatForFunnelcake } from './classification/pipeline.mjs';
-import { topicsToLabels, topicsToWeightedFeatures } from './classification/topic-extractor.mjs';
-import { getKVThresholds, setKVThresholds, DEFAULT_THRESHOLDS } from './moderation/classifier.mjs';
+import { extractTopics, topicsToLabels, topicsToWeightedFeatures } from './classification/topic-extractor.mjs';
+import { classifyModerationResult, getKVThresholds, kvThresholdsToEnv, setKVThresholds, DEFAULT_THRESHOLDS } from './moderation/classifier.mjs';
 import { isValidSha256, isValidLookupIdentifier, isValidPubkey, parseMaybeJson, getEventTagValue, parseImetaParams, extractShaFromUrl, extractMediaShaFromEvent } from './validation.mjs';
 import { parseRetryAfterSeconds } from './http-utils.mjs';
-import { parseVttText } from './moderation/text-classifier.mjs';
+import { classifyText, parseVttText } from './moderation/text-classifier.mjs';
 import { notifyAtprotoLabeler } from './atproto/label-webhook.mjs';
 import { buildDownstreamPublishContext } from './moderation/downstream-publishing.mjs';
 import { runClassicVineRollback } from './moderation/classic-vine-rollback.mjs';
@@ -64,6 +64,32 @@ const ADMIN_HOSTNAME = 'moderation.admin.divine.video';
 const API_HOSTNAME = 'moderation-api.divine.video';
 const DEFAULT_RELAY_ADMIN_URL = 'https://relay.admin.divine.video';
 const JSON_HEADERS = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
+const VALID_MODERATION_ACTIONS = new Set(['SAFE', 'REVIEW', 'QUARANTINE', 'AGE_RESTRICTED', 'PERMANENT_BAN']);
+
+// ETags for admin HTML pages — computed once at module load, change only on deploy.
+// Allows browsers to cache the HTML but revalidate on every request (304 if unchanged).
+const HTML_ETAGS = {
+  dashboard: `"${hashCode(dashboardHTML)}"`,
+  review: `"${hashCode(swipeReviewHTML)}"`,
+  messages: `"${hashCode(messagesHTML)}"`,
+};
+
+function hashCode(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
+  return hash.toString(36);
+}
+
+function serveHTML(html, etag, request) {
+  if (request.headers.get('If-None-Match') === etag) {
+    return new Response(null, { status: 304, headers: { 'ETag': etag } });
+  }
+  return new Response(html, {
+    headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache', 'ETag': etag }
+  });
+}
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 /**
@@ -378,6 +404,207 @@ async function fetchTranscriptAsset(sha256, env) {
     vttContent,
     transcriptText: parseVttText(vttContent).trim()
   };
+}
+
+function normalizeModerationAction(action) {
+  const normalized = typeof action === 'string' ? action.toUpperCase() : '';
+  return VALID_MODERATION_ACTIONS.has(normalized) ? normalized : 'SAFE';
+}
+
+async function getEffectiveModerationEnv(env) {
+  let effectiveEnv = env;
+  try {
+    const kvThresholds = await getKVThresholds(env.MODERATION_KV);
+    if (kvThresholds) {
+      effectiveEnv = { ...env, ...kvThresholdsToEnv(kvThresholds) };
+    }
+  } catch (error) {
+    console.warn('[CRON] Failed to load KV thresholds for transcript reprocess:', error.message);
+  }
+  return effectiveEnv;
+}
+
+async function syncActionSpecificKVState(sha256, action, reason, category, env) {
+  await Promise.all([
+    env.MODERATION_KV.delete(`review:${sha256}`),
+    env.MODERATION_KV.delete(`age-restricted:${sha256}`),
+    env.MODERATION_KV.delete(`permanent-ban:${sha256}`),
+    env.MODERATION_KV.delete(`quarantine:${sha256}`)
+  ]);
+
+  if (!['REVIEW', 'QUARANTINE', 'AGE_RESTRICTED', 'PERMANENT_BAN'].includes(action)) {
+    return;
+  }
+
+  const kvPayload = JSON.stringify({
+    category: category || null,
+    reason: reason || null,
+    timestamp: Date.now(),
+    transcriptReprocess: true
+  });
+
+  if (action === 'REVIEW') {
+    await env.MODERATION_KV.put(`review:${sha256}`, kvPayload);
+  } else if (action === 'QUARANTINE') {
+    await env.MODERATION_KV.put(`quarantine:${sha256}`, kvPayload, { expirationTtl: 60 * 60 * 24 * 90 });
+  } else if (action === 'AGE_RESTRICTED') {
+    await env.MODERATION_KV.put(`age-restricted:${sha256}`, kvPayload);
+  } else if (action === 'PERMANENT_BAN') {
+    await env.MODERATION_KV.put(`permanent-ban:${sha256}`, kvPayload);
+  }
+}
+
+async function processPendingTranscriptReprocess(env) {
+  if (!env.BLOSSOM_DB || !env.MODERATION_KV) {
+    return;
+  }
+
+  const batchSize = Math.min(Math.max(Number.parseInt(env.TRANSCRIPT_REPROCESS_BATCH_SIZE || '20', 10) || 20, 1), 100);
+  const pendingResult = await env.BLOSSOM_DB.prepare(`
+    SELECT sha256, action, provider, scores, categories, raw_response, uploaded_by, title, published_at, content_url
+    FROM moderation_results
+    WHERE transcript_pending = 1
+    ORDER BY COALESCE(transcript_pending_since, moderated_at) ASC
+    LIMIT ?
+  `).bind(batchSize).all();
+
+  const rows = pendingResult?.results || [];
+  if (rows.length === 0) {
+    return;
+  }
+
+  const effectiveEnv = await getEffectiveModerationEnv(env);
+  console.log(`[CRON] Transcript reprocess: processing ${rows.length} pending rows`);
+
+  for (const row of rows) {
+    const { sha256 } = row;
+    const checkedAt = new Date().toISOString();
+
+    try {
+      const transcript = await fetchTranscriptAsset(sha256, env);
+
+      if (transcript.pending) {
+        await env.BLOSSOM_DB.prepare(`
+          UPDATE moderation_results
+          SET transcript_last_checked_at = ?
+          WHERE sha256 = ? AND transcript_pending = 1 AND reviewed_by IS NULL
+        `).bind(checkedAt, sha256).run();
+        continue;
+      }
+
+      if (!transcript.found || !transcript.transcriptText) {
+        await env.BLOSSOM_DB.prepare(`
+          UPDATE moderation_results
+          SET transcript_pending = 0,
+              transcript_last_checked_at = ?,
+              transcript_resolved_at = ?
+          WHERE sha256 = ? AND transcript_pending = 1 AND reviewed_by IS NULL
+        `).bind(checkedAt, checkedAt, sha256).run();
+        continue;
+      }
+
+      const textScores = classifyText(transcript.transcriptText);
+      let topicProfile = null;
+      try {
+        topicProfile = extractTopics(transcript.transcriptText);
+      } catch (error) {
+        console.warn(`[CRON] Topic extraction failed during transcript reprocess for ${sha256}: ${error.message}`);
+      }
+
+      const videoScores = parseMaybeJson(row.scores, {});
+      const existingCategories = parseMaybeJson(row.categories, []);
+      const classification = classifyModerationResult({
+        maxScores: videoScores || {},
+        flaggedFrames: [],
+        text_scores: textScores
+      }, effectiveEnv);
+
+      const oldAction = normalizeModerationAction(row.action);
+      const newAction = normalizeModerationAction(classification.action);
+
+      const transcriptActionUpdate = await env.BLOSSOM_DB.prepare(`
+        UPDATE moderation_results
+        SET action = ?,
+            scores = ?,
+            categories = ?,
+            transcript_pending = 0,
+            transcript_last_checked_at = ?,
+            transcript_resolved_at = ?
+        WHERE sha256 = ? AND transcript_pending = 1 AND reviewed_by IS NULL
+      `).bind(
+        newAction,
+        JSON.stringify(classification.scores || {}),
+        JSON.stringify(existingCategories || []),
+        checkedAt,
+        checkedAt,
+        sha256
+      ).run();
+      if (transcriptActionUpdate?.meta?.changes === 0) {
+        console.log(`[CRON] Transcript reprocess skipped ${sha256} because row was manually reviewed`);
+        continue;
+      }
+
+      const existingClassifier = parseMaybeJson(await env.MODERATION_KV.get(`classifier:${sha256}`), {});
+      const classifierPayload = {
+        sha256,
+        provider: existingClassifier?.provider || row.provider || 'transcript-reprocess',
+        moderatedAt: existingClassifier?.moderatedAt || checkedAt,
+        rawClassifierData: existingClassifier?.rawClassifierData || null,
+        sceneClassification: existingClassifier?.sceneClassification || null,
+        topicProfile: topicProfile || null,
+        text_scores: textScores
+      };
+      await env.MODERATION_KV.put(
+        `classifier:${sha256}`,
+        JSON.stringify(classifierPayload),
+        { expirationTtl: 60 * 60 * 24 * 180 }
+      );
+
+      const existingModerationKv = parseMaybeJson(await env.MODERATION_KV.get(`moderation:${sha256}`), null);
+      if (existingModerationKv) {
+        const moderationPayload = {
+          ...existingModerationKv,
+          action: newAction,
+          scores: classification.scores || existingModerationKv.scores || {},
+          categories: existingCategories || existingModerationKv.categories || [],
+          reason: classification.reason || existingModerationKv.reason || null,
+          text_scores: textScores,
+          topicProfile: topicProfile || null,
+          transcriptPending: false,
+          transcriptResolvedAt: checkedAt
+        };
+        await env.MODERATION_KV.put(
+          `moderation:${sha256}`,
+          JSON.stringify(moderationPayload),
+          { expirationTtl: 60 * 60 * 24 * 90 }
+        );
+      }
+
+      if (oldAction !== newAction) {
+        await syncActionSpecificKVState(sha256, newAction, classification.reason, classification.category, env);
+        await handleModerationResult({
+          ...classification,
+          sha256,
+          action: newAction,
+          flaggedFrames: [],
+          cdnUrl: row.content_url || `https://${env.CDN_DOMAIN || 'media.divine.video'}/${sha256}`,
+          uploadedBy: row.uploaded_by || null,
+          categories: existingCategories || [],
+          provider: row.provider || 'transcript-reprocess',
+          nostrContext: {
+            title: row.title || null,
+            publishedAt: row.published_at || null
+          },
+          topicProfile: topicProfile || null,
+          text_scores: textScores
+        }, env);
+      } else {
+        console.log(`[CRON] Transcript reprocess resolved ${sha256} without action change (${newAction})`);
+      }
+    } catch (error) {
+      console.error(`[CRON] Transcript reprocess failed for ${sha256}:`, error.message);
+    }
+  }
 }
 
 async function callRelayAdminAction(env, payload) {
@@ -1669,6 +1896,7 @@ export default {
       }
 
       const previousAction = existing.action;
+      const reviewedAtIso = new Date().toISOString();
 
       // Update moderation result in KV
       const updated = {
@@ -1712,6 +1940,9 @@ export default {
           reviewed_by = excluded.reviewed_by,
           reviewed_at = excluded.reviewed_at,
           review_notes = excluded.review_notes,
+          transcript_pending = 0,
+          transcript_last_checked_at = excluded.reviewed_at,
+          transcript_resolved_at = excluded.reviewed_at,
           uploaded_by = COALESCE(moderation_results.uploaded_by, excluded.uploaded_by),
           title = COALESCE(moderation_results.title, excluded.title),
           author = COALESCE(moderation_results.author, excluded.author),
@@ -1731,7 +1962,7 @@ export default {
         }),
         existing.moderated_at || new Date().toISOString(),
         'admin',
-        new Date().toISOString(),
+        reviewedAtIso,
         reason || 'Manual override by moderator',
         d1Row?.uploaded_by || updated.uploadedBy || null
       ).run();
@@ -3960,12 +4191,17 @@ async function runMigration() {
         console.log(`[MODERATION] Scores: nudity=${result.scores.nudity}, violence=${result.scores.violence}, ai=${result.scores.ai_generated}`);
 
         console.log(`[MODERATION] Step 6: Storing result in D1`);
+        const moderatedAt = new Date().toISOString();
+        const transcriptPending = result.transcriptPending ? 1 : 0;
+        const transcriptPendingSince = result.transcriptPending ? moderatedAt : null;
+        const transcriptLastCheckedAt = result.transcriptPending ? moderatedAt : null;
         // Store result in D1
         await env.BLOSSOM_DB.prepare(`
           INSERT OR REPLACE INTO moderation_results
           (sha256, action, provider, scores, categories, raw_response, moderated_at, uploaded_by,
-           title, author, event_id, content_url, published_at, videoseal)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           title, author, event_id, content_url, published_at,
+           videoseal, transcript_pending, transcript_pending_since, transcript_last_checked_at, transcript_resolved_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           sha256,
           result.action,
@@ -3973,14 +4209,18 @@ async function runMigration() {
           JSON.stringify(result.scores || {}),
           JSON.stringify(result.categories || []),
           JSON.stringify({ ...(result.rawResponse || {}), c2pa: result.c2pa || null }),
-          new Date().toISOString(),
+          moderatedAt,
           result.uploadedBy || null,
           result.nostrContext?.title || null,
           result.nostrContext?.author || null,
           result.nostrEventId || null,
           result.nostrContext?.url || result.cdnUrl || null,
           result.nostrContext?.publishedAt || null,
-          JSON.stringify(result.videoseal || null)
+          JSON.stringify(result.videoseal || null),
+          transcriptPending,
+          transcriptPendingSince,
+          transcriptLastCheckedAt,
+          null
         ).run();
         console.log(`[MODERATION] Step 7: D1 write successful`);
 
@@ -4089,61 +4329,65 @@ async function runMigration() {
     if (event.cron === '*/5 * * * *') {
       console.log(`[RELAY-POLLER] Cron triggered at ${new Date().toISOString()}`);
 
-      // Check if polling is enabled
       if (env.RELAY_POLLING_ENABLED === 'false') {
         console.log('[RELAY-POLLER] Polling is disabled, skipping');
-        return;
+      } else {
+        try {
+          // Get the timestamp to poll from
+          let since = await getLastPollTimestamp(env);
+
+          if (!since) {
+            // First run - look back based on config
+            const lookbackHours = parseInt(env.RELAY_POLLING_LOOKBACK_HOURS || '1', 10);
+            since = Math.floor(Date.now() / 1000) - (lookbackHours * 3600);
+            console.log(`[RELAY-POLLER] First run, looking back ${lookbackHours} hours`);
+          } else {
+            console.log(`[RELAY-POLLER] Continuing from last poll at ${new Date(since * 1000).toISOString()}`);
+          }
+
+          // Get relay URL from config
+          const relays = env.RELAY_POLLING_RELAY_URL
+            ? [env.RELAY_POLLING_RELAY_URL]
+            : ['wss://relay.divine.video'];
+
+          // Poll for new video events
+          const results = await pollRelayForVideos(env, {
+            since,
+            limit: parseInt(env.RELAY_POLLING_LIMIT || '100', 10),
+            relays
+          });
+
+          // Update last poll timestamp
+          await setLastPollTimestamp(env, Math.floor(Date.now() / 1000), {
+            totalEvents: results.totalEvents,
+            queuedForModeration: results.queuedForModeration,
+            alreadyModerated: results.alreadyModerated,
+            errors: results.errors.length,
+            trigger: 'cron'
+          });
+
+          console.log(`[RELAY-POLLER] Cron complete: ${results.totalEvents} events found, ${results.queuedForModeration} queued for moderation`);
+
+        } catch (error) {
+          console.error('[RELAY-POLLER] Cron poll failed:', error);
+
+          // Store error for debugging
+          try {
+            await env.MODERATION_KV.put('relay-poller:last-error', JSON.stringify({
+              error: error.message,
+              stack: error.stack,
+              timestamp: new Date().toISOString()
+            }));
+          } catch (kvError) {
+            console.error('[RELAY-POLLER] Failed to store error:', kvError);
+          }
+        }
       }
 
       try {
-        // Get the timestamp to poll from
-        let since = await getLastPollTimestamp(env);
-
-        if (!since) {
-          // First run - look back based on config
-          const lookbackHours = parseInt(env.RELAY_POLLING_LOOKBACK_HOURS || '1', 10);
-          since = Math.floor(Date.now() / 1000) - (lookbackHours * 3600);
-          console.log(`[RELAY-POLLER] First run, looking back ${lookbackHours} hours`);
-        } else {
-          console.log(`[RELAY-POLLER] Continuing from last poll at ${new Date(since * 1000).toISOString()}`);
-        }
-
-        // Get relay URL from config
-        const relays = env.RELAY_POLLING_RELAY_URL
-          ? [env.RELAY_POLLING_RELAY_URL]
-          : ['wss://relay.divine.video'];
-
-        // Poll for new video events
-        const results = await pollRelayForVideos(env, {
-          since,
-          limit: parseInt(env.RELAY_POLLING_LIMIT || '100', 10),
-          relays
-        });
-
-        // Update last poll timestamp
-        await setLastPollTimestamp(env, Math.floor(Date.now() / 1000), {
-          totalEvents: results.totalEvents,
-          queuedForModeration: results.queuedForModeration,
-          alreadyModerated: results.alreadyModerated,
-          errors: results.errors.length,
-          trigger: 'cron'
-        });
-
-        console.log(`[RELAY-POLLER] Cron complete: ${results.totalEvents} events found, ${results.queuedForModeration} queued for moderation`);
-
+        await processPendingTranscriptReprocess(env);
       } catch (error) {
-        console.error('[RELAY-POLLER] Cron poll failed:', error);
-
-        // Store error for debugging
-        try {
-          await env.MODERATION_KV.put('relay-poller:last-error', JSON.stringify({
-            error: error.message,
-            stack: error.stack,
-            timestamp: new Date().toISOString()
-          }));
-        } catch (kvError) {
-          console.error('[RELAY-POLLER] Failed to store error:', kvError);
-        }
+        console.error('[CRON] Transcript reprocess step failed:', error);
       }
 
       // Sync DM inbox from relay

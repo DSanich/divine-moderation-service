@@ -2623,6 +2623,406 @@ describe('RD auto-escalation cron integration', () => {
   });
 });
 
+describe('Transcript reprocess cron integration', () => {
+  function createTranscriptReprocessEnv({ moderationRow, kvStore, blossomPayloads }) {
+    return {
+      CDN_DOMAIN: 'media.divine.video',
+      BLOSSOM_WEBHOOK_URL: 'https://mock-blossom.test/admin/moderate',
+      BLOSSOM_DB: {
+        prepare(sql) {
+          let bindings = [];
+          return {
+            bind(...args) {
+              bindings = args;
+              return this;
+            },
+            async run() {
+              const manualReviewLocked = sql.includes('reviewed_by IS NULL') && moderationRow.reviewed_by;
+              if (manualReviewLocked) {
+                return { success: true, meta: { changes: 0 } };
+              }
+
+              if (sql.includes('SET transcript_last_checked_at = ?') && !sql.includes('SET action = ?')) {
+                moderationRow.transcript_last_checked_at = bindings[0];
+                return { success: true, meta: { changes: 1 } };
+              }
+
+              if (sql.includes('transcript_pending = 0') && sql.includes('SET action = ?')) {
+                moderationRow.action = bindings[0];
+                moderationRow.scores = bindings[1];
+                moderationRow.categories = bindings[2];
+                moderationRow.transcript_pending = 0;
+                moderationRow.transcript_last_checked_at = bindings[3];
+                moderationRow.transcript_resolved_at = bindings[4];
+                return { success: true, meta: { changes: 1 } };
+              }
+
+              if (sql.includes('transcript_pending = 0')) {
+                moderationRow.transcript_pending = 0;
+                moderationRow.transcript_last_checked_at = bindings[0];
+                moderationRow.transcript_resolved_at = bindings[1];
+                return { success: true, meta: { changes: 1 } };
+              }
+
+              return { success: true, meta: { changes: 1 } };
+            },
+            async first() {
+              return null;
+            },
+            async all() {
+              if (sql.includes('WHERE transcript_pending = 1')) {
+                return { results: moderationRow.transcript_pending === 1 ? [{ ...moderationRow }] : [] };
+              }
+              return { results: [] };
+            }
+          };
+        },
+        async batch() {
+          return [];
+        }
+      },
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list({ prefix } = {}) {
+          const keys = [...kvStore.keys()]
+            .filter((key) => !prefix || key.startsWith(prefix))
+            .map((name) => ({ name }));
+          return { keys, list_complete: true, cursor: null };
+        }
+      },
+      MODERATION_QUEUE: { async send() {} },
+      __blossomPayloads: blossomPayloads
+    };
+  }
+
+  it('keeps transcript pending rows pending while VTT is still 202', async () => {
+    const kvStore = new Map();
+    const blossomPayloads = [];
+    const moderationRow = {
+      sha256: SHA256,
+      action: 'SAFE',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.05, violence: 0.01, ai_generated: 0.01 }),
+      categories: JSON.stringify([]),
+      raw_response: JSON.stringify({}),
+      uploaded_by: null,
+      title: null,
+      published_at: null,
+      content_url: `https://media.divine.video/${SHA256}`,
+      transcript_pending: 1,
+      transcript_last_checked_at: null,
+      transcript_resolved_at: null
+    };
+    const env = createTranscriptReprocessEnv({ moderationRow, kvStore, blossomPayloads });
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.endsWith(`/${SHA256}.vtt`)) {
+        return {
+          ok: true,
+          status: 202,
+          headers: { get(name) { return name === 'Retry-After' ? '30' : null; } },
+          json: async () => ({ status: 'processing' })
+        };
+      }
+      if (url === env.BLOSSOM_WEBHOOK_URL) {
+        blossomPayloads.push(JSON.parse(init.body));
+      }
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    };
+
+    try {
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() },
+        env,
+        { waitUntil: () => {} }
+      );
+
+      expect(moderationRow.transcript_pending).toBe(1);
+      expect(moderationRow.transcript_last_checked_at).toBeTruthy();
+      expect(moderationRow.transcript_resolved_at).toBeNull();
+      expect(blossomPayloads).toHaveLength(0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('resolves pending transcript rows without notifications when action stays unchanged', async () => {
+    const kvStore = new Map();
+    const blossomPayloads = [];
+    const moderationRow = {
+      sha256: SHA256,
+      action: 'SAFE',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.05, violence: 0.01, ai_generated: 0.01 }),
+      categories: JSON.stringify([]),
+      raw_response: JSON.stringify({}),
+      uploaded_by: null,
+      title: null,
+      published_at: null,
+      content_url: `https://media.divine.video/${SHA256}`,
+      transcript_pending: 1,
+      transcript_last_checked_at: null,
+      transcript_resolved_at: null
+    };
+    const env = createTranscriptReprocessEnv({ moderationRow, kvStore, blossomPayloads });
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.endsWith(`/${SHA256}.vtt`)) {
+        return new Response(
+          'WEBVTT\n\n00:00.000 --> 00:01.000\nhello friends and welcome',
+          { status: 200, headers: { 'Content-Type': 'text/vtt' } }
+        );
+      }
+      if (url === env.BLOSSOM_WEBHOOK_URL) {
+        blossomPayloads.push(JSON.parse(init.body));
+      }
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    };
+
+    try {
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() },
+        env,
+        { waitUntil: () => {} }
+      );
+
+      expect(moderationRow.transcript_pending).toBe(0);
+      expect(moderationRow.action).toBe('SAFE');
+      expect(moderationRow.transcript_resolved_at).toBeTruthy();
+      expect(blossomPayloads).toHaveLength(0);
+
+      const classifierData = JSON.parse(kvStore.get(`classifier:${SHA256}`));
+      expect(classifierData.text_scores).toBeTruthy();
+      expect(classifierData.topicProfile).toBeTruthy();
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('notifies downstream when transcript reprocess changes action', async () => {
+    const kvStore = new Map();
+    const blossomPayloads = [];
+    const moderationRow = {
+      sha256: SHA256,
+      action: 'SAFE',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.05, violence: 0.01, ai_generated: 0.01 }),
+      categories: JSON.stringify([]),
+      raw_response: JSON.stringify({}),
+      uploaded_by: null,
+      title: null,
+      published_at: null,
+      content_url: `https://media.divine.video/${SHA256}`,
+      transcript_pending: 1,
+      transcript_last_checked_at: null,
+      transcript_resolved_at: null
+    };
+    const env = createTranscriptReprocessEnv({ moderationRow, kvStore, blossomPayloads });
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.endsWith(`/${SHA256}.vtt`)) {
+        return new Response(
+          'WEBVTT\n\n00:00.000 --> 00:01.000\ni will kill you now',
+          { status: 200, headers: { 'Content-Type': 'text/vtt' } }
+        );
+      }
+      if (url === env.BLOSSOM_WEBHOOK_URL) {
+        blossomPayloads.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    };
+
+    try {
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() },
+        env,
+        { waitUntil: () => {} }
+      );
+
+      expect(moderationRow.transcript_pending).toBe(0);
+      expect(moderationRow.action).toBe('PERMANENT_BAN');
+      expect(blossomPayloads).toHaveLength(1);
+      expect(blossomPayloads[0]).toMatchObject({
+        sha256: SHA256,
+        action: 'PERMANENT_BAN'
+      });
+      expect(kvStore.has(`permanent-ban:${SHA256}`)).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('still reprocesses transcripts when relay polling is disabled', async () => {
+    const kvStore = new Map();
+    const blossomPayloads = [];
+    const moderationRow = {
+      sha256: SHA256,
+      action: 'SAFE',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.05, violence: 0.01, ai_generated: 0.01 }),
+      categories: JSON.stringify([]),
+      raw_response: JSON.stringify({}),
+      uploaded_by: null,
+      title: null,
+      published_at: null,
+      content_url: `https://media.divine.video/${SHA256}`,
+      transcript_pending: 1,
+      transcript_last_checked_at: null,
+      transcript_resolved_at: null
+    };
+    const env = createTranscriptReprocessEnv({ moderationRow, kvStore, blossomPayloads });
+    env.RELAY_POLLING_ENABLED = 'false';
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.endsWith(`/${SHA256}.vtt`)) {
+        return new Response(
+          'WEBVTT\n\n00:00.000 --> 00:01.000\ni will kill you now',
+          { status: 200, headers: { 'Content-Type': 'text/vtt' } }
+        );
+      }
+      if (url === env.BLOSSOM_WEBHOOK_URL) {
+        blossomPayloads.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    };
+
+    try {
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() },
+        env,
+        { waitUntil: () => {} }
+      );
+
+      expect(moderationRow.transcript_pending).toBe(0);
+      expect(moderationRow.action).toBe('PERMANENT_BAN');
+      expect(blossomPayloads).toHaveLength(1);
+      expect(blossomPayloads[0]).toMatchObject({
+        sha256: SHA256,
+        action: 'PERMANENT_BAN'
+      });
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('does not re-notify after a transcript row is already resolved', async () => {
+    const kvStore = new Map();
+    const blossomPayloads = [];
+    const moderationRow = {
+      sha256: SHA256,
+      action: 'SAFE',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.05, violence: 0.01, ai_generated: 0.01 }),
+      categories: JSON.stringify([]),
+      raw_response: JSON.stringify({}),
+      uploaded_by: null,
+      title: null,
+      published_at: null,
+      content_url: `https://media.divine.video/${SHA256}`,
+      transcript_pending: 1,
+      transcript_last_checked_at: null,
+      transcript_resolved_at: null
+    };
+    const env = createTranscriptReprocessEnv({ moderationRow, kvStore, blossomPayloads });
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.endsWith(`/${SHA256}.vtt`)) {
+        return new Response(
+          'WEBVTT\n\n00:00.000 --> 00:01.000\ni will kill you now',
+          { status: 200, headers: { 'Content-Type': 'text/vtt' } }
+        );
+      }
+      if (url === env.BLOSSOM_WEBHOOK_URL) {
+        blossomPayloads.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    };
+
+    try {
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() },
+        env,
+        { waitUntil: () => {} }
+      );
+
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() + 5 * 60 * 1000 },
+        env,
+        { waitUntil: () => {} }
+      );
+
+      expect(moderationRow.transcript_pending).toBe(0);
+      expect(blossomPayloads).toHaveLength(1);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('does not override rows already manually reviewed', async () => {
+    const kvStore = new Map();
+    const blossomPayloads = [];
+    const moderationRow = {
+      sha256: SHA256,
+      action: 'QUARANTINE',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.05, violence: 0.01, ai_generated: 0.01 }),
+      categories: JSON.stringify([]),
+      raw_response: JSON.stringify({}),
+      uploaded_by: null,
+      title: null,
+      published_at: null,
+      content_url: `https://media.divine.video/${SHA256}`,
+      reviewed_by: 'admin',
+      reviewed_at: '2026-04-22T10:00:00.000Z',
+      transcript_pending: 1,
+      transcript_last_checked_at: null,
+      transcript_resolved_at: null
+    };
+    const env = createTranscriptReprocessEnv({ moderationRow, kvStore, blossomPayloads });
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.endsWith(`/${SHA256}.vtt`)) {
+        return new Response(
+          'WEBVTT\n\n00:00.000 --> 00:01.000\ni will kill you now',
+          { status: 200, headers: { 'Content-Type': 'text/vtt' } }
+        );
+      }
+      if (url === env.BLOSSOM_WEBHOOK_URL) {
+        blossomPayloads.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    };
+
+    try {
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() },
+        env,
+        { waitUntil: () => {} }
+      );
+
+      expect(moderationRow.action).toBe('QUARANTINE');
+      expect(moderationRow.transcript_pending).toBe(1);
+      expect(moderationRow.transcript_resolved_at).toBeNull();
+      expect(blossomPayloads).toHaveLength(0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
 describe('POST /admin/api/moderate/:sha256', () => {
   it('rejects unauthenticated requests', async () => {
     const sha = 'f'.repeat(64);
@@ -2693,6 +3093,89 @@ describe('POST /admin/api/moderate/:sha256', () => {
     const body = await response.json();
     expect(body.success).toBe(true);
     expect(body.action).toBe('SAFE');
+  });
+
+  it('clears transcript pending state on manual override upsert', async () => {
+    const sha = 'b'.repeat(64);
+    const kvStore = new Map();
+    const moderationRow = {
+      sha256: sha,
+      action: 'REVIEW',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.35 }),
+      categories: JSON.stringify(['nudity']),
+      moderated_at: '2026-04-22T09:00:00.000Z',
+      reviewed_by: null,
+      reviewed_at: null,
+      transcript_pending: 1,
+      transcript_last_checked_at: null,
+      transcript_resolved_at: null,
+      uploaded_by: null
+    };
+
+    const env = createEnv({
+      ALLOW_DEV_ACCESS: 'true',
+      BLOSSOM_DB: {
+        prepare(sql) {
+          let bindings = [];
+          return {
+            bind(...args) {
+              bindings = args;
+              return this;
+            },
+            async run() {
+              if (sql.includes('ON CONFLICT(sha256) DO UPDATE SET')) {
+                const hasTranscriptReset = sql.includes('transcript_pending = 0')
+                  && sql.includes('transcript_last_checked_at = excluded.reviewed_at')
+                  && sql.includes('transcript_resolved_at = excluded.reviewed_at');
+                if (hasTranscriptReset) {
+                  moderationRow.action = bindings[1];
+                  moderationRow.reviewed_by = bindings[7];
+                  moderationRow.reviewed_at = bindings[8];
+                  moderationRow.transcript_pending = 0;
+                  moderationRow.transcript_last_checked_at = bindings[8];
+                  moderationRow.transcript_resolved_at = bindings[8];
+                }
+              }
+              return { success: true };
+            },
+            async first() {
+              if (sql.includes('FROM moderation_results') && sql.includes('WHERE sha256 = ?')) {
+                return moderationRow;
+              }
+              return null;
+            },
+            async all() {
+              return { results: [] };
+            }
+          };
+        },
+        async batch() {
+          return [];
+        }
+      },
+      MODERATION_KV: {
+        store: kvStore,
+        async get(key) { return kvStore.get(key) ?? null; },
+        async put(key, value) { kvStore.set(key, value); },
+        async delete(key) { kvStore.delete(key); },
+        async list() { return { keys: [], list_complete: true, cursor: null }; }
+      }
+    });
+
+    const response = await worker.fetch(
+      new Request(`https://moderation.admin.divine.video/admin/api/moderate/${sha}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'SAFE', reason: 'manual clear' })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(moderationRow.transcript_pending).toBe(0);
+    expect(moderationRow.transcript_last_checked_at).toBeTruthy();
+    expect(moderationRow.transcript_resolved_at).toBe(moderationRow.reviewed_at);
   });
 
   it('records previousAction on override', async () => {
