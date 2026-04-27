@@ -105,13 +105,13 @@ async function queryProfiles(pubkeys, env) {
     }, RELAY_TIMEOUT_MS);
 
     try {
-      const headers = {};
-      if (env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
-        headers['CF-Access-Client-Id'] = env.CF_ACCESS_CLIENT_ID;
-        headers['CF-Access-Client-Secret'] = env.CF_ACCESS_CLIENT_SECRET;
-      }
-
-      ws = new WebSocket(DIVINE_RELAY, { headers });
+      // Cloudflare Workers' WebSocket constructor only accepts a subprotocol
+      // string/array as the second argument; passing an options object fails
+      // with "The protocol header token is invalid" and silently breaks
+      // profile resolution. relay.divine.video is a public Nostr relay that
+      // does not require CF Access, so we don't need to forward those
+      // headers here. Same fix as dm-reader.mjs and relay-client.mjs.
+      ws = new WebSocket(DIVINE_RELAY);
 
       ws.addEventListener('open', () => {
         const filter = { kinds: [0], authors: pubkeys, limit: pubkeys.length };

@@ -507,10 +507,24 @@
       return hex.slice(0, 8) + '...' + hex.slice(-8);
     }
 
+    // SQLite's CURRENT_TIMESTAMP default writes "YYYY-MM-DD HH:MM:SS" in UTC
+    // with no timezone marker. Chrome parses that ambiguous format as local
+    // time, which flips recent rows into the future and makes relativeTime
+    // clamp to "just now" forever. Treat any SQLite-shaped string as UTC.
+    function parseTimestamp(ts) {
+      if (!ts) return NaN;
+      if (typeof ts === 'number') return ts * 1000;
+      if (typeof ts !== 'string') return new Date(ts).getTime();
+      // Already has explicit timezone (Z, +00:00, -05:00, etc.) — trust it.
+      if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(ts)) return new Date(ts).getTime();
+      // SQLite style: "YYYY-MM-DD HH:MM:SS" — force UTC interpretation.
+      return new Date(ts.replace(' ', 'T') + 'Z').getTime();
+    }
+
     function relativeTime(ts) {
-      if (!ts) return '';
+      const date = parseTimestamp(ts);
+      if (!Number.isFinite(date)) return '';
       const now = Date.now();
-      const date = typeof ts === 'number' ? ts * 1000 : new Date(ts).getTime();
       const diff = Math.max(0, now - date);
       const seconds = Math.floor(diff / 1000);
       if (seconds < 60) return 'just now';

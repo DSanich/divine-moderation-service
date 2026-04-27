@@ -5,7 +5,8 @@
 // ABOUTME: Verifies D1-backed message logging, dedup, and conversation queries
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { computeConversationId, logDm, getConversations, getConversation, getConversationByPubkey } from './dm-store.mjs';
+import { env } from 'cloudflare:test';
+import { computeConversationId, logDm, getConversations, getConversation, getConversationByPubkey, initDmLogTable } from './dm-store.mjs';
 
 /**
  * Create a mock D1 database that tracks calls and stores data in-memory
@@ -237,6 +238,47 @@ describe('DM Store - getConversations', () => {
     const conversations = await getConversations(emptyDb);
     expect(conversations).toEqual([]);
   });
+
+  it('augments rows with participant_pubkey, latest_message, message_type when moderatorPubkey is provided', async () => {
+    const moderator = '8'.repeat(64);
+    const userA = 'a'.repeat(64);
+    const userB = 'b'.repeat(64);
+
+    // Incoming: user -> moderator. participant should be the user.
+    await logDm(mockDb, {
+      conversationId: 'conv_in',
+      direction: 'incoming',
+      senderPubkey: userA,
+      recipientPubkey: moderator,
+      messageType: 'conversation_report',
+      content: 'Report from user A'
+    });
+
+    // Outgoing: moderator -> user. participant should still be the user.
+    await logDm(mockDb, {
+      conversationId: 'conv_out',
+      direction: 'outgoing',
+      senderPubkey: moderator,
+      recipientPubkey: userB,
+      messageType: 'moderator_reply',
+      content: 'Reply to user B'
+    });
+
+    const conversations = await getConversations(mockDb, { moderatorPubkey: moderator });
+
+    expect(conversations).toHaveLength(2);
+    for (const conv of conversations) {
+      // New fields the admin UI expects
+      expect(conv).toHaveProperty('participant_pubkey');
+      expect(conv).toHaveProperty('latest_message');
+      expect(conv).toHaveProperty('message_type');
+      // Participant must never be the moderator
+      expect(conv.participant_pubkey).not.toBe(moderator);
+      // Aliases must mirror the existing columns
+      expect(conv.latest_message).toBe(conv.last_message);
+      expect(conv.message_type).toBe(conv.last_message_type);
+    }
+  });
 });
 
 describe('DM Store - getConversation', () => {
@@ -286,6 +328,140 @@ describe('DM Store - getConversation', () => {
 
     const messages = await getConversation(emptyDb, 'nonexistent');
     expect(messages).toEqual([]);
+  });
+});
+
+// Regression suite against the real D1 (SQLite) runtime. The mocked
+// describe-blocks above fabricate getConversations() results, which would
+// not have caught the implicit-aggregate collapse bug: the outer SELECT
+// mixed MAX()/COUNT() with bare columns and no GROUP BY, so SQLite
+// collapsed the whole filtered set into a single row. Any inbox with N>1
+// conversations rendered as exactly one sidebar entry.
+describe('DM Store - getConversations against real D1', () => {
+  const db = env.BLOSSOM_DB;
+
+  const MODERATOR = 'f'.repeat(64);
+  const CREATOR_A = ('a'.repeat(63) + '1').slice(0, 64);
+  const CREATOR_B = ('a'.repeat(63) + '2').slice(0, 64);
+  const CREATOR_C = ('a'.repeat(63) + '3').slice(0, 64);
+
+  beforeEach(async () => {
+    await initDmLogTable(db);
+    await db.prepare('DELETE FROM dm_log').run();
+  });
+
+  it('returns one row per conversation, not one aggregated row across the inbox', async () => {
+    // 3 rows across 2 conversations ⇒ 2 conversations returned.
+    const convA = computeConversationId(MODERATOR, CREATOR_A);
+    const convB = computeConversationId(MODERATOR, CREATOR_B);
+
+    await logDm(db, {
+      conversationId: convA,
+      direction: 'incoming',
+      senderPubkey: CREATOR_A,
+      recipientPubkey: MODERATOR,
+      content: 'creator A says hi',
+      nostrEventId: 'evt-a-1',
+    });
+    await logDm(db, {
+      conversationId: convA,
+      direction: 'outgoing',
+      senderPubkey: MODERATOR,
+      recipientPubkey: CREATOR_A,
+      messageType: 'moderator_reply',
+      content: 'moderator replies to A',
+      nostrEventId: 'evt-a-2',
+    });
+    await logDm(db, {
+      conversationId: convB,
+      direction: 'incoming',
+      senderPubkey: CREATOR_B,
+      recipientPubkey: MODERATOR,
+      content: 'creator B says hi',
+      nostrEventId: 'evt-b-1',
+    });
+
+    const conversations = await getConversations(db, { limit: 20, offset: 0 });
+
+    expect(conversations).toHaveLength(2);
+
+    const ids = new Set(conversations.map(c => c.conversation_id));
+    expect(ids).toEqual(new Set([convA, convB]));
+
+    // Per-conversation message_count must be independent (2 for A, 1 for B).
+    const counts = Object.fromEntries(
+      conversations.map(c => [c.conversation_id, c.message_count]),
+    );
+    expect(counts[convA]).toBe(2);
+    expect(counts[convB]).toBe(1);
+  });
+
+  it('last_message for each conversation reflects its own most recent row', async () => {
+    const convA = computeConversationId(MODERATOR, CREATOR_A);
+    const convB = computeConversationId(MODERATOR, CREATOR_B);
+
+    await logDm(db, {
+      conversationId: convA,
+      direction: 'incoming',
+      senderPubkey: CREATOR_A,
+      recipientPubkey: MODERATOR,
+      content: 'first A message',
+      nostrEventId: 'evt-a-1',
+    });
+    await logDm(db, {
+      conversationId: convB,
+      direction: 'incoming',
+      senderPubkey: CREATOR_B,
+      recipientPubkey: MODERATOR,
+      content: 'only B message',
+      nostrEventId: 'evt-b-1',
+    });
+    await logDm(db, {
+      conversationId: convA,
+      direction: 'outgoing',
+      senderPubkey: MODERATOR,
+      recipientPubkey: CREATOR_A,
+      messageType: 'moderator_reply',
+      content: 'latest A message',
+      nostrEventId: 'evt-a-2',
+    });
+
+    const conversations = await getConversations(db, { limit: 20, offset: 0 });
+
+    expect(conversations).toHaveLength(2);
+    const byConv = Object.fromEntries(conversations.map(c => [c.conversation_id, c]));
+    expect(byConv[convA].last_message).toBe('latest A message');
+    expect(byConv[convB].last_message).toBe('only B message');
+  });
+
+  it('respects limit and offset', async () => {
+    for (const [creator, eventId, content] of [
+      [CREATOR_A, 'evt-a', 'from A'],
+      [CREATOR_B, 'evt-b', 'from B'],
+      [CREATOR_C, 'evt-c', 'from C'],
+    ]) {
+      await logDm(db, {
+        conversationId: computeConversationId(MODERATOR, creator),
+        direction: 'incoming',
+        senderPubkey: creator,
+        recipientPubkey: MODERATOR,
+        content,
+        nostrEventId: eventId,
+      });
+      // Stagger so created_at orders deterministically.
+      await new Promise(r => setTimeout(r, 15));
+    }
+
+    const page1 = await getConversations(db, { limit: 2, offset: 0 });
+    expect(page1).toHaveLength(2);
+
+    const page2 = await getConversations(db, { limit: 2, offset: 2 });
+    expect(page2).toHaveLength(1);
+  });
+
+  it('returns an empty array when dm_log is empty', async () => {
+    const conversations = await getConversations(db, { limit: 20, offset: 0 });
+    expect(conversations).toEqual([]);
   });
 });
 

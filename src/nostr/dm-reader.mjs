@@ -89,8 +89,45 @@ export async function syncInbox(env) {
       const content = rumor.content;
       const createdAt = rumor.created_at;
 
-      // Compute conversation ID
-      const conversationId = computeConversationId(moderatorPubkey, senderPubkey);
+      // NIP-17 gift wraps reach the moderator's inbox in two shapes:
+      //   1. Inbound: someone writes to moderator. rumor.pubkey = them,
+      //      rumor's ['p'] tag = moderator.
+      //   2. Outbound self-copy: moderator writes to someone else, client
+      //      also wraps a copy addressed to moderator so sent messages
+      //      aren't lost. rumor.pubkey = moderator, rumor's ['p'] tag =
+      //      real recipient.
+      // Without handling (2), outgoing replies get stored with
+      // sender = recipient = moderator, which produces a separate
+      // conversation_id (moderator+moderator) and breaks threading.
+      const isOutgoing = senderPubkey === moderatorPubkey;
+      let counterpartyPubkey = null;
+      if (isOutgoing) {
+        // Find the real recipient in rumor tags: first 'p' tag whose value
+        // is not the moderator itself. A valid NIP-17 outgoing rumor must
+        // have one; if it doesn't, the gift wrap is malformed and we can't
+        // thread it correctly. Skip rather than store as a self-conversation
+        // that would later disappear from the admin UI.
+        const pTags = Array.isArray(rumor.tags)
+          ? rumor.tags.filter((t) => Array.isArray(t) && t[0] === 'p' && t[1])
+          : [];
+        const other = pTags.find((t) => t[1] !== moderatorPubkey);
+        if (!other) {
+          console.warn(
+            `[DM-READER] Outgoing rumor has no non-moderator 'p' tag; skipping event ${giftWrap.id}. rumor.tags=${JSON.stringify(rumor.tags || [])}`
+          );
+          errors++;
+          continue;
+        }
+        counterpartyPubkey = other[1];
+      } else {
+        counterpartyPubkey = senderPubkey;
+      }
+
+      const recipientPubkey = isOutgoing ? counterpartyPubkey : moderatorPubkey;
+      const direction = isOutgoing ? 'outgoing' : 'incoming';
+      // Compute conversation ID against the non-moderator side so inbound
+      // and outbound messages in the same thread share a conversation_id.
+      const conversationId = computeConversationId(moderatorPubkey, counterpartyPubkey);
 
       // Check if this is a structured conversation_report
       let relatedSha256 = null;
@@ -99,8 +136,10 @@ export async function syncInbox(env) {
         if (parsed && parsed.type === 'conversation_report' && parsed.sha256) {
           relatedSha256 = parsed.sha256;
 
-          // Also create entry in user_reports table if available
-          if (env.BLOSSOM_DB) {
+          // Also create entry in user_reports table if available.
+          // Skip for outgoing self-copies: the reporter is the counterparty,
+          // not the moderator (who is echoing their own sent message).
+          if (env.BLOSSOM_DB && !isOutgoing) {
             try {
               await env.BLOSSOM_DB.prepare(`
                 INSERT OR IGNORE INTO user_reports
@@ -123,14 +162,17 @@ export async function syncInbox(env) {
       }
 
       // Log to dm_log (dedup by nostr_event_id)
+      const messageType = relatedSha256
+        ? 'conversation_report'
+        : (isOutgoing ? 'moderator_reply' : 'creator_reply');
       const result = await logDm(env.BLOSSOM_DB, {
         conversationId,
         nostrEventId: giftWrap.id,
         senderPubkey,
-        recipientPubkey: moderatorPubkey,
+        recipientPubkey,
         content,
-        direction: 'incoming',
-        messageType: relatedSha256 ? 'conversation_report' : 'creator_reply',
+        direction,
+        messageType,
         sha256: relatedSha256
       });
 
@@ -175,13 +217,14 @@ function fetchGiftWraps(relayUrl, filter, env) {
     }, 15000); // 15 second timeout for potentially many events
 
     try {
-      const headers = {};
-      if (env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
-        headers['CF-Access-Client-Id'] = env.CF_ACCESS_CLIENT_ID;
-        headers['CF-Access-Client-Secret'] = env.CF_ACCESS_CLIENT_SECRET;
-      }
-
-      ws = new WebSocket(relayUrl, { headers });
+      // Cloudflare Workers' WebSocket constructor only accepts a subprotocol
+      // string/array as the second argument; passing an options object fails
+      // with "The protocol header token is invalid" and silently breaks the
+      // cron. relay.divine.video is a public Nostr relay that does not require
+      // CF Access, so we don't need to forward those headers here. If we ever
+      // point at a CF-Access-protected relay, switch to the fetch({ Upgrade })
+      // pattern and use the returned response.webSocket.
+      ws = new WebSocket(relayUrl);
       const subscriptionId = 'dm-sync-' + Math.random().toString(36).substring(7);
 
       ws.addEventListener('open', () => {

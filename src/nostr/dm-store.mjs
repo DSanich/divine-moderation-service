@@ -44,25 +44,48 @@ export async function logDm(db, { conversationId, sha256, direction, senderPubke
   return { id: result.meta.last_row_id };
 }
 
-export async function getConversations(db, { limit = 20, offset = 0 } = {}) {
+export async function getConversations(db, { limit = 20, offset = 0, moderatorPubkey } = {}) {
+  // An earlier revision of this query put MAX()/COUNT() in the outer SELECT
+  // without a GROUP BY, which SQLite collapses into a single aggregated row
+  // across the whole filtered set. That made every multi-conversation inbox
+  // render as exactly one sidebar item regardless of how many conversations
+  // actually existed. The subquery already picks the latest id per
+  // conversation, so we select those rows directly and compute
+  // message_count per conversation via a correlated subquery (bounded by
+  // LIMIT).
   const rows = await db.prepare(`
     SELECT
-      conversation_id,
-      MAX(created_at) as last_message_at,
-      COUNT(*) as message_count,
-      sender_pubkey,
-      recipient_pubkey,
-      content as last_message,
-      sha256 as last_sha256,
-      message_type as last_message_type
-    FROM dm_log
-    WHERE id IN (
+      dl.conversation_id,
+      dl.created_at as last_message_at,
+      dl.sender_pubkey,
+      dl.recipient_pubkey,
+      dl.direction as last_direction,
+      dl.content as last_message,
+      dl.sha256 as last_sha256,
+      dl.message_type as last_message_type,
+      (SELECT COUNT(*) FROM dm_log WHERE conversation_id = dl.conversation_id) as message_count
+    FROM dm_log dl
+    WHERE dl.id IN (
       SELECT MAX(id) FROM dm_log GROUP BY conversation_id
     )
     ORDER BY last_message_at DESC
     LIMIT ? OFFSET ?
   `).bind(limit, offset).all();
-  return rows.results || [];
+  const results = rows.results || [];
+
+  // The admin messages UI expects participant_pubkey (the other side of the
+  // conversation, not the moderator) plus latest_message / message_type
+  // aliases. We add those without removing the original columns so existing
+  // callers keep working.
+  if (!moderatorPubkey) return results;
+
+  return results.map((row) => ({
+    ...row,
+    participant_pubkey:
+      row.sender_pubkey === moderatorPubkey ? row.recipient_pubkey : row.sender_pubkey,
+    latest_message: row.last_message,
+    message_type: row.last_message_type,
+  }));
 }
 
 export async function getConversation(db, conversationId) {

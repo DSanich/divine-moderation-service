@@ -2950,7 +2950,13 @@ async function runMigration() {
       const limit = parseInt(url.searchParams.get('limit') || '20');
       const offset = parseInt(url.searchParams.get('offset') || '0');
       const { getConversations } = await import('./nostr/dm-store.mjs');
-      const conversations = await getConversations(env.BLOSSOM_DB, { limit, offset });
+      const { getModeratorPubkey } = await import('./nostr/dm-reader.mjs');
+      // Pass moderatorPubkey so rows are augmented with participant_pubkey
+      // (the non-moderator side) + latest_message/message_type aliases that
+      // the admin messages UI expects. Without this, every conversation
+      // renders as "(unknown)" because the raw column names don't match.
+      const moderatorPubkey = env.NOSTR_PRIVATE_KEY ? getModeratorPubkey(env) : undefined;
+      const conversations = await getConversations(env.BLOSSOM_DB, { limit, offset, moderatorPubkey });
       return new Response(JSON.stringify(conversations), { headers: { 'Content-Type': 'application/json' } });
     }
 
