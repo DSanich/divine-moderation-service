@@ -1,60 +1,65 @@
 #!/usr/bin/env node
 // Sign a NIP-98 Authorization header for testing creator-delete endpoints.
-// Usage (CLI): node scripts/sign-nip98.mjs --nsec <hex> --url <url> --method <POST|GET>
-// Usage (import): import { signNip98Header } from './sign-nip98.mjs'
+// Usage: node scripts/sign-nip98.mjs --nsec <hex> --url <url> --method <POST|GET>
+// Output: the full "Nostr <base64>" header value, ready to paste into curl -H "Authorization: ..."
 
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure';
 import { hexToBytes } from '@noble/hashes/utils';
 
-/**
- * Sign a NIP-98 Authorization header. Returns the full "Nostr <base64>" header value.
- * Importable from other scripts; see CLI entry point below for standalone use.
- */
-export function signNip98Header(sk, url, method) {
+function getArg(argv, name) {
+  const idx = argv.indexOf(`--${name}`);
+  return idx >= 0 && argv[idx + 1] ? argv[idx + 1] : null;
+}
+
+export function signNip98Header(sk, url, method = 'POST') {
   const event = finalizeEvent({
     kind: 27235,
     created_at: Math.floor(Date.now() / 1000),
     tags: [['u', url], ['method', method.toUpperCase()]],
     content: ''
   }, sk);
+
   return `Nostr ${Buffer.from(JSON.stringify(event)).toString('base64')}`;
 }
 
-// CLI entrypoint — skipped when imported by tests.
-const isMain = typeof process !== 'undefined' && process.argv && import.meta.url === `file://${process.argv[1]}`;
-if (isMain) {
-  const args = process.argv.slice(2);
-  const getArg = (name) => {
-    const idx = args.indexOf(`--${name}`);
-    return idx >= 0 && args[idx + 1] ? args[idx + 1] : null;
-  };
-
-  const nsecHex = getArg('nsec');
-  const sk = nsecHex ? hexToBytes(nsecHex) : generateSecretKey();
-  if (!nsecHex) {
-    console.error(`No --nsec provided. Generated ephemeral key. Pubkey: ${getPublicKey(sk)}`);
+export function runCli(argv = process.argv.slice(2), processLike = process) {
+  let sk;
+  const nsecHex = getArg(argv, 'nsec');
+  if (nsecHex) {
+    sk = hexToBytes(nsecHex);
+  } else {
+    sk = generateSecretKey();
+    processLike.stderr.write(`No --nsec provided. Generated ephemeral key. Pubkey: ${getPublicKey(sk)}\n`);
   }
 
-  const url = getArg('url');
-  const method = (getArg('method') || 'POST').toUpperCase();
+  const url = getArg(argv, 'url');
+  const method = (getArg(argv, 'method') || 'POST').toUpperCase();
 
   if (!url) {
-    console.error('Usage: node scripts/sign-nip98.mjs --nsec <hex> --url <url> [--method POST]');
-    process.exit(1);
+    processLike.stderr.write('Usage: node scripts/sign-nip98.mjs --nsec <hex> --url <url> [--method POST]\n');
+    return 1;
   }
 
   const header = signNip98Header(sk, url, method);
-
-  // Decode the event from the header to get the event ID for logging
+  processLike.stdout.write(`${header}\n`);
+  processLike.stderr.write(`Pubkey: ${getPublicKey(sk)}\n`);
+  processLike.stderr.write(`URL: ${url}\n`);
+  processLike.stderr.write(`Method: ${method}\n`);
   const eventJson = Buffer.from(header.slice('Nostr '.length), 'base64').toString('utf8');
   const event = JSON.parse(eventJson);
+  processLike.stderr.write(`Event ID: ${event.id}\n`);
+  return 0;
+}
 
-  // Print just the header value (for use in curl -H "Authorization: <output>")
-  console.log(header);
+const isCliEntrypoint = (() => {
+  try {
+    return import.meta.url === new URL(process.argv[1], 'file:').href;
+  } catch {
+    return false;
+  }
+})();
 
-  // Metadata to stderr so it doesn't pollute the header output
-  console.error(`Pubkey: ${getPublicKey(sk)}`);
-  console.error(`URL: ${url}`);
-  console.error(`Method: ${method}`);
-  console.error(`Event ID: ${event.id}`);
+if (isCliEntrypoint) {
+  const code = runCli();
+  process.exit(code);
 }

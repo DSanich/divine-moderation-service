@@ -13,6 +13,34 @@ const DEFAULT_D1_DATABASE = 'blossom-webhook-events';
 const DEFAULT_CRON_WAIT_SECONDS = 180;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
+function createAbortError() {
+  const err = new Error('aborted');
+  err.name = 'AbortError';
+  return err;
+}
+
+export function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(createAbortError());
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.('abort', onAbort);
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener?.('abort', onAbort);
+      reject(createAbortError());
+    };
+
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+  });
+}
+
 function getFlag(argv, name) {
   const prefix = `--${name}=`;
   for (const a of argv) {
@@ -270,10 +298,12 @@ export async function waitForIndexing(eventId, cfg, opts = {}) {
   const fetchImpl = opts.fetchImpl || fetch;
   const timeoutMs = opts.timeoutMs ?? 30000;
   const pollIntervalMs = opts.pollIntervalMs ?? 1000;
+  const signal = opts.signal;
   const deadline = Date.now() + timeoutMs;
   const url = `${cfg.funnelcakeApi}/api/event/${eventId}`;
   let polls = 0;
   while (Date.now() < deadline) {
+    if (signal?.aborted) throw createAbortError();
     polls++;
     const res = await fetchImpl(url, { method: 'GET' });
     if (res.ok) return { polls };
@@ -281,7 +311,7 @@ export async function waitForIndexing(eventId, cfg, opts = {}) {
       const text = await res.text();
       throw new Error(`Funnelcake /api/event/${eventId} HTTP ${res.status}: ${text}`);
     }
-    await new Promise(r => setTimeout(r, pollIntervalMs));
+    await delay(pollIntervalMs, signal);
   }
   throw new Error(`timeout after ${timeoutMs}ms: event ${eventId} not indexed by Funnelcake`);
 }
@@ -296,10 +326,19 @@ export async function waitForIndexing(eventId, cfg, opts = {}) {
  */
 export async function publishEvent(event, relayUrl, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 10000;
+  const signal = opts.signal;
   const WsCtor = opts.WebSocket || (await import('ws')).WebSocket;
   return await new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(createAbortError());
+      return;
+    }
+
     const ws = new WsCtor(relayUrl);
     let settled = false;
+    const onAbort = () => {
+      done(() => reject(createAbortError()));
+    };
 
     // Centralize socket teardown and promise settlement so every exit
     // path (OK=true, OK=false, error, close, timeout) releases the
@@ -308,6 +347,7 @@ export async function publishEvent(event, relayUrl, opts = {}) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener?.('abort', onAbort);
       try { ws.close(); } catch {}
       fn();
     };
@@ -315,6 +355,7 @@ export async function publishEvent(event, relayUrl, opts = {}) {
     const timer = setTimeout(() => {
       done(() => reject(new Error(`publish timeout after ${timeoutMs}ms: ${event.id}`)));
     }, timeoutMs);
+    signal?.addEventListener?.('abort', onAbort, { once: true });
 
     ws.on('open', () => {
       ws.send(JSON.stringify(['EVENT', event]));
@@ -372,10 +413,12 @@ export async function pollStatus(sk, kind5Id, cfg, opts = {}) {
   const fetchImpl = opts.fetchImpl || fetch;
   const timeoutMs = opts.timeoutMs ?? 60000;
   const pollIntervalMs = opts.pollIntervalMs ?? 2000;
+  const signal = opts.signal;
   const url = `${cfg.modServiceBase}/api/creator-delete/status/${kind5Id}`;
   const deadline = Date.now() + timeoutMs;
   let polls = 0;
   while (Date.now() < deadline) {
+    if (signal?.aborted) throw createAbortError();
     polls++;
     const res = await fetchImpl(url, {
       method: 'GET',
@@ -389,7 +432,7 @@ export async function pollStatus(sk, kind5Id, cfg, opts = {}) {
     if (body.status === 'success' || (typeof body.status === 'string' && body.status.startsWith('failed:'))) {
       return { ...body, polls };
     }
-    await new Promise(r => setTimeout(r, pollIntervalMs));
+    await delay(pollIntervalMs, signal);
   }
   throw new Error(`timeout after ${timeoutMs}ms: kind5 ${kind5Id} did not reach terminal status. Common cause: CREATOR_DELETE_PIPELINE_ENABLED may be unset on the prod worker.`);
 }
@@ -445,13 +488,130 @@ function nowIso() { return new Date().toISOString(); }
 
 function emit(obj) { console.log(JSON.stringify(obj)); }
 
+export function createShutdownCoordinator({
+  processLike = process,
+  forceExitCode = 130,
+  log = console.error,
+  forceExit = (code) => processLike.exit(code),
+  runCleanup,
+  abortController,
+}) {
+  let shuttingDown = false;
+  let forceExitTriggered = false;
+  let cleanupPromise = null;
+  let cleanupError = null;
+
+  async function ensureCleanup(signalName) {
+    if (!cleanupPromise) {
+      cleanupPromise = (async () => {
+        try {
+          await runCleanup(signalName);
+        } catch (error) {
+          cleanupError = error;
+        }
+      })();
+    }
+    await cleanupPromise;
+  }
+
+  const onSignal = (signalName) => {
+    if (!shuttingDown) {
+      shuttingDown = true;
+      log(`[shutdown] ${signalName} received, starting graceful cleanup...`);
+      abortController?.abort();
+      void ensureCleanup(signalName);
+      return;
+    }
+
+    if (!forceExitTriggered) {
+      forceExitTriggered = true;
+      log(`[shutdown] second interrupt (${signalName}); forcing immediate exit`);
+      forceExit(forceExitCode);
+    }
+  };
+
+  for (const sig of ['SIGINT', 'SIGTERM']) {
+    processLike.on(sig, onSignal);
+  }
+
+  return {
+    getState() {
+      return {
+        shuttingDown,
+        forceExitTriggered,
+        cleanupInProgress: Boolean(cleanupPromise),
+        cleanupError,
+      };
+    },
+    async waitForCleanupIfNeeded() {
+      if (cleanupPromise) await cleanupPromise;
+    },
+    uninstall() {
+      for (const sig of ['SIGINT', 'SIGTERM']) {
+        processLike.off(sig, onSignal);
+      }
+    },
+  };
+}
+
+async function cleanupScenarioArtifacts(state, cfg, deps) {
+  if (!state) return null;
+  if (state.cleanupPromise) return state.cleanupPromise;
+
+  state.cleanupPromise = (async () => {
+    if (cfg.skipCleanup) {
+      state.cleanup = { skipped: true };
+      emit({ ts: nowIso(), scenario: state.scenario, step: 'cleanup', ok: true, skipped: true });
+      return state.cleanup;
+    }
+
+    const cleanup = { blossom: null, d1: null };
+    try {
+      cleanup.blossom = await (deps.cleanupBlossomVanish || cleanupBlossomVanish)(state.pubkey, cfg, deps.fetchImpl);
+      emit({ ts: nowIso(), scenario: state.scenario, step: 'cleanup_blossom', ok: true, ...cleanup.blossom });
+    } catch (err) {
+      cleanup.blossom = { ok: false, error: err.message };
+      emit({ ts: nowIso(), scenario: state.scenario, step: 'cleanup_blossom', ok: false, error: err.message });
+    }
+
+    if (state.kind5Id && state.target) {
+      try {
+        await (deps.cleanupD1Row || cleanupD1Row)(state.kind5Id, state.target, cfg, deps.runner);
+        cleanup.d1 = { ok: true };
+        emit({ ts: nowIso(), scenario: state.scenario, step: 'cleanup_d1', ok: true });
+      } catch (err) {
+        cleanup.d1 = { ok: false, error: err.message };
+        emit({ ts: nowIso(), scenario: state.scenario, step: 'cleanup_d1', ok: false, error: err.message });
+      }
+    } else {
+      cleanup.d1 = { ok: true, skipped: 'no kind5/target' };
+    }
+
+    state.cleanup = cleanup;
+    return cleanup;
+  })();
+
+  return state.cleanupPromise;
+}
+
 async function runScenario(name, cfg, deps, opts) {
+  const signal = opts.signal;
   const { sk, pubkey } = (deps.generateTestKey || generateTestKey)();
   const blob = (deps.generateSyntheticBlob || generateSyntheticBlob)();
   const started = Date.now();
-  let kind5Id = null;
-  let target = null;
-  let assertResult = null;
+  const state = {
+    scenario: name,
+    pubkey,
+    sha256: blob.sha256,
+    kind5Id: null,
+    target: null,
+    cleanup: null,
+    cleanupPromise: null,
+    outcome: 'pass',
+    failureReason: null,
+    totalDurationMs: 0,
+  };
+  opts.activeStateRef && (opts.activeStateRef.current = state);
   let outcome = 'pass';
   let failureReason = null;
   // Hoisted so it is accessible in cleanup and return after the try block.
@@ -469,22 +629,25 @@ async function runScenario(name, cfg, deps, opts) {
 
     // 2. Publish kind 34236
     const event = buildKind34236Event(sk, blobSha256, cfg);
-    target = await (deps.publishEvent || publishEvent)(event, cfg.stagingRelay);
-    emit({ ts: nowIso(), scenario: name, step: 'publish_kind34236', ok: true, event_id: target });
+    state.target = await (deps.publishEvent || publishEvent)(event, cfg.stagingRelay, { signal });
+    emit({ ts: nowIso(), scenario: name, step: 'publish_kind34236', ok: true, event_id: state.target });
 
     // 3. Wait for Funnelcake to index it
-    const indexing = await (deps.waitForIndexing || waitForIndexing)(target, cfg, { fetchImpl: deps.fetchImpl });
+    const indexing = await (deps.waitForIndexing || waitForIndexing)(state.target, cfg, {
+      fetchImpl: deps.fetchImpl,
+      signal,
+    });
     emit({ ts: nowIso(), scenario: name, step: 'wait_indexing', ok: true, polls: indexing.polls });
 
     // 4. Publish kind 5
     const kind5Event = finalizeEvent({
       kind: 5,
       created_at: Math.floor(Date.now() / 1000),
-      tags: [['e', target], ['k', '34236'], ['client', 'diVine']],
+      tags: [['e', state.target], ['k', '34236'], ['client', 'diVine']],
       content: 'e2e test delete'
     }, sk);
-    kind5Id = await (deps.publishEvent || publishEvent)(kind5Event, cfg.stagingRelay);
-    emit({ ts: nowIso(), scenario: name, step: 'publish_kind5', ok: true, kind5_id: kind5Id });
+    state.kind5Id = await (deps.publishEvent || publishEvent)(kind5Event, cfg.stagingRelay, { signal });
+    emit({ ts: nowIso(), scenario: name, step: 'publish_kind5', ok: true, kind5_id: state.kind5Id });
 
     // 5. Sync (sync scenario only)
     if (opts.callSync) {
@@ -496,16 +659,20 @@ async function runScenario(name, cfg, deps, opts) {
     const pollOpts = {
       fetchImpl: deps.fetchImpl,
       timeoutMs: opts.statusTimeoutMs,
-      pollIntervalMs: opts.statusPollIntervalMs
+      pollIntervalMs: opts.statusPollIntervalMs,
+      signal,
     };
-    const status = await (deps.pollStatus || pollStatus)(sk, kind5Id, cfg, pollOpts);
+    const status = await (deps.pollStatus || pollStatus)(sk, state.kind5Id, cfg, pollOpts);
     emit({ ts: nowIso(), scenario: name, step: 'poll_status', ok: status.status === 'success', terminal_status: status.status, polls: status.polls });
     if (status.status !== 'success') {
       throw new Error(`pipeline failed: ${status.status}`);
     }
 
     // 7. Assert D1 + Blossom state
-    assertResult = await (deps.assertD1AndBlossomState || assertD1AndBlossomState)(kind5Id, blobSha256, cfg, { runner: deps.runner, fetchImpl: deps.fetchImpl });
+    const assertResult = await (deps.assertD1AndBlossomState || assertD1AndBlossomState)(state.kind5Id, blobSha256, cfg, {
+      runner: deps.runner,
+      fetchImpl: deps.fetchImpl,
+    });
     emit({ ts: nowIso(), scenario: name, step: 'assert_d1_and_blossom', ok: true, d1_status: assertResult.d1Status, byte_probe: assertResult.byteProbe.kind });
   } catch (err) {
     outcome = 'fail';
@@ -513,59 +680,50 @@ async function runScenario(name, cfg, deps, opts) {
     emit({ ts: nowIso(), scenario: name, step: 'failure', ok: false, error: err.message });
   }
 
-  // 8. Cleanup (always, unless --skip-cleanup)
-  let cleanup = null;
-  if (cfg.skipCleanup) {
-    cleanup = { skipped: true };
-    emit({ ts: nowIso(), scenario: name, step: 'cleanup', ok: true, skipped: true });
-  } else {
-    cleanup = { blossom: null, d1: null };
-    try {
-      cleanup.blossom = await (deps.cleanupBlossomVanish || cleanupBlossomVanish)(pubkey, cfg, deps.fetchImpl);
-      emit({ ts: nowIso(), scenario: name, step: 'cleanup_blossom', ok: true, ...cleanup.blossom });
-    } catch (err) {
-      cleanup.blossom = { ok: false, error: err.message };
-      emit({ ts: nowIso(), scenario: name, step: 'cleanup_blossom', ok: false, error: err.message });
-    }
-    if (kind5Id && target) {
-      try {
-        await (deps.cleanupD1Row || cleanupD1Row)(kind5Id, target, cfg, deps.runner);
-        cleanup.d1 = { ok: true };
-        emit({ ts: nowIso(), scenario: name, step: 'cleanup_d1', ok: true });
-      } catch (err) {
-        cleanup.d1 = { ok: false, error: err.message };
-        emit({ ts: nowIso(), scenario: name, step: 'cleanup_d1', ok: false, error: err.message });
-      }
-    } else {
-      cleanup.d1 = { ok: true, skipped: 'no kind5/target' };
-    }
-  }
+  state.outcome = outcome;
+  state.failureReason = failureReason;
+  state.sha256 = blobSha256;
+  await cleanupScenarioArtifacts(state, cfg, deps);
+  if (signal?.aborted) throw createAbortError();
 
   const totalDurationMs = Date.now() - started;
+  state.totalDurationMs = totalDurationMs;
   emit({ ts: nowIso(), scenario: name, outcome, total_duration_ms: totalDurationMs });
-  return { outcome, failureReason, cleanup, pubkey, sha256: blobSha256, kind5Id, target, totalDurationMs };
+  return state;
 }
 
-export async function runSyncScenario(cfg, deps = {}) {
-  return runScenario('sync', cfg, deps, { callSync: true, statusTimeoutMs: 60000, statusPollIntervalMs: 2000 });
+export async function runSyncScenario(cfg, deps = {}, runtime = {}) {
+  return runScenario('sync', cfg, deps, {
+    callSync: true,
+    statusTimeoutMs: 60000,
+    statusPollIntervalMs: 2000,
+    ...runtime,
+  });
 }
 
-export async function runCronScenario(cfg, deps = {}) {
-  return runScenario('cron', cfg, deps, { callSync: false, statusTimeoutMs: cfg.cronWaitSeconds * 1000, statusPollIntervalMs: 3000 });
+export async function runCronScenario(cfg, deps = {}, runtime = {}) {
+  return runScenario('cron', cfg, deps, {
+    callSync: false,
+    statusTimeoutMs: cfg.cronWaitSeconds * 1000,
+    statusPollIntervalMs: 3000,
+    ...runtime,
+  });
 }
 
 export function computeExitCode(results) {
   const anyFailed = results.some(r => r.outcome === 'fail');
   if (anyFailed) return 1;
-  const anyCleanupFailed = results.some(r => {
-    if (r.cleanup?.skipped) return false;
-    if (r.cleanup?.blossom?.ok === false) return true;
-    if (r.cleanup?.blossom?.errors > 0) return true;
-    if (r.cleanup?.d1?.ok === false) return true;
-    return false;
-  });
+  const anyCleanupFailed = results.some((r) => cleanupFailed(r.cleanup));
   if (anyCleanupFailed) return 3;
   return 0;
+}
+
+function cleanupFailed(cleanup) {
+  if (!cleanup || cleanup.skipped) return false;
+  if (cleanup.blossom?.ok === false) return true;
+  if (cleanup.blossom?.errors > 0) return true;
+  if (cleanup.d1?.ok === false) return true;
+  return false;
 }
 
 export function printSummary(results, cfg = {}) {
@@ -651,13 +809,47 @@ export async function main(argv, deps = {}) {
   }
 
   const results = [];
-  if (cfg.scenario === 'sync' || cfg.scenario === 'both') {
-    const r = await runSyncScenario(cfg, deps);
-    results.push({ ...r, scenario: 'sync' });
-  }
-  if (cfg.scenario === 'cron' || cfg.scenario === 'both') {
-    const r = await runCronScenario(cfg, deps);
-    results.push({ ...r, scenario: 'cron' });
+  const processLike = deps.processLike || process;
+  const abortController = deps.abortController || new AbortController();
+  const activeStateRef = { current: null };
+  const coordinator = createShutdownCoordinator({
+    processLike,
+    forceExitCode: 130,
+    log: deps.logError || console.error,
+    forceExit: deps.forceExit,
+    abortController,
+    runCleanup: async () => {
+      await cleanupScenarioArtifacts(activeStateRef.current, cfg, deps);
+    },
+  });
+
+  try {
+    if (cfg.scenario === 'sync' || cfg.scenario === 'both') {
+      const r = await runSyncScenario(cfg, deps, { signal: abortController.signal, activeStateRef });
+      activeStateRef.current = null;
+      results.push({ ...r, scenario: 'sync' });
+    }
+    if (cfg.scenario === 'cron' || cfg.scenario === 'both') {
+      const r = await runCronScenario(cfg, deps, { signal: abortController.signal, activeStateRef });
+      activeStateRef.current = null;
+      results.push({ ...r, scenario: 'cron' });
+    }
+  } catch (err) {
+    if (err?.message === 'aborted') {
+      await coordinator.waitForCleanupIfNeeded();
+      const state = coordinator.getState();
+      if (state.cleanupError) {
+        console.error('[cleanup-failed]', state.cleanupError?.stack || state.cleanupError?.message || state.cleanupError);
+        return 3;
+      }
+      if (cleanupFailed(activeStateRef.current?.cleanup)) {
+        return 3;
+      }
+      return 130;
+    }
+    throw err;
+  } finally {
+    coordinator.uninstall();
   }
 
   printSummary(results, cfg);

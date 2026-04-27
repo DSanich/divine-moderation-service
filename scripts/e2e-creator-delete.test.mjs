@@ -4,8 +4,20 @@
 // ABOUTME: Tests for scripts/e2e-creator-delete.mjs — pure helpers + main() with injected deps.
 // ABOUTME: Vitest runs under @cloudflare/vitest-pool-workers; nodejs_compat is on.
 
-import { describe, it, expect } from 'vitest';
-import { parseArgs } from './e2e-creator-delete.mjs';
+import { EventEmitter } from 'node:events';
+import { describe, it, expect, vi } from 'vitest';
+import { createShutdownCoordinator, parseArgs } from './e2e-creator-delete.mjs';
+
+class FakeProcess extends EventEmitter {
+  constructor() {
+    super();
+    this.exitCalls = [];
+  }
+
+  exit(code) {
+    this.exitCalls.push(code);
+  }
+}
 
 describe('parseArgs', () => {
   it('returns defaults when no flags given', () => {
@@ -465,6 +477,17 @@ describe('publishEvent', () => {
       .rejects.toThrow(/publish timeout/);
   });
 
+  it('rejects promptly when the abort signal fires', async () => {
+    const abortController = new AbortController();
+    const WebSocket = makeFakeWebSocketCtor((ws) => {
+      ws._fire('open');
+      setTimeout(() => abortController.abort(), 5);
+    });
+    await expect(
+      publishEvent(event, relayUrl, { WebSocket, timeoutMs: 5000, signal: abortController.signal })
+    ).rejects.toThrow(/aborted/);
+  });
+
   it('ignores OK frames for unrelated event ids', async () => {
     const WebSocket = makeFakeWebSocketCtor((ws) => {
       ws._fire('open');
@@ -515,6 +538,17 @@ describe('waitForIndexing', () => {
     await expect(
       waitForIndexing(EVENT_ID, cfg, { fetchImpl, timeoutMs: 5000, pollIntervalMs: 10 })
     ).rejects.toThrow(/500/);
+  });
+
+  it('aborts while polling when the signal fires', async () => {
+    const abortController = new AbortController();
+    const fetchImpl = async () => {
+      setTimeout(() => abortController.abort(), 0);
+      return { ok: false, status: 404, text: async () => 'not found' };
+    };
+    await expect(
+      waitForIndexing(EVENT_ID, cfg, { fetchImpl, timeoutMs: 5000, pollIntervalMs: 10, signal: abortController.signal })
+    ).rejects.toThrow(/aborted/);
   });
 });
 
@@ -582,6 +616,23 @@ describe('pollStatus', () => {
     await expect(
       pollStatus(sk, KIND5, cfg, { fetchImpl, timeoutMs: 5000, pollIntervalMs: 10 })
     ).rejects.toThrow(/401/);
+  });
+
+  it('aborts while polling when the signal fires', async () => {
+    const abortController = new AbortController();
+    const fetchImpl = async () => {
+      setTimeout(() => abortController.abort(), 0);
+      return { ok: true, status: 200, json: async () => ({ status: 'accepted' }) };
+    };
+    const { sk } = generateTestKey();
+    await expect(
+      pollStatus(sk, KIND5, cfg, {
+        fetchImpl,
+        timeoutMs: 5000,
+        pollIntervalMs: 10,
+        signal: abortController.signal,
+      })
+    ).rejects.toThrow(/aborted/);
   });
 });
 
@@ -674,6 +725,52 @@ describe('computeExitCode', () => {
   });
 });
 
+describe('createShutdownCoordinator', () => {
+  it('starts graceful cleanup on first SIGINT', async () => {
+    const processLike = new FakeProcess();
+    const cleanupSpy = vi.fn(async () => {});
+    const abortController = new AbortController();
+    const forceExit = vi.fn();
+
+    const coordinator = createShutdownCoordinator({
+      processLike,
+      runCleanup: cleanupSpy,
+      abortController,
+      forceExit,
+      log: () => {},
+    });
+
+    processLike.emit('SIGINT', 'SIGINT');
+    await coordinator.waitForCleanupIfNeeded();
+
+    const state = coordinator.getState();
+    expect(state.shuttingDown).toBe(true);
+    expect(cleanupSpy).toHaveBeenCalledTimes(1);
+    expect(cleanupSpy).toHaveBeenCalledWith('SIGINT');
+    expect(abortController.signal.aborted).toBe(true);
+    expect(forceExit).not.toHaveBeenCalled();
+  });
+
+  it('forces immediate exit on second interrupt', () => {
+    const processLike = new FakeProcess();
+    const forceExit = vi.fn();
+
+    createShutdownCoordinator({
+      processLike,
+      runCleanup: async () => {},
+      abortController: new AbortController(),
+      forceExit,
+      log: () => {},
+    });
+
+    processLike.emit('SIGINT', 'SIGINT');
+    processLike.emit('SIGINT', 'SIGINT');
+
+    expect(forceExit).toHaveBeenCalledWith(130);
+    expect(forceExit).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('main (integration)', () => {
   const baseDeps = {
     uploadToBlossom: async () => ({ sha256: 'a'.repeat(64), url: 'u' }),
@@ -724,6 +821,113 @@ describe('main (integration)', () => {
   it('exits 2 on invalid --scenario', async () => {
     const code = await main(['--scenario=invalid'], baseDeps);
     expect(code).toBe(2);
+  });
+
+  it('returns 130 when aborted via SIGINT and cleanup succeeds', async () => {
+    const processLike = new FakeProcess();
+    const cleanupBlossomVanish = vi.fn(async () => ({ fullyDeleted: 1, unlinked: 0, errors: 0 }));
+    const cleanupD1Row = vi.fn(async () => {});
+    const publishEvent = vi.fn(async (event) => event.id);
+    const waitForIndexing = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return { polls: 1 };
+    });
+
+    const run = main(['--scenario=sync'], {
+      ...baseDeps,
+      processLike,
+      publishEvent,
+      waitForIndexing,
+      cleanupBlossomVanish,
+      cleanupD1Row,
+      logError: () => {},
+      forceExit: () => {},
+    });
+
+    setTimeout(() => processLike.emit('SIGINT', 'SIGINT'), 5);
+    const code = await run;
+    expect(code).toBe(130);
+    expect(cleanupBlossomVanish).toHaveBeenCalledTimes(1);
+    expect(cleanupD1Row).not.toHaveBeenCalled();
+  });
+
+  it('returns 3 when shutdown cleanup fails', async () => {
+    const processLike = new FakeProcess();
+    const run = main(['--scenario=sync'], {
+      ...baseDeps,
+      processLike,
+      waitForIndexing: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { polls: 1 };
+      },
+      cleanupBlossomVanish: async () => {
+        throw new Error('cleanup exploded');
+      },
+      cleanupD1Row: async () => {},
+      logError: () => {},
+      forceExit: () => {},
+    });
+
+    setTimeout(() => processLike.emit('SIGTERM', 'SIGTERM'), 5);
+    const code = await run;
+    expect(code).toBe(3);
+  });
+
+  it('forces immediate exit on second signal while cleanup is in flight', async () => {
+    const processLike = new FakeProcess();
+    const forceExit = vi.fn();
+    let cleanupResolve;
+    const cleanupStarted = new Promise((resolve) => {
+      cleanupResolve = resolve;
+    });
+    const run = main(['--scenario=sync'], {
+      ...baseDeps,
+      processLike,
+      waitForIndexing: async () => {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 30));
+        return { polls: 1 };
+      },
+      cleanupBlossomVanish: async () => {
+        cleanupResolve();
+        await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+        return { fullyDeleted: 1, unlinked: 0, errors: 0 };
+      },
+      cleanupD1Row: async () => {},
+      logError: () => {},
+      forceExit,
+    });
+    setTimeout(() => processLike.emit('SIGINT', 'SIGINT'), 5);
+
+    await cleanupStarted;
+    processLike.emit('SIGINT', 'SIGINT');
+    expect(forceExit).toHaveBeenCalledWith(130);
+    await run;
+  });
+
+  it('keeps --skip-cleanup semantics during shutdown aborts', async () => {
+    const processLike = new FakeProcess();
+    const cleanupBlossomVanish = vi.fn(async () => ({ fullyDeleted: 1, unlinked: 0, errors: 0 }));
+    const cleanupD1Row = vi.fn(async () => {});
+    const run = main(['--scenario=sync', '--skip-cleanup'], {
+      ...baseDeps,
+      processLike,
+      blossomWebhookSecret: null,
+      env: {},
+      waitForIndexing: async () => {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 30));
+        return { polls: 1 };
+      },
+      cleanupBlossomVanish,
+      cleanupD1Row,
+      logError: () => {},
+      forceExit: () => {},
+    });
+
+    setTimeout(() => processLike.emit('SIGTERM', 'SIGTERM'), 5);
+    const code = await run;
+    expect(code).toBe(130);
+    expect(cleanupBlossomVanish).not.toHaveBeenCalled();
+    expect(cleanupD1Row).not.toHaveBeenCalled();
   });
 });
 
