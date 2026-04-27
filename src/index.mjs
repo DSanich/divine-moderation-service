@@ -140,6 +140,22 @@ function generateNIP85Tags(scores, categoryVerifications = {}) {
   return tags;
 }
 
+function deriveCategoriesFromClassification(classification) {
+  const categories = new Set();
+  const scores = classification?.scores || {};
+  for (const [category, score] of Object.entries(scores)) {
+    if (typeof score === 'number' && score >= 0.5) {
+      categories.add(category);
+    }
+  }
+
+  if (typeof classification?.category === 'string' && classification.category.length > 0) {
+    categories.add(classification.category);
+  }
+
+  return [...categories];
+}
+
 function isLocalHostname(hostname) {
   return LOCAL_HOSTNAMES.has(hostname) || hostname.endsWith('.localhost');
 }
@@ -575,7 +591,6 @@ async function processPendingTranscriptReprocess(env) {
       }
 
       const videoScores = parseMaybeJson(row.scores, {});
-      const existingCategories = parseMaybeJson(row.categories, []);
       const existingClassifier = parseMaybeJson(await env.MODERATION_KV.get(`classifier:${sha256}`), {});
       const existingModerationKv = parseMaybeJson(await env.MODERATION_KV.get(`moderation:${sha256}`), null);
       const persistedFlaggedFrames = await loadPersistedFlaggedFrames(sha256, env, existingClassifier, existingModerationKv);
@@ -584,6 +599,7 @@ async function processPendingTranscriptReprocess(env) {
         flaggedFrames: persistedFlaggedFrames,
         text_scores: textScores
       }, effectiveEnv);
+      const reprocessedCategories = deriveCategoriesFromClassification(classification);
 
       const oldAction = normalizeModerationAction(row.action);
       const newAction = normalizeModerationAction(classification.action);
@@ -600,7 +616,7 @@ async function processPendingTranscriptReprocess(env) {
       `).bind(
         newAction,
         JSON.stringify(classification.scores || {}),
-        JSON.stringify(existingCategories || []),
+        JSON.stringify(reprocessedCategories),
         checkedAt,
         checkedAt,
         sha256
@@ -631,7 +647,7 @@ async function processPendingTranscriptReprocess(env) {
           ...existingModerationKv,
           action: newAction,
           scores: classification.scores || existingModerationKv.scores || {},
-          categories: existingCategories || existingModerationKv.categories || [],
+          categories: reprocessedCategories,
           reason: classification.reason || existingModerationKv.reason || null,
           text_scores: textScores,
           topicProfile: topicProfile || null,
@@ -654,7 +670,7 @@ async function processPendingTranscriptReprocess(env) {
           flaggedFrames: persistedFlaggedFrames,
           cdnUrl: row.content_url || `https://${env.CDN_DOMAIN || 'media.divine.video'}/${sha256}`,
           uploadedBy: row.uploaded_by || null,
-          categories: existingCategories || [],
+          categories: reprocessedCategories,
           provider: row.provider || 'transcript-reprocess',
           nostrContext: {
             title: row.title || null,

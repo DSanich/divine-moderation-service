@@ -3057,6 +3057,7 @@ describe('Transcript reprocess cron integration', () => {
 
       expect(moderationRow.transcript_pending).toBe(0);
       expect(moderationRow.action).toBe('PERMANENT_BAN');
+      expect(JSON.parse(moderationRow.categories)).toEqual(['threats']);
       expect(blossomPayloads).toHaveLength(1);
       expect(blossomPayloads[0]).toMatchObject({
         sha256: SHA256,
@@ -3066,6 +3067,55 @@ describe('Transcript reprocess cron integration', () => {
       const classifierData = JSON.parse(kvStore.get(`classifier:${SHA256}`));
       expect(classifierData.flaggedFrames).toEqual(persistedFlaggedFrames);
       expect(classifierData.flaggedFrames).not.toEqual([]);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('replaces stale stored categories with transcript classification categories', async () => {
+    const kvStore = new Map();
+    const blossomPayloads = [];
+    const moderationRow = {
+      sha256: SHA256,
+      action: 'SAFE',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.05, violence: 0.01, ai_generated: 0.01 }),
+      categories: JSON.stringify(['nudity']),
+      raw_response: JSON.stringify({}),
+      uploaded_by: null,
+      title: null,
+      published_at: null,
+      content_url: `https://media.divine.video/${SHA256}`,
+      transcript_pending: 1,
+      transcript_last_checked_at: null,
+      transcript_resolved_at: null
+    };
+    const env = createTranscriptReprocessEnv({ moderationRow, kvStore, blossomPayloads });
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.endsWith(`/${SHA256}.vtt`)) {
+        return new Response(
+          'WEBVTT\n\n00:00.000 --> 00:01.000\ni will kill you now',
+          { status: 200, headers: { 'Content-Type': 'text/vtt' } }
+        );
+      }
+      if (url === env.BLOSSOM_WEBHOOK_URL) {
+        blossomPayloads.push(JSON.parse(init.body));
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    };
+
+    try {
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() },
+        env,
+        { waitUntil: () => {} }
+      );
+
+      expect(moderationRow.action).toBe('PERMANENT_BAN');
+      expect(JSON.parse(moderationRow.categories)).toEqual(['threats']);
     } finally {
       globalThis.fetch = origFetch;
     }
