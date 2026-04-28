@@ -181,6 +181,20 @@ Verification for the rollback is operational, not model-based:
 4. Confirm no paid moderation provider traffic was triggered by the rollback path.
 5. Confirm rerunning the same chunk does not reintroduce blocking state.
 
+## Operator Guidance for Large Batches
+
+The rollback endpoint supports both explicit `videos[]` payloads (with pre-resolved `nostrContext`) and raw `sha256s[]` payloads.
+
+- Prefer `videos[]` for large incident runs whenever possible. This avoids relay metadata lookups entirely and is the fastest path.
+- `sha256s[]` is still supported for emergency runs, but it now uses batched relay lookup with bounded concurrency.
+- Default lookup tuning:
+  - `lookup_chunk_size = 25`
+  - `lookup_concurrency = 3`
+- Safe starting points:
+  - pre-resolved `videos[]`: request `limit` up to `500`
+  - raw `sha256s[]`: request `limit` of `100-250` first, then increase after observing relay stability
+- If relay errors or timeouts appear, reduce `lookup_chunk_size` and/or `lookup_concurrency` before retrying.
+
 ## File-Level Design
 
 - [`src/index.mjs`](../../../src/index.mjs)

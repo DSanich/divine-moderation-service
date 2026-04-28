@@ -53,7 +53,25 @@ jobs:
         run: npm ci
 
       - name: Run tests
-        run: npm test
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/vitest.log
+          status=${PIPESTATUS[0]}
+
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+
+          # Retry once for the specific @cloudflare/vitest-pool-workers isolated-storage flake
+          # tracked in cloudflare/workers-sdk#11031. Keep the match narrow so ordinary failures
+          # do not get retried and hidden.
+          if grep -Eq "Stack underflow|Failed to pop isolated storage stack frame" /tmp/vitest.log; then
+            echo "Detected known @cloudflare/vitest-pool-workers storage stack flake. Retrying once..."
+            npm test
+            exit $?
+          fi
+
+          exit "$status"
 
   deploy:
     name: Deploy

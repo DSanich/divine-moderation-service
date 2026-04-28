@@ -196,4 +196,138 @@ describe('runClassicVineRollback', () => {
       }
     ]);
   });
+
+  it('resolves SHA-only batches through batched relay lookups', async () => {
+    const firstSha = 'a'.repeat(64);
+    const secondSha = 'b'.repeat(64);
+    const calls = [];
+
+    const result = await runClassicVineRollback({
+      mode: 'preview',
+      source: 'sha-list',
+      sha256s: [firstSha, firstSha, secondSha]
+    }, {}, {
+      fetchNostrEventsBySha256Batch: async (sha256s, relays, env, options) => {
+        calls.push({ sha256s, relays, env, options });
+        return new Map([
+          [firstSha, { tags: [['platform', 'vine']] }],
+          [secondSha, null]
+        ]);
+      }
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sha256s).toEqual([firstSha, secondSha]);
+    expect(result.lookup).toMatchObject({
+      sha_lookup_requested: 2,
+      sha_lookup_resolved: 1,
+      sha_lookup_missing: 1
+    });
+    expect(result.candidates).toEqual([
+      {
+        sha256: firstSha,
+        reason: 'confirmed-classic-vine',
+        would_restore: true
+      },
+      {
+        sha256: firstSha,
+        reason: 'confirmed-classic-vine',
+        would_restore: true
+      },
+      {
+        sha256: secondSha,
+        reason: 'missing-vine-metadata',
+        would_restore: false,
+        restored: false
+      }
+    ]);
+  });
+
+  it('warns operators when large SHA-only batches are used', async () => {
+    const items = Array.from({ length: 100 }, (_, index) => index.toString(16).padStart(64, '0'));
+    const result = await runClassicVineRollback({
+      mode: 'preview',
+      source: 'sha-list',
+      sha256s: items
+    }, {}, {
+      fetchNostrEventsBySha256Batch: async (sha256s) => new Map(sha256s.map((sha256) => [sha256, null]))
+    });
+
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('Prefer videos[] with pre-resolved nostrContext');
+  });
+
+  it('skips relay lookup when all items already contain nostrContext', async () => {
+    const sha256 = 'c'.repeat(64);
+    let lookupCalled = false;
+
+    const result = await runClassicVineRollback({
+      mode: 'preview',
+      source: 'sha-list',
+      videos: [{
+        sha256,
+        nostrContext: {
+          platform: 'vine',
+          sourceUrl: 'https://vine.co/v/already-resolved'
+        }
+      }]
+    }, {}, {
+      fetchNostrEventsBySha256Batch: async () => {
+        lookupCalled = true;
+        return new Map();
+      }
+    });
+
+    expect(lookupCalled).toBe(false);
+    expect(result.lookup.sha_lookup_requested).toBe(0);
+    expect(result.lookup.pre_resolved).toBe(1);
+    expect(result.candidates).toEqual([
+      {
+        sha256,
+        reason: 'confirmed-classic-vine',
+        would_restore: true
+      }
+    ]);
+  });
+
+  it('reuses pre-resolved context for duplicate SHA items in mixed payloads', async () => {
+    const sha256 = 'd'.repeat(64);
+    const calls = [];
+
+    const result = await runClassicVineRollback({
+      mode: 'preview',
+      source: 'sha-list',
+      videos: [
+        {
+          sha256,
+          nostrContext: {
+            platform: 'vine'
+          }
+        },
+        {
+          sha256
+        }
+      ]
+    }, {}, {
+      fetchNostrEventsBySha256Batch: async (sha256s) => {
+        calls.push(sha256s);
+        return new Map();
+      }
+    });
+
+    expect(calls).toEqual([]);
+    expect(result.lookup.sha_lookup_requested).toBe(0);
+    expect(result.candidates).toEqual([
+      {
+        sha256,
+        reason: 'confirmed-classic-vine',
+        would_restore: true
+      },
+      {
+        sha256,
+        reason: 'confirmed-classic-vine',
+        would_restore: true
+      }
+    ]);
+  });
 });

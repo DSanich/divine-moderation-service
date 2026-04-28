@@ -4,7 +4,7 @@
 // ABOUTME: Helpers for classic Vine enforcement rollback
 // ABOUTME: Confirms rollback candidates and rewrites stale enforcement without re-running moderation
 
-import { fetchNostrEventBySha256, parseVideoEventMetadata } from '../nostr/relay-client.mjs';
+import { fetchNostrEventsBySha256Batch, parseVideoEventMetadata } from '../nostr/relay-client.mjs';
 
 const ARCHIVE_SOURCES = new Set([
   'archive-export',
@@ -15,11 +15,25 @@ const VALID_MODES = new Set(['execute', 'preview', 'resume']);
 const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
+const DEFAULT_LOOKUP_CHUNK_SIZE = 25;
+const MAX_LOOKUP_CHUNK_SIZE = 100;
+const DEFAULT_LOOKUP_CONCURRENCY = 3;
+const MAX_LOOKUP_CONCURRENCY = 8;
+const SHA_ONLY_WARNING_THRESHOLD = 100;
 
 function createHttpError(status, message) {
   const error = new Error(message);
   error.status = status;
   return error;
+}
+
+function parseBoundedInteger(value, fallback, min, max) {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(Math.max(parsed, min), max);
 }
 
 function normalizeRollbackItem(item) {
@@ -72,7 +86,19 @@ function normalizeClassicVineRollbackRequest(body = {}) {
     source: typeof body.source === 'string' && body.source.length > 0 ? body.source : 'sha-list',
     items: rawItems.map(normalizeRollbackItem),
     limit,
-    cursor
+    cursor,
+    lookupChunkSize: parseBoundedInteger(
+      body.lookup_chunk_size ?? body.lookupChunkSize,
+      DEFAULT_LOOKUP_CHUNK_SIZE,
+      1,
+      MAX_LOOKUP_CHUNK_SIZE
+    ),
+    lookupConcurrency: parseBoundedInteger(
+      body.lookup_concurrency ?? body.lookupConcurrency,
+      DEFAULT_LOOKUP_CONCURRENCY,
+      1,
+      MAX_LOOKUP_CONCURRENCY
+    )
   };
 }
 
@@ -93,14 +119,108 @@ function createRollbackCandidateResult(sha256, reason, extras = {}) {
   };
 }
 
-async function resolveRollbackNostrContext(item, env) {
-  if (item.nostrContext) {
-    return item.nostrContext;
+async function resolveRollbackNostrContexts(batch, request, env, deps = {}) {
+  const contextBySha = new Map();
+  const shaToLookup = [];
+  const seenShas = new Set();
+  const lookupFailedShas = new Set();
+  let preResolved = 0;
+  let lookupError = null;
+
+  for (const item of batch) {
+    if (!item.sha256 || !SHA256_PATTERN.test(item.sha256)) {
+      continue;
+    }
+
+    if (item.nostrContext) {
+      if (!contextBySha.has(item.sha256)) {
+        contextBySha.set(item.sha256, item.nostrContext);
+      }
+      preResolved += 1;
+      seenShas.add(item.sha256);
+      continue;
+    }
+
+    if (!seenShas.has(item.sha256)) {
+      seenShas.add(item.sha256);
+      shaToLookup.push(item.sha256);
+    }
   }
 
   const relays = env.NOSTR_RELAY_URL ? [env.NOSTR_RELAY_URL] : ['wss://relay.divine.video'];
-  const event = await fetchNostrEventBySha256(item.sha256, relays, env);
-  return event ? parseVideoEventMetadata(event) : null;
+  const lookupChunkSize = parseBoundedInteger(
+    env.CLASSIC_VINE_ROLLBACK_LOOKUP_CHUNK_SIZE,
+    request.lookupChunkSize,
+    1,
+    MAX_LOOKUP_CHUNK_SIZE
+  );
+  const lookupConcurrency = parseBoundedInteger(
+    env.CLASSIC_VINE_ROLLBACK_LOOKUP_CONCURRENCY,
+    request.lookupConcurrency,
+    1,
+    MAX_LOOKUP_CONCURRENCY
+  );
+  const fetchBatchLookup = deps.fetchNostrEventsBySha256Batch || fetchNostrEventsBySha256Batch;
+  const lookupStartedAt = Date.now();
+
+  if (shaToLookup.length > 0) {
+    try {
+      const eventsBySha = await fetchBatchLookup(shaToLookup, relays, env, {
+        chunkSize: lookupChunkSize,
+        concurrency: lookupConcurrency
+      });
+
+      for (const sha256 of shaToLookup) {
+        const event = eventsBySha.get(sha256) || null;
+        contextBySha.set(sha256, event ? parseVideoEventMetadata(event) : null);
+      }
+    } catch (error) {
+      lookupError = error;
+      for (const sha256 of shaToLookup) {
+        lookupFailedShas.add(sha256);
+      }
+    }
+  }
+
+  const resolved = shaToLookup.filter((sha256) => contextBySha.get(sha256)).length;
+  const missing = shaToLookup.length - resolved;
+
+  return {
+    contextBySha,
+    lookupFailedShas,
+    lookupSummary: {
+      pre_resolved: preResolved,
+      sha_lookup_requested: shaToLookup.length,
+      sha_lookup_resolved: resolved,
+      sha_lookup_missing: missing,
+      chunk_size: lookupChunkSize,
+      concurrency: lookupConcurrency,
+      relay_count: relays.length,
+      duration_ms: Date.now() - lookupStartedAt,
+      error: lookupError?.message || null
+    }
+  };
+}
+
+function buildLookupWarnings(batch, lookupSummary) {
+  const warnings = [];
+  const needsRelayLookupCount = batch.filter((item) => (
+    item.sha256
+      && SHA256_PATTERN.test(item.sha256)
+      && !item.nostrContext
+  )).length;
+  if (needsRelayLookupCount >= SHA_ONLY_WARNING_THRESHOLD) {
+    warnings.push(
+      `Large SHA-only batch (${needsRelayLookupCount} items) will spend time resolving relay metadata. ` +
+      'Prefer videos[] with pre-resolved nostrContext for large rollback runs.'
+    );
+  }
+
+  if (lookupSummary.error) {
+    warnings.push(`Relay lookup encountered an error: ${lookupSummary.error}`);
+  }
+
+  return warnings;
 }
 
 export function isClassicVineRollbackCandidate({ source, nostrContext }) {
@@ -210,6 +330,12 @@ export async function runClassicVineRollback(body, env, deps = {}) {
   const startedAt = typeof deps.now === 'function' ? deps.now() : new Date().toISOString();
   const request = normalizeClassicVineRollbackRequest(body);
   const { batch, nextCursor } = sliceClassicVineRollbackItems(request.items, request.cursor, request.limit);
+  const {
+    contextBySha,
+    lookupFailedShas,
+    lookupSummary
+  } = await resolveRollbackNostrContexts(batch, request, env, deps);
+  const warnings = buildLookupWarnings(batch, lookupSummary);
   const candidates = [];
   let restored = 0;
   let skipped = 0;
@@ -226,7 +352,17 @@ export async function runClassicVineRollback(body, env, deps = {}) {
     }
 
     try {
-      const nostrContext = await resolveRollbackNostrContext(item, env);
+      if (lookupFailedShas.has(item.sha256)) {
+        failed += 1;
+        candidates.push(createRollbackCandidateResult(item.sha256, 'relay-lookup-failed', {
+          would_restore: false,
+          restored: false,
+          error: lookupSummary.error || 'Failed to resolve relay metadata'
+        }));
+        continue;
+      }
+
+      const nostrContext = item.nostrContext || contextBySha.get(item.sha256) || null;
       const matched = isClassicVineRollbackCandidate({
         source: request.source,
         nostrContext
@@ -301,6 +437,8 @@ export async function runClassicVineRollback(body, env, deps = {}) {
     next_cursor: nextCursor,
     started_at: startedAt,
     finished_at: typeof deps.now === 'function' ? deps.now() : new Date().toISOString(),
+    lookup: lookupSummary,
+    warnings,
     candidates
   };
 }

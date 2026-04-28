@@ -4,6 +4,7 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import {
   fetchNostrEventBySha256,
+  fetchNostrEventsBySha256Batch,
   fetchNostrVideoEventsByDTag,
   parseVideoEventMetadata,
   isOriginalVine,
@@ -387,6 +388,139 @@ describe('fetchNostrEventBySha256', () => {
     globalThis.WebSocket = FakeWebSocket;
 
     await expect(fetchNostrEventBySha256(sha256)).resolves.toEqual(event);
+  });
+});
+
+describe('fetchNostrEventsBySha256Batch', () => {
+  it('resolves mixed SHA batches via x and d fallback filters', async () => {
+    const shaViaX = 'a'.repeat(64);
+    const shaViaD = 'b'.repeat(64);
+    const eventViaX = {
+      id: 'c'.repeat(64),
+      kind: 34236,
+      tags: [
+        ['d', 'legacy-vine-id'],
+        ['x', shaViaX],
+        ['platform', 'vine']
+      ]
+    };
+    const eventViaD = {
+      id: 'd'.repeat(64),
+      kind: 34236,
+      tags: [
+        ['d', shaViaD],
+        ['platform', 'vine']
+      ]
+    };
+    const filters = [];
+
+    class FakeWebSocket {
+      constructor() {
+        this.listeners = {};
+        queueMicrotask(() => this.emit('open'));
+      }
+
+      addEventListener(type, handler) {
+        if (!this.listeners[type]) {
+          this.listeners[type] = [];
+        }
+        this.listeners[type].push(handler);
+      }
+
+      send(message) {
+        const [, subscriptionId, filter] = JSON.parse(message);
+        filters.push(filter);
+        queueMicrotask(() => {
+          if (filter['#x']?.includes(shaViaX)) {
+            this.emit('message', { data: JSON.stringify(['EVENT', subscriptionId, eventViaX]) });
+          }
+          if (filter['#d']?.includes(shaViaD)) {
+            this.emit('message', { data: JSON.stringify(['EVENT', subscriptionId, eventViaD]) });
+          }
+          this.emit('message', { data: JSON.stringify(['EOSE', subscriptionId]) });
+        });
+      }
+
+      close() {
+        queueMicrotask(() => this.emit('close'));
+      }
+
+      emit(type, event = {}) {
+        for (const handler of this.listeners[type] || []) {
+          handler(event);
+        }
+      }
+    }
+
+    globalThis.WebSocket = FakeWebSocket;
+
+    const result = await fetchNostrEventsBySha256Batch([shaViaX, shaViaD], ['wss://relay.divine.video'], {}, {
+      chunkSize: 2,
+      concurrency: 1
+    });
+    expect(result.get(shaViaX)).toEqual(eventViaX);
+    expect(result.get(shaViaD)).toEqual(eventViaD);
+
+    const xFilters = filters.filter((filter) => Array.isArray(filter['#x']));
+    const dFilters = filters.filter((filter) => Array.isArray(filter['#d']));
+    expect(xFilters).toHaveLength(1);
+    expect(xFilters[0]['#x']).toEqual([shaViaX, shaViaD]);
+    expect(dFilters).toHaveLength(1);
+    expect(dFilters[0]['#d']).toEqual([shaViaD]);
+  });
+
+  it('deduplicates input SHAs and keeps unresolved items as null', async () => {
+    const shaResolved = 'e'.repeat(64);
+    const shaMissing = 'f'.repeat(64);
+    const event = {
+      id: '1'.repeat(64),
+      kind: 34236,
+      tags: [
+        ['x', shaResolved],
+        ['platform', 'vine']
+      ]
+    };
+
+    class FakeWebSocket {
+      constructor() {
+        this.listeners = {};
+        queueMicrotask(() => this.emit('open'));
+      }
+
+      addEventListener(type, handler) {
+        if (!this.listeners[type]) {
+          this.listeners[type] = [];
+        }
+        this.listeners[type].push(handler);
+      }
+
+      send(message) {
+        const [, subscriptionId, filter] = JSON.parse(message);
+        queueMicrotask(() => {
+          if (filter['#x']?.includes(shaResolved)) {
+            this.emit('message', { data: JSON.stringify(['EVENT', subscriptionId, event]) });
+          }
+          this.emit('message', { data: JSON.stringify(['EOSE', subscriptionId]) });
+        });
+      }
+
+      close() {
+        queueMicrotask(() => this.emit('close'));
+      }
+
+      emit(type, eventPayload = {}) {
+        for (const handler of this.listeners[type] || []) {
+          handler(eventPayload);
+        }
+      }
+    }
+
+    globalThis.WebSocket = FakeWebSocket;
+
+    const result = await fetchNostrEventsBySha256Batch([shaResolved, shaResolved, shaMissing]);
+    expect(result.size).toBe(2);
+    expect(result.get(shaResolved)).toEqual(event);
+    expect(result.get(shaMissing)).toBeNull();
   });
 });
 
