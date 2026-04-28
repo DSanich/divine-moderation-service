@@ -89,6 +89,7 @@ AI_GENERATED_THRESHOLD_HIGH = "0.8"   # Auto-quarantine AI content
 AI_GENERATED_THRESHOLD_MEDIUM = "0.6" # Flag AI content for review
 TRANSCRIPT_REPROCESS_BATCH_SIZE = "20" # Pending transcript rows to reprocess each cron tick
 TRANSCRIPT_REPROCESS_MAX_AGE_DAYS = "7" # Abandon transcript pending rows older than this many days
+LABEL_WRITE_DEDUPE_ENABLED = "true"    # Set "false" to bypass ClickHouse pre-insert dedupe checks
 
 [[kv_namespaces]]
 binding = "MODERATION_KV"
@@ -277,6 +278,32 @@ wrangler kv:key get --namespace-id=YOUR_KV_ID "moderation:abc123..."
 ```
 
 ## Troubleshooting
+
+### Moderation label dedupe verification
+- Canonical dedupe key:
+  - `sha256`, `label`, `source_id`, `source_owner`, `source_type`, `transport`, `operation`, `review_state`, `action`
+- Writer logs include per-call counters:
+  - `[LABELS] attempted=... deduped=... inserted=...`
+- Query duplicate keys for a specific content hash:
+
+```sql
+SELECT
+  sha256,
+  label,
+  source_id,
+  source_owner,
+  source_type,
+  transport,
+  operation,
+  review_state,
+  action,
+  count() AS rows_per_key
+FROM moderation_labels
+WHERE sha256 = '...'
+GROUP BY
+  sha256, label, source_id, source_owner, source_type, transport, operation, review_state, action
+HAVING rows_per_key > 1;
+```
 
 ### Videos stuck in pending
 - Check queue has consumer: `wrangler queues list`

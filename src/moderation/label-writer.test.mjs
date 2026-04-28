@@ -16,6 +16,7 @@ describe('writeModerationLabels', () => {
       CLICKHOUSE_URL: 'https://clickhouse.example.com:8443',
       CLICKHOUSE_PASSWORD: 'test-password',
       CLICKHOUSE_USER: 'default',
+      LABEL_WRITE_DEDUPE_ENABLED: 'false',
     };
 
     fetchSpy = vi.fn().mockResolvedValue({
@@ -234,6 +235,65 @@ describe('writeModerationLabels', () => {
     const body = fetchSpy.mock.calls[0][1].body;
     const row = JSON.parse(body);
     expect(row.action).toBe('PERMANENT_BAN');
+  });
+
+  it('should dedupe existing rows when dedupe is enabled', async () => {
+    mockEnv.LABEL_WRITE_DEDUPE_ENABLED = 'true';
+    fetchSpy
+      .mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(JSON.stringify({
+          sha256: 'abc123',
+          label: 'nudity',
+          source_id: 'divine-hive',
+          source_owner: 'divine',
+          source_type: 'machine-labeler',
+          transport: 'moderation-api',
+          operation: 'apply',
+          review_state: 'automated',
+          action: 'QUARANTINE',
+        })),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(''),
+      });
+
+    await writeModerationLabels('abc123', {
+      action: 'QUARANTINE',
+      scores: { nudity: 0.9 },
+      provider: 'divine-hive',
+    }, mockEnv);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('should still insert when dedupe check fails', async () => {
+    mockEnv.LABEL_WRITE_DEDUPE_ENABLED = 'true';
+    fetchSpy
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve('boom'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(''),
+      });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await writeModerationLabels('abc123', {
+      action: 'QUARANTINE',
+      scores: { nudity: 0.9 },
+      provider: 'divine-hive',
+    }, mockEnv);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[LABELS] ClickHouse dedupe check failed:'),
+      expect.any(String)
+    );
+    consoleSpy.mockRestore();
   });
 
   it('should prefer downstream signal scores over raw scores when provided', async () => {
