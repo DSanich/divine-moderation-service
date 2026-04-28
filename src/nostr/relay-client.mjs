@@ -6,6 +6,50 @@
 
 import { extractMediaShaFromEvent } from '../validation.mjs';
 
+const DEFAULT_SHA_BATCH_CHUNK_SIZE = 25;
+const MAX_SHA_BATCH_CHUNK_SIZE = 100;
+const DEFAULT_SHA_BATCH_CONCURRENCY = 3;
+const MAX_SHA_BATCH_CONCURRENCY = 8;
+const DEFAULT_SHA_BATCH_QUERY_LIMIT = 100;
+const MAX_SHA_BATCH_QUERY_LIMIT = 500;
+
+function parseBoundedInteger(value, fallback, min, max) {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(Math.max(parsed, min), max);
+}
+
+function chunkArray(items, chunkSize) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+  return chunks;
+}
+
+function hasUnresolvedEvent(eventsBySha) {
+  for (const value of eventsBySha.values()) {
+    if (!value) return true;
+  }
+  return false;
+}
+
+async function runWithConcurrency(items, concurrency, worker) {
+  let currentIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length || 1) }, async () => {
+    while (currentIndex < items.length) {
+      const itemIndex = currentIndex;
+      currentIndex += 1;
+      await worker(items[itemIndex], itemIndex);
+    }
+  });
+
+  await Promise.all(workers);
+}
+
 async function queryRelay(relayUrl, filter, env = {}, options = {}) {
   return new Promise((resolve, reject) => {
     let ws;
@@ -103,6 +147,98 @@ async function queryRelay(relayUrl, filter, env = {}, options = {}) {
 }
 
 /**
+ * Fetch Nostr events for many media SHA256 values in relay-friendly batches.
+ *
+ * @param {string[]} sha256s - Video hashes
+ * @param {string[]} relays - Relay URLs to query
+ * @param {Object} env - Environment variables
+ * @param {Object} options - Batch lookup options
+ * @returns {Promise<Map<string, Object|null>>} Map of sha256 -> matching event or null
+ */
+export async function fetchNostrEventsBySha256Batch(sha256s, relays = ['wss://relay.divine.video'], env = {}, options = {}) {
+  const normalizedShas = [...new Set(
+    (Array.isArray(sha256s) ? sha256s : [])
+      .map((sha) => (typeof sha === 'string' ? sha.toLowerCase() : null))
+      .filter(Boolean)
+  )];
+  const eventsBySha = new Map(normalizedShas.map((sha) => [sha, null]));
+
+  if (normalizedShas.length === 0) {
+    return eventsBySha;
+  }
+
+  const chunkSize = parseBoundedInteger(
+    options.chunkSize,
+    DEFAULT_SHA_BATCH_CHUNK_SIZE,
+    1,
+    MAX_SHA_BATCH_CHUNK_SIZE
+  );
+  const concurrency = parseBoundedInteger(
+    options.concurrency,
+    DEFAULT_SHA_BATCH_CONCURRENCY,
+    1,
+    MAX_SHA_BATCH_CONCURRENCY
+  );
+  const queryLimit = parseBoundedInteger(
+    options.limit,
+    Math.min(Math.max(chunkSize * 4, 20), DEFAULT_SHA_BATCH_QUERY_LIMIT),
+    1,
+    MAX_SHA_BATCH_QUERY_LIMIT
+  );
+  const shaChunks = chunkArray(normalizedShas, chunkSize);
+
+  for (const relay of relays) {
+    await runWithConcurrency(shaChunks, concurrency, async (chunk) => {
+      const unresolvedShas = chunk.filter((sha) => !eventsBySha.get(sha));
+      if (unresolvedShas.length === 0) {
+        return;
+      }
+
+      try {
+        const xTagMatches = await queryRelay(relay, {
+          kinds: [34235, 34236],
+          '#x': unresolvedShas,
+          limit: queryLimit
+        }, env, { collectAll: true });
+
+        for (const event of xTagMatches) {
+          const mediaSha = extractMediaShaFromEvent(event);
+          if (mediaSha && eventsBySha.has(mediaSha) && !eventsBySha.get(mediaSha)) {
+            eventsBySha.set(mediaSha, event);
+          }
+        }
+
+        const unresolvedAfterX = unresolvedShas.filter((sha) => !eventsBySha.get(sha));
+        if (unresolvedAfterX.length === 0) {
+          return;
+        }
+
+        const dTagMatches = await queryRelay(relay, {
+          kinds: [34235, 34236],
+          '#d': unresolvedAfterX,
+          limit: queryLimit
+        }, env, { collectAll: true });
+
+        for (const event of dTagMatches) {
+          const mediaSha = extractMediaShaFromEvent(event);
+          if (mediaSha && eventsBySha.has(mediaSha) && !eventsBySha.get(mediaSha)) {
+            eventsBySha.set(mediaSha, event);
+          }
+        }
+      } catch (error) {
+        console.error(`[NOSTR] Failed batch fetch from ${relay}:`, error);
+      }
+    });
+
+    if (!hasUnresolvedEvent(eventsBySha)) {
+      break;
+    }
+  }
+
+  return eventsBySha;
+}
+
+/**
  * Fetch Nostr event for a video SHA256 from relay.
  * Legacy Vine imports use d=vine_id and expose the media hash via x/imeta x,
  * while newer content may still use d=sha256.
@@ -114,36 +250,16 @@ async function queryRelay(relayUrl, filter, env = {}, options = {}) {
  */
 export async function fetchNostrEventBySha256(sha256, relays = ['wss://relay.divine.video'], env = {}) {
   const normalizedSha256 = typeof sha256 === 'string' ? sha256.toLowerCase() : sha256;
-
-  for (const relay of relays) {
-    try {
-      const xTagMatches = await queryRelay(relay, {
-        kinds: [34235, 34236],
-        '#x': [normalizedSha256],
-        limit: 10
-      }, env, { collectAll: true });
-
-      const xTagEvent = xTagMatches.find((event) => extractMediaShaFromEvent(event) === normalizedSha256);
-      if (xTagEvent) {
-        return xTagEvent;
-      }
-
-      const dTagMatches = await queryRelay(relay, {
-        kinds: [34235, 34236],
-        '#d': [normalizedSha256],
-        limit: 10
-      }, env, { collectAll: true });
-
-      const dTagEvent = dTagMatches.find((event) => extractMediaShaFromEvent(event) === normalizedSha256);
-      if (dTagEvent) {
-        return dTagEvent;
-      }
-    } catch (error) {
-      console.error(`[NOSTR] Failed to fetch from ${relay}:`, error);
-    }
+  if (!normalizedSha256) {
+    return null;
   }
 
-  return null;
+  const eventsBySha = await fetchNostrEventsBySha256Batch([normalizedSha256], relays, env, {
+    chunkSize: 1,
+    concurrency: 1,
+    limit: 10
+  });
+  return eventsBySha.get(normalizedSha256) || null;
 }
 
 /**
