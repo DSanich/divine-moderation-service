@@ -2873,7 +2873,6 @@ describe('Transcript reprocess cron integration', () => {
         env,
         { waitUntil: () => {} }
       );
-
       expect(moderationRow.transcript_pending).toBe(0);
       expect(moderationRow.transcript_resolved_at).toBeTruthy();
       expect(blossomPayloads).toHaveLength(0);
@@ -2934,6 +2933,116 @@ describe('Transcript reprocess cron integration', () => {
       expect(moderationRow.transcript_resolved_at).toBeTruthy();
       const moderationPayload = JSON.parse(kvStore.get(`moderation:${SHA256}`));
       expect(moderationPayload.transcriptResolutionReason).toBe('max_age_abandoned');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('keeps transcript pending rows pending when transcript fetch returns 500', async () => {
+    const kvStore = new Map();
+    const blossomPayloads = [];
+    const moderationRow = {
+      sha256: SHA256,
+      action: 'SAFE',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.05, violence: 0.01, ai_generated: 0.01 }),
+      categories: JSON.stringify([]),
+      raw_response: JSON.stringify({}),
+      uploaded_by: null,
+      title: null,
+      published_at: null,
+      content_url: `https://media.divine.video/${SHA256}`,
+      transcript_pending: 1,
+      transcript_last_checked_at: null,
+      transcript_resolved_at: null
+    };
+    const env = createTranscriptReprocessEnv({ moderationRow, kvStore, blossomPayloads });
+
+    const origFetch = globalThis.fetch;
+    let transcriptFetchCount = 0;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.endsWith(`/${SHA256}.vtt`)) {
+        transcriptFetchCount++;
+        return new Response('upstream error', { status: 500 });
+      }
+      if (url === env.BLOSSOM_WEBHOOK_URL) {
+        blossomPayloads.push(JSON.parse(init.body));
+      }
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    };
+
+    try {
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() },
+        env,
+        { waitUntil: () => {} }
+      );
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() + 5 * 60 * 1000 },
+        env,
+        { waitUntil: () => {} }
+      );
+
+      expect(transcriptFetchCount).toBe(2);
+      expect(moderationRow.transcript_pending).toBe(1);
+      expect(moderationRow.transcript_last_checked_at).toBeNull();
+      expect(moderationRow.transcript_resolved_at).toBeNull();
+      expect(blossomPayloads).toHaveLength(0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('keeps transcript pending rows pending when transcript fetch throws', async () => {
+    const kvStore = new Map();
+    const blossomPayloads = [];
+    const moderationRow = {
+      sha256: SHA256,
+      action: 'SAFE',
+      provider: 'hiveai',
+      scores: JSON.stringify({ nudity: 0.05, violence: 0.01, ai_generated: 0.01 }),
+      categories: JSON.stringify([]),
+      raw_response: JSON.stringify({}),
+      uploaded_by: null,
+      title: null,
+      published_at: null,
+      content_url: `https://media.divine.video/${SHA256}`,
+      transcript_pending: 1,
+      transcript_last_checked_at: null,
+      transcript_resolved_at: null
+    };
+    const env = createTranscriptReprocessEnv({ moderationRow, kvStore, blossomPayloads });
+
+    const origFetch = globalThis.fetch;
+    let transcriptFetchCount = 0;
+    globalThis.fetch = async (url, init) => {
+      if (typeof url === 'string' && url.endsWith(`/${SHA256}.vtt`)) {
+        transcriptFetchCount++;
+        throw new Error('network timeout');
+      }
+      if (url === env.BLOSSOM_WEBHOOK_URL) {
+        blossomPayloads.push(JSON.parse(init.body));
+      }
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    };
+
+    try {
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() },
+        env,
+        { waitUntil: () => {} }
+      );
+      await worker.scheduled(
+        { cron: '*/5 * * * *', scheduledTime: Date.now() + 5 * 60 * 1000 },
+        env,
+        { waitUntil: () => {} }
+      );
+
+      expect(transcriptFetchCount).toBe(2);
+      expect(moderationRow.transcript_pending).toBe(1);
+      expect(moderationRow.transcript_last_checked_at).toBeNull();
+      expect(moderationRow.transcript_resolved_at).toBeNull();
+      expect(blossomPayloads).toHaveLength(0);
     } finally {
       globalThis.fetch = origFetch;
     }
