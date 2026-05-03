@@ -12,6 +12,7 @@ import { fetchNostrEventBySha256, parseVideoEventMetadata, isOriginalVine, hasSt
 import { classifyVideo } from '../classification/pipeline.mjs';
 import { extractTopics } from '../classification/topic-extractor.mjs';
 import { verifyC2pa } from './inquisitor-client.mjs';
+import { proofModeSkipsAIDetection, shouldForceAIDetection } from './ai-detection-policy.mjs';
 
 const ORIGINAL_VINE_SUPPRESSED_CATEGORIES = new Set(['ai_generated', 'deepfake']);
 const DOWNSTREAM_SIGNAL_THRESHOLD = 0.5;
@@ -316,6 +317,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     videoSealPayload = null,
     videoSealBitAccuracy = null
   } = videoData;
+  const forceAIDetection = shouldForceAIDetection(metadata);
 
   // Validate configuration
   if (!env.CDN_DOMAIN) {
@@ -361,9 +363,9 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
   }
 
   // Step 2: Check if this is an original Vine (skip AI detection for pre-2018 content)
-  const skipAIDetection = isOriginalVine(nostrContext);
+  const originalVineSkipsAIDetection = isOriginalVine(nostrContext);
   const shouldForceServeable = hasStrongOriginalVineEvidence(nostrContext);
-  if (skipAIDetection) {
+  if (originalVineSkipsAIDetection) {
     console.log(`[MODERATION] Original Vine detected - skipping AI detection for ${sha256}`);
   }
 
@@ -378,6 +380,15 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
       sha256, uploadedBy, uploadedAt, metadata,
       videoUrl, nostrContext, nostrEventId, c2pa, videoseal,
     });
+  }
+
+  const proofModeSkip = proofModeSkipsAIDetection(c2pa, metadata);
+  const skipAIDetection = originalVineSkipsAIDetection || proofModeSkip;
+
+  if (proofModeSkip) {
+    console.log(`[MODERATION] ${sha256} - valid ProofMode capture, skipping Hive AI detection`);
+  } else if (c2pa.state === 'valid_proofmode' && forceAIDetection) {
+    console.log(`[MODERATION] ${sha256} - valid ProofMode capture but forced AI detection requested`);
   }
 
   // Step 3: Run moderation and scene classification in parallel
@@ -496,7 +507,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
 
   const policyContext = {
     originalVine: shouldForceServeable,
-    originalVineLegacyFallback: skipAIDetection && !shouldForceServeable,
+    originalVineLegacyFallback: originalVineSkipsAIDetection && !shouldForceServeable,
     enforcementOverridden: false,
     overrideReason: null,
     originalAction: classification.action

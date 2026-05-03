@@ -188,6 +188,48 @@ describe('HTTP hostname routing', () => {
     });
   });
 
+  it('queues a forced AI recheck when users report content as AI-generated', async () => {
+    const queued = [];
+    const reporterPubkey = 'b'.repeat(64);
+    const env = createEnv({
+      MODERATION_QUEUE: {
+        async send(message) {
+          queued.push(message);
+        }
+      }
+    });
+
+    const response = await worker.fetch(
+      new Request('https://moderation-api.divine.video/api/v1/report', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer test-service-token'
+        },
+        body: JSON.stringify({
+          sha256: SHA256,
+          reporter_pubkey: reporterPubkey,
+          report_type: 'ai_generated',
+          reason: 'looks synthetic'
+        })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({
+      sha256: SHA256,
+      r2Key: `videos/${SHA256}.mp4`,
+      metadata: {
+        source: 'user-report',
+        forceAIDetection: true,
+        reportType: 'ai_generated',
+        reportedBy: reporterPubkey
+      }
+    });
+  });
+
   it('returns legacy 401 shape for unauthenticated /api/v1/scan', async () => {
     const response = await worker.fetch(
       new Request('https://moderation-api.divine.video/api/v1/scan', {

@@ -23,6 +23,64 @@ export async function initReportsTable(db) {
 }
 
 /**
+ * Insert a report and return escalation level based on unique reporter count
+ * @param {D1Database} db
+ * @param {{sha256: string, reporter_pubkey: string, report_type: string, reason?: string}} report
+ * @returns {Promise<{escalate: 'AGE_RESTRICTED'|'REVIEW'|null}>}
+ */
+export async function addReport(db, { sha256, reporter_pubkey, report_type, reason }) {
+  await db.prepare(`
+    INSERT OR IGNORE INTO user_reports (sha256, reporter_pubkey, report_type, reason)
+    VALUES (?, ?, ?, ?)
+  `).bind(sha256, reporter_pubkey, report_type, reason ?? null).run();
+
+  const row = await db.prepare(`
+    SELECT COUNT(DISTINCT reporter_pubkey) AS cnt
+    FROM user_reports
+    WHERE sha256 = ?
+  `).bind(sha256).first();
+
+  const count = row?.cnt ?? 0;
+
+  if (count >= 5) return { escalate: 'AGE_RESTRICTED' };
+  if (count >= 3) return { escalate: 'REVIEW' };
+  return { escalate: null };
+}
+
+const AI_REPORT_TYPES = new Set([
+  'ai',
+  'ai-generated',
+  'ai_generated',
+  'aigenerated',
+  'synthetic',
+  'synthetic-media',
+  'synthetic_media',
+  'deepfake',
+]);
+
+export function isAiReportType(reportType) {
+  if (typeof reportType !== 'string') return false;
+  const normalized = reportType.trim().toLowerCase().replace(/\s+/g, '_');
+  return AI_REPORT_TYPES.has(normalized);
+}
+
+/**
+ * Return the number of unique reporters for a sha256
+ * @param {D1Database} db
+ * @param {string} sha256
+ * @returns {Promise<number>}
+ */
+export async function getReportCount(db, sha256) {
+  const row = await db.prepare(`
+    SELECT COUNT(DISTINCT reporter_pubkey) AS cnt
+    FROM user_reports
+    WHERE sha256 = ?
+  `).bind(sha256).first();
+
+  return row?.cnt ?? 0;
+}
+
+/**
  * Return all unique reporters for a sha256 with their earliest report date
  * @param {D1Database} db
  * @param {string} sha256
