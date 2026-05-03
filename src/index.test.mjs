@@ -9,7 +9,16 @@ import worker from './index.mjs';
 
 const SHA256 = 'a'.repeat(64);
 
-function createDbMock({ moderationResults = new Map(), moderationListRows = [], webhookEvents = new Map() } = {}) {
+function createDbMock({
+  moderationResults = new Map(),
+  moderationListRows = [],
+  webhookEvents = new Map(),
+  aiDetectionEvents = [],
+  aiDetectionStatsRow = null,
+  aiDetectionPolicyRows = [],
+  aiDetectionReviewRows = [],
+  aiDetectionRecentRows = [],
+} = {}) {
   return {
     prepare(sql) {
       let bindings = [];
@@ -20,6 +29,22 @@ function createDbMock({ moderationResults = new Map(), moderationListRows = [], 
           return this;
         },
         async run() {
+          if (/INSERT OR IGNORE INTO ai_detection_events/i.test(sql)) {
+            aiDetectionEvents.push({
+              event_key: bindings[0],
+              sha256: bindings[1],
+              event_type: bindings[2],
+              policy_reason: bindings[3],
+              c2pa_state: bindings[4],
+              ai_detection_ran: bindings[5],
+              ai_detection_forced: bindings[6],
+              ai_score: bindings[7],
+              action: bindings[8],
+              report_type: bindings[9],
+              metadata_json: bindings[10],
+              created_at: bindings[11],
+            });
+          }
           return { success: true };
         },
         async first() {
@@ -29,11 +54,23 @@ function createDbMock({ moderationResults = new Map(), moderationListRows = [], 
           if (sql.includes('FROM bunny_webhook_events')) {
             return webhookEvents.get(bindings[0]) ?? null;
           }
+          if (sql.includes('FROM ai_detection_events')) {
+            return aiDetectionStatsRow;
+          }
           return null;
         },
         async all() {
           if (sql.includes('FROM moderation_results') && sql.includes('ORDER BY moderated_at')) {
             return { results: moderationListRows };
+          }
+          if (sql.includes('FROM ai_detection_events') && sql.includes("event_type = 'policy_decision'")) {
+            return { results: aiDetectionPolicyRows };
+          }
+          if (sql.includes('FROM ai_detection_events') && sql.includes('GROUP BY policy_reason')) {
+            return { results: aiDetectionReviewRows };
+          }
+          if (sql.includes('FROM ai_detection_events') && sql.includes('ORDER BY created_at DESC')) {
+            return { results: aiDetectionRecentRows };
           }
           return { results: [] };
         }
@@ -190,8 +227,10 @@ describe('HTTP hostname routing', () => {
 
   it('queues a forced AI recheck when users report content as AI-generated', async () => {
     const queued = [];
+    const aiDetectionEvents = [];
     const reporterPubkey = 'b'.repeat(64);
     const env = createEnv({
+      BLOSSOM_DB: createDbMock({ aiDetectionEvents }),
       MODERATION_QUEUE: {
         async send(message) {
           queued.push(message);
@@ -227,6 +266,78 @@ describe('HTTP hostname routing', () => {
         reportType: 'ai_generated',
         reportedBy: reporterPubkey
       }
+    });
+    expect(aiDetectionEvents).toHaveLength(1);
+    expect(aiDetectionEvents[0]).toMatchObject({
+      sha256: SHA256,
+      event_type: 'user_report',
+      policy_reason: 'report_forced_ai_detection',
+      ai_detection_forced: 1,
+      report_type: 'ai_generated',
+    });
+  });
+
+  it('requires admin auth for AI detection stats', async () => {
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/api/ai-detection/stats'),
+      createEnv({ ALLOW_DEV_ACCESS: 'false' })
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it('returns AI detection stats for authenticated admins', async () => {
+    const env = createEnv({
+      BLOSSOM_DB: createDbMock({
+        aiDetectionStatsRow: {
+          ai_detection_runs: 1,
+          ai_detection_skips: 2,
+          proofmode_skips: 2,
+          signed_ai_skips: 0,
+          original_vine_skips: 0,
+          report_forced_checks: 1,
+          open_review_items: 1,
+        },
+        aiDetectionPolicyRows: [
+          { policy_reason: 'valid_proofmode_skip', count: 2 },
+          { policy_reason: 'no_proof_ai_detection', count: 1 },
+        ],
+        aiDetectionReviewRows: [
+          { policy_reason: 'proofmode_ai_downgrade', count: 1 },
+        ],
+        aiDetectionRecentRows: [
+          {
+            sha256: SHA256,
+            action: 'REVIEW',
+            c2pa_state: 'valid_proofmode',
+            ai_score: 0.97,
+            policy_reason: 'proofmode_ai_downgrade',
+            created_at: '2026-05-03T00:00:00.000Z',
+          },
+        ],
+      }),
+      HIVE_AI_DETECTION_ESTIMATED_COST_CENTS: '65',
+    });
+
+    const response = await worker.fetch(
+      new Request('https://moderation.admin.divine.video/admin/api/ai-detection/stats?window=24h', {
+        headers: { 'Cf-Access-Authenticated-User-Email': 'mod@divine.video' },
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      window: '24h',
+      totals: {
+        aiDetectionRuns: 1,
+        aiDetectionSkips: 2,
+        proofModeSkips: 2,
+        reportForcedChecks: 1,
+        openReviewItems: 1,
+      },
+      estimatedSpendAvoidedCents: 130,
+      recentReviewItems: [{ sha256: SHA256, action: 'REVIEW' }],
     });
   });
 

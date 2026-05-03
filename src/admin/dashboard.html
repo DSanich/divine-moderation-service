@@ -73,6 +73,85 @@
       margin-top: 5px;
     }
 
+    .ai-detection-panel {
+      background: #10141d;
+      border: 1px solid #24324a;
+      border-radius: 8px;
+      padding: 16px;
+      margin: 18px 0 20px;
+    }
+
+    .ai-detection-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    .ai-detection-header h2 {
+      font-size: 18px;
+      color: #f8fafc;
+      margin: 0;
+    }
+
+    .ai-detection-summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .ai-detection-card {
+      background: #151b27;
+      border: 1px solid #263247;
+      border-radius: 8px;
+      padding: 12px;
+    }
+
+    .ai-detection-card .stat-value {
+      font-size: 22px;
+    }
+
+    .ai-detection-details {
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr);
+      gap: 12px;
+    }
+
+    @media (max-width: 900px) {
+      .ai-detection-details {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .ai-detection-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    .ai-detection-table th,
+    .ai-detection-table td {
+      border-bottom: 1px solid #263247;
+      padding: 7px 4px;
+      text-align: left;
+    }
+
+    .ai-detection-table th {
+      color: #94a3b8;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 10px;
+    }
+
+    .ai-detection-muted {
+      color: #94a3b8;
+      font-size: 12px;
+    }
+
     .controls {
       display: flex;
       gap: 15px;
@@ -1847,6 +1926,62 @@
     </div>
   </div>
 
+  <section class="ai-detection-panel" id="ai-detection-panel">
+    <div class="ai-detection-header">
+      <div>
+        <h2>AI Detection</h2>
+        <div class="ai-detection-muted">Ledger-backed reporting for paid AI checks, ProofMode skips, and report-forced review work.</div>
+      </div>
+      <div class="control-group" style="margin: 0;">
+        <label for="ai-detection-window">Window</label>
+        <select id="ai-detection-window" onchange="loadAIDetectionStats()">
+          <option value="24h">24h</option>
+          <option value="7d">7d</option>
+          <option value="30d">30d</option>
+          <option value="all">All</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="ai-detection-summary">
+      <div class="ai-detection-card">
+        <div class="stat-label">AI runs</div>
+        <div class="stat-value" id="ai-detection-runs">-</div>
+      </div>
+      <div class="ai-detection-card">
+        <div class="stat-label">AI skipped</div>
+        <div class="stat-value" id="ai-detection-skips">-</div>
+      </div>
+      <div class="ai-detection-card">
+        <div class="stat-label">ProofMode skips</div>
+        <div class="stat-value" id="ai-proofmode-skips">-</div>
+      </div>
+      <div class="ai-detection-card">
+        <div class="stat-label">Report-forced</div>
+        <div class="stat-value" id="ai-report-forced">-</div>
+      </div>
+      <div class="ai-detection-card">
+        <div class="stat-label">Open review</div>
+        <div class="stat-value" id="ai-open-review">-</div>
+      </div>
+      <div class="ai-detection-card">
+        <div class="stat-label">Estimated spend avoided</div>
+        <div class="stat-value" id="ai-spend-avoided">-</div>
+      </div>
+    </div>
+
+    <div class="ai-detection-details">
+      <div>
+        <div class="stat-label" style="margin-bottom: 6px;">Policy breakdown</div>
+        <div id="ai-detection-breakdown" class="ai-detection-muted">Loading...</div>
+      </div>
+      <div>
+        <div class="stat-label" style="margin-bottom: 6px;">Needs review</div>
+        <div id="ai-detection-review-slice" class="ai-detection-muted">Loading...</div>
+      </div>
+    </div>
+  </section>
+
   <div class="lookup-panel">
     <div class="lookup-form">
       <div class="lookup-input-group">
@@ -2519,6 +2654,70 @@
         }
       } catch (error) {
         console.error('Failed to load real stats:', error);
+      }
+    }
+
+    function formatEstimatedSpend(cents) {
+      if (typeof cents !== 'number' || !Number.isFinite(cents)) return 'n/a';
+      return '$' + (cents / 100).toLocaleString(undefined, { maximumFractionDigits: 0 });
+    }
+
+    function formatPolicyReason(reason) {
+      const labels = {
+        valid_proofmode_skip: 'Valid ProofMode, AI skipped',
+        valid_ai_signed_skip: 'Valid AI-signed, Hive skipped',
+        original_vine_skip: 'Original Vine, AI skipped',
+        no_proof_ai_detection: 'No proof, AI ran',
+        provenance_present_ai_detection: 'Other provenance, AI ran',
+        report_forced_ai_detection: 'User report forced AI check',
+        proofmode_ai_downgrade: 'ProofMode AI hit sent to review'
+      };
+      return labels[reason] || String(reason || 'unknown').replaceAll('_', ' ');
+    }
+
+    function renderAIDetectionBreakdown(rows) {
+      if (!rows || rows.length === 0) {
+        return '<div class="ai-detection-muted">No ledger events in this window yet.</div>';
+      }
+      return '<table class="ai-detection-table"><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>'
+        + rows.map(row => '<tr><td>' + escapeHtml(formatPolicyReason(row.policyReason)) + '</td><td>' + (row.count || 0).toLocaleString() + '</td></tr>').join('')
+        + '</tbody></table>';
+    }
+
+    function renderAIDetectionReviewSlice(stats) {
+      const rows = stats.recentReviewItems || [];
+      if (rows.length === 0) {
+        return '<div class="ai-detection-muted">No AI-report review items in this window.</div>';
+      }
+      return '<table class="ai-detection-table"><thead><tr><th>Video</th><th>Reason</th><th>Score</th></tr></thead><tbody>'
+        + rows.map(row => {
+          const score = typeof row.aiScore === 'number' ? Math.round(row.aiScore * 100) + '%' : '-';
+          const sha = escapeHtml(row.sha256 || '');
+          return '<tr><td><button class="action-btn secondary" style="padding:3px 7px;font-size:11px;" data-sha256="' + sha + '" onclick="lookupVideo(this.dataset.sha256)">' + escapeHtml((row.sha256 || '').substring(0, 10)) + '...</button></td><td>' + escapeHtml(formatPolicyReason(row.policyReason)) + '</td><td>' + score + '</td></tr>';
+        }).join('')
+        + '</tbody></table>';
+    }
+
+    async function loadAIDetectionStats() {
+      try {
+        const windowValue = document.getElementById('ai-detection-window')?.value || '24h';
+        const response = await fetch('/admin/api/ai-detection/stats?window=' + encodeURIComponent(windowValue));
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const stats = await response.json();
+        const totals = stats.totals || {};
+
+        document.getElementById('ai-detection-runs').textContent = (totals.aiDetectionRuns || 0).toLocaleString();
+        document.getElementById('ai-detection-skips').textContent = (totals.aiDetectionSkips || 0).toLocaleString();
+        document.getElementById('ai-proofmode-skips').textContent = (totals.proofModeSkips || 0).toLocaleString();
+        document.getElementById('ai-report-forced').textContent = (totals.reportForcedChecks || 0).toLocaleString();
+        document.getElementById('ai-open-review').textContent = (totals.openReviewItems || 0).toLocaleString();
+        document.getElementById('ai-spend-avoided').textContent = formatEstimatedSpend(stats.estimatedSpendAvoidedCents);
+        document.getElementById('ai-detection-breakdown').innerHTML = renderAIDetectionBreakdown(stats.policyBreakdown);
+        document.getElementById('ai-detection-review-slice').innerHTML = renderAIDetectionReviewSlice(stats);
+      } catch (error) {
+        console.error('Failed to load AI detection stats:', error);
+        document.getElementById('ai-detection-breakdown').textContent = 'AI detection reporting unavailable.';
+        document.getElementById('ai-detection-review-slice').textContent = 'AI detection reporting unavailable.';
       }
     }
 
@@ -5047,6 +5246,7 @@
     });
 
     loadRealStats();
+    loadAIDetectionStats();
     updateMuteToggleButton();
 
     // Refresh stats when returning from another page (e.g., Quick Review).
@@ -5058,6 +5258,7 @@
       if (document.visibilityState === 'visible' && Date.now() - lastStatsFetch > 30000) {
         lastStatsFetch = Date.now();
         loadRealStats();
+        loadAIDetectionStats();
       }
     });
 

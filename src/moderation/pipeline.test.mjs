@@ -678,6 +678,14 @@ describe('Moderation Pipeline — C2PA / ProofMode enforcement', () => {
     expect(result.requiresSecondaryVerification).toBe(false);
     expect(result.c2pa?.state).toBe('valid_ai_signed');
     expect(result.policyContext?.overrideReason).toBe('c2pa-ai-signed-short-circuit');
+    expect(result.aiDetectionPolicy).toMatchObject({
+      aiDetectionAllowed: false,
+      aiDetectionForced: false,
+      aiDetectionRan: false,
+      aiDetectionSkipped: true,
+      policyReason: 'valid_ai_signed_skip',
+      c2paState: 'valid_ai_signed',
+    });
 
     const hiveCalls = mockFetch.mock.calls.filter(([url]) => String(url).includes('api.thehive.ai'));
     expect(hiveCalls).toHaveLength(0);
@@ -742,6 +750,14 @@ describe('Moderation Pipeline — C2PA / ProofMode enforcement', () => {
     expect(result.action).toBe('SAFE');
     expect(result.c2pa?.state).toBe('valid_proofmode');
     expect(result.scores.ai_generated).toBe(0);
+    expect(result.aiDetectionPolicy).toMatchObject({
+      aiDetectionAllowed: false,
+      aiDetectionForced: false,
+      aiDetectionRan: false,
+      aiDetectionSkipped: true,
+      policyReason: 'valid_proofmode_skip',
+      c2paState: 'valid_proofmode',
+    });
     expect(hiveAuthCalls).toEqual(['token mod-key']);
   });
 
@@ -787,6 +803,14 @@ describe('Moderation Pipeline — C2PA / ProofMode enforcement', () => {
     expect(result.policyContext?.overrideReason).toBe('proofmode-capture-authenticated');
     expect(result.reason).toContain('proofmode-capture-authenticated');
     expect(result.c2pa?.state).toBe('valid_proofmode');
+    expect(result.aiDetectionPolicy).toMatchObject({
+      aiDetectionAllowed: true,
+      aiDetectionForced: true,
+      aiDetectionRan: true,
+      aiDetectionSkipped: false,
+      policyReason: 'report_forced_ai_detection',
+      c2paState: 'valid_proofmode',
+    });
 
     const hiveCalls = mockFetch.mock.calls.filter(([url]) => String(url).includes('api.thehive.ai'));
     expect(hiveCalls.length).toBeGreaterThan(0);

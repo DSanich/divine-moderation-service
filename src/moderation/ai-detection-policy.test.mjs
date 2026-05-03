@@ -5,7 +5,7 @@
 // ABOUTME: Verifies ProofMode skips AI detection unless an AI report forces it
 
 import { describe, expect, it } from 'vitest';
-import { proofModeSkipsAIDetection, shouldForceAIDetection } from './ai-detection-policy.mjs';
+import { getAIDetectionPolicyDecision, proofModeSkipsAIDetection, shouldForceAIDetection } from './ai-detection-policy.mjs';
 
 describe('AI detection policy', () => {
   it('forces AI detection for camelCase and snake_case queue metadata flags', () => {
@@ -23,5 +23,37 @@ describe('AI detection policy', () => {
     expect(proofModeSkipsAIDetection({ state: 'valid_proofmode' }, {})).toBe(true);
     expect(proofModeSkipsAIDetection({ state: 'valid_proofmode' }, { forceAIDetection: true })).toBe(false);
     expect(proofModeSkipsAIDetection({ state: 'absent' }, {})).toBe(false);
+  });
+
+  it('describes why AI detection is skipped or allowed', () => {
+    expect(getAIDetectionPolicyDecision({
+      c2pa: { state: 'valid_proofmode' },
+      metadata: {},
+      originalVine: false,
+    })).toMatchObject({
+      aiDetectionAllowed: false,
+      aiDetectionForced: false,
+      policyReason: 'valid_proofmode_skip',
+    });
+
+    expect(getAIDetectionPolicyDecision({
+      c2pa: { state: 'valid_proofmode' },
+      metadata: { forceAIDetection: true },
+      originalVine: false,
+    })).toMatchObject({
+      aiDetectionAllowed: true,
+      aiDetectionForced: true,
+      policyReason: 'report_forced_ai_detection',
+    });
+
+    expect(getAIDetectionPolicyDecision({
+      c2pa: { state: 'absent' },
+      metadata: {},
+      originalVine: false,
+    })).toMatchObject({
+      aiDetectionAllowed: true,
+      aiDetectionForced: false,
+      policyReason: 'no_proof_ai_detection',
+    });
   });
 });

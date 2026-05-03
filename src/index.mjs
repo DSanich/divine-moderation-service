@@ -23,6 +23,7 @@ import { formatForStorage, formatForGorse, formatForFunnelcake } from './classif
 import { extractTopics, topicsToLabels, topicsToWeightedFeatures } from './classification/topic-extractor.mjs';
 import { classifyModerationResult, getKVThresholds, kvThresholdsToEnv, setKVThresholds, DEFAULT_THRESHOLDS } from './moderation/classifier.mjs';
 import { shouldForceAIDetection } from './moderation/ai-detection-policy.mjs';
+import { buildAIOutcomeEvent, buildAIPolicyDecisionEvent, buildAIReportEvent, getAIDetectionStats, initAIDetectionEventsTable, recordAIDetectionEvent } from './moderation/ai-detection-events.mjs';
 import { isValidSha256, isValidLookupIdentifier, isValidPubkey, parseMaybeJson, getEventTagValue, parseImetaParams, extractShaFromUrl, extractMediaShaFromEvent } from './validation.mjs';
 import { parseRetryAfterSeconds } from './http-utils.mjs';
 import { classifyText, parseVttText } from './moderation/text-classifier.mjs';
@@ -1397,6 +1398,7 @@ export default {
 
     // Ensure reports table exists
     await initReportsTable(env.BLOSSOM_DB);
+    await initAIDetectionEventsTable(env.BLOSSOM_DB);
 
     if (url.pathname === '/health') {
       return corsResponse(jsonResponse(200, {
@@ -1669,6 +1671,34 @@ export default {
         return new Response(JSON.stringify({ error: error.message }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // Get AI-detection policy reporting stats for dashboard
+    if (url.pathname === '/admin/api/ai-detection/stats') {
+      const authError = await requireAuth(request, env);
+      if (authError) {
+        console.log(`[${requestId}] Unauthorized access to /admin/api/ai-detection/stats`);
+        return authError;
+      }
+
+      try {
+        const estimatedCostCents = Number(env.HIVE_AI_DETECTION_ESTIMATED_COST_CENTS);
+        const stats = await getAIDetectionStats(env.BLOSSOM_DB, {
+          window: url.searchParams.get('window') || '24h',
+          estimatedCostCents: Number.isFinite(estimatedCostCents) && estimatedCostCents > 0
+            ? estimatedCostCents
+            : null,
+        });
+        return new Response(JSON.stringify(stats), {
+          headers: JSON_HEADERS
+        });
+      } catch (error) {
+        console.error(`[${requestId}] Failed to get AI detection stats:`, error);
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: JSON_HEADERS
         });
       }
     }
@@ -3629,6 +3659,7 @@ async function runMigration() {
         console.log(`[API] Report added: ${sha256} by ${reporter_pubkey.substring(0, 16)}... escalate=${result.escalate}`);
 
         if (isAiReportType(report_type) && env.MODERATION_QUEUE) {
+          const reportedAt = new Date().toISOString();
           await env.MODERATION_QUEUE.send({
             sha256,
             r2Key: `videos/${sha256}.mp4`,
@@ -3642,6 +3673,16 @@ async function runMigration() {
             }
           });
           console.log(`[API] Queued forced AI detection for reported content ${sha256}`);
+
+          try {
+            await recordAIDetectionEvent(env.BLOSSOM_DB, buildAIReportEvent({
+              sha256,
+              reportType: report_type,
+              createdAt: reportedAt,
+            }));
+          } catch (eventErr) {
+            console.error(`[API] Failed to record AI report event for ${sha256}:`, eventErr.message);
+          }
         }
 
         return new Response(JSON.stringify({ success: true, ...result }), {
@@ -4278,6 +4319,7 @@ async function runMigration() {
    */
   async queue(batch, env) {
     console.log(`[MODERATION] Processing batch of ${batch.messages.length} videos`);
+    await initAIDetectionEventsTable(env.BLOSSOM_DB);
 
     for (const message of batch.messages) {
       const startTime = Date.now();
@@ -4388,6 +4430,22 @@ async function runMigration() {
           null
         ).run();
         console.log(`[MODERATION] Step 7: D1 write successful`);
+
+        try {
+          await recordAIDetectionEvent(env.BLOSSOM_DB, buildAIPolicyDecisionEvent({
+            sha256,
+            uploadedAt,
+            result,
+          }));
+          await recordAIDetectionEvent(env.BLOSSOM_DB, buildAIOutcomeEvent({
+            sha256,
+            uploadedAt,
+            result,
+          }));
+          console.log(`[MODERATION] Step 7.1: AI detection reporting events recorded for ${sha256}`);
+        } catch (eventErr) {
+          console.error(`[MODERATION] Failed to record AI detection events for ${sha256}:`, eventErr.message);
+        }
 
         // Step 7.5: Store classifier + classification data in KV for recommendation systems
         {
