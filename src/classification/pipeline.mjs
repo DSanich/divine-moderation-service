@@ -9,6 +9,28 @@ import { HiveVLMClassificationProvider } from './providers/hiveai/adapter.mjs';
 // Singleton provider instance
 const vlmProvider = new HiveVLMClassificationProvider();
 
+function isHiveVLMEnabled(env = {}) {
+  return String(env.HIVE_VLM_ENABLED || '').toLowerCase() === 'true';
+}
+
+function skippedClassificationResult(reason) {
+  return {
+    provider: null,
+    skipped: true,
+    reason,
+    labels: [],
+    topics: [],
+    setting: '',
+    objects: [],
+    activities: [],
+    mood: '',
+    description: '',
+    topCategories: [],
+    topSettings: [],
+    topObjects: []
+  };
+}
+
 /**
  * Run the VLM classification pipeline on a video.
  *
@@ -28,24 +50,15 @@ const vlmProvider = new HiveVLMClassificationProvider();
 export async function classifyVideo(videoUrl, env, options = {}) {
   const sha256 = options.sha256 || 'unknown';
 
+  if (!isHiveVLMEnabled(env)) {
+    console.warn('[Classification] Hive VLM classification disabled - skipping classification');
+    return skippedClassificationResult('Hive VLM classification disabled');
+  }
+
   // Validate configuration
   if (!vlmProvider.isConfigured(env)) {
     console.warn('[Classification] HIVE_VLM_API_KEY not configured - skipping classification');
-    return {
-      provider: null,
-      skipped: true,
-      reason: 'HIVE_VLM_API_KEY not configured',
-      labels: [],
-      topics: [],
-      setting: '',
-      objects: [],
-      activities: [],
-      mood: '',
-      description: '',
-      topCategories: [],
-      topSettings: [],
-      topObjects: []
-    };
+    return skippedClassificationResult('HIVE_VLM_API_KEY not configured');
   }
 
   console.log(`[Classification] Starting VLM classification pipeline for ${sha256}`);

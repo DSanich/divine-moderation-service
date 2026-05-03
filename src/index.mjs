@@ -17,11 +17,13 @@ import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import dashboardHTML from './admin/dashboard.html';
 import swipeReviewHTML from './admin/swipe-review.html';
 import messagesHTML from './admin/messages.html';
-import { initReportsTable } from './reports.mjs';
+import { initReportsTable, addReport, isAiReportType } from './reports.mjs';
 import { initUploaderEnforcementTable, getUploaderEnforcement, setUploaderEnforcement, applyUploaderEnforcementToResult } from './uploader-enforcement.mjs';
 import { formatForStorage, formatForGorse, formatForFunnelcake } from './classification/pipeline.mjs';
 import { extractTopics, topicsToLabels, topicsToWeightedFeatures } from './classification/topic-extractor.mjs';
 import { classifyModerationResult, getKVThresholds, kvThresholdsToEnv, setKVThresholds, DEFAULT_THRESHOLDS } from './moderation/classifier.mjs';
+import { shouldForceAIDetection } from './moderation/ai-detection-policy.mjs';
+import { buildAIOutcomeEvent, buildAIPolicyDecisionEvent, buildAIReportEvent, getAIDetectionStats, initAIDetectionEventsTable, recordAIDetectionEvent } from './moderation/ai-detection-events.mjs';
 import { isValidSha256, isValidLookupIdentifier, isValidPubkey, parseMaybeJson, getEventTagValue, parseImetaParams, extractShaFromUrl, extractMediaShaFromEvent } from './validation.mjs';
 import { parseRetryAfterSeconds } from './http-utils.mjs';
 import { classifyText, parseVttText } from './moderation/text-classifier.mjs';
@@ -1396,6 +1398,7 @@ export default {
 
     // Ensure reports table exists
     await initReportsTable(env.BLOSSOM_DB);
+    await initAIDetectionEventsTable(env.BLOSSOM_DB);
 
     if (url.pathname === '/health') {
       return corsResponse(jsonResponse(200, {
@@ -1668,6 +1671,34 @@ export default {
         return new Response(JSON.stringify({ error: error.message }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // Get AI-detection policy reporting stats for dashboard
+    if (url.pathname === '/admin/api/ai-detection/stats') {
+      const authError = await requireAuth(request, env);
+      if (authError) {
+        console.log(`[${requestId}] Unauthorized access to /admin/api/ai-detection/stats`);
+        return authError;
+      }
+
+      try {
+        const estimatedCostCents = Number(env.HIVE_AI_DETECTION_ESTIMATED_COST_CENTS);
+        const stats = await getAIDetectionStats(env.BLOSSOM_DB, {
+          window: url.searchParams.get('window') || '24h',
+          estimatedCostCents: Number.isFinite(estimatedCostCents) && estimatedCostCents > 0
+            ? estimatedCostCents
+            : null,
+        });
+        return new Response(JSON.stringify(stats), {
+          headers: JSON_HEADERS
+        });
+      } catch (error) {
+        console.error(`[${requestId}] Failed to get AI detection stats:`, error);
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: JSON_HEADERS
         });
       }
     }
@@ -3606,6 +3637,66 @@ async function runMigration() {
       }
     }
 
+    if (url.pathname === '/api/v1/report' && request.method === 'POST') {
+      const verification = await authenticateApiRequest(request, env);
+      if (!verification.valid) {
+        console.log(`[API] Authentication failed for /api/v1/report: ${verification.error}`);
+        return apiUnauthorizedResponse(verification);
+      }
+
+      try {
+        const { sha256, reporter_pubkey, report_type, reason } = await request.json();
+
+        if (!sha256 || !reporter_pubkey || !report_type) {
+          return new Response(JSON.stringify({ error: 'sha256, reporter_pubkey, and report_type are required' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+
+        const result = await addReport(env.BLOSSOM_DB, { sha256, reporter_pubkey, report_type, reason });
+
+        console.log(`[API] Report added: ${sha256} by ${reporter_pubkey.substring(0, 16)}... escalate=${result.escalate}`);
+
+        if (isAiReportType(report_type) && env.MODERATION_QUEUE) {
+          const reportedAt = new Date().toISOString();
+          await env.MODERATION_QUEUE.send({
+            sha256,
+            r2Key: `videos/${sha256}.mp4`,
+            uploadedAt: Date.now(),
+            metadata: {
+              source: 'user-report',
+              forceAIDetection: true,
+              reportType: report_type,
+              reportedBy: reporter_pubkey,
+              ...(reason ? { reportReason: reason } : {})
+            }
+          });
+          console.log(`[API] Queued forced AI detection for reported content ${sha256}`);
+
+          try {
+            await recordAIDetectionEvent(env.BLOSSOM_DB, buildAIReportEvent({
+              sha256,
+              reportType: report_type,
+              createdAt: reportedAt,
+            }));
+          } catch (eventErr) {
+            console.error(`[API] Failed to record AI report event for ${sha256}:`, eventErr.message);
+          }
+        }
+
+        return new Response(JSON.stringify({ success: true, ...result }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        console.error('[API] Error adding report:', error);
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
     // API: Send DM notification only (no Blossom/D1 moderation side effects)
     // Used by relay-manager to notify users after NIP-86 moderation actions
     // Auth: Bearer token or Cloudflare Access JWT
@@ -4228,6 +4319,7 @@ async function runMigration() {
    */
   async queue(batch, env) {
     console.log(`[MODERATION] Processing batch of ${batch.messages.length} videos`);
+    await initAIDetectionEventsTable(env.BLOSSOM_DB);
 
     for (const message of batch.messages) {
       const startTime = Date.now();
@@ -4259,14 +4351,20 @@ async function runMigration() {
           'SELECT sha256, action, moderated_at FROM moderation_results WHERE sha256 = ?'
         ).bind(sha256).first();
 
-        if (existingResult) {
+        const forceAIDetection = shouldForceAIDetection(metadata);
+
+        if (existingResult && !forceAIDetection) {
           console.log(`[MODERATION] ⚠️ SKIPPED ${sha256} - already moderated`);
           console.log(`[MODERATION] Previous result: action=${existingResult.action}, moderated_at=${existingResult.moderated_at}`);
           message.ack();
           continue;
         }
 
-        console.log(`[MODERATION] Step 4: No existing result found, starting analysis for ${sha256}`);
+        if (existingResult && forceAIDetection) {
+          console.log(`[MODERATION] Step 4: Forced AI detection requested for already moderated ${sha256}; previous action=${existingResult.action}`);
+        } else {
+          console.log(`[MODERATION] Step 4: No existing result found, starting analysis for ${sha256}`);
+        }
         console.log(`[MODERATION] Blossom blob URL: https://${env.CDN_DOMAIN}/blobs/${sha256}`);
 
         // Run moderation pipeline
@@ -4332,6 +4430,22 @@ async function runMigration() {
           null
         ).run();
         console.log(`[MODERATION] Step 7: D1 write successful`);
+
+        try {
+          await recordAIDetectionEvent(env.BLOSSOM_DB, buildAIPolicyDecisionEvent({
+            sha256,
+            uploadedAt,
+            result,
+          }));
+          await recordAIDetectionEvent(env.BLOSSOM_DB, buildAIOutcomeEvent({
+            sha256,
+            uploadedAt,
+            result,
+          }));
+          console.log(`[MODERATION] Step 7.1: AI detection reporting events recorded for ${sha256}`);
+        } catch (eventErr) {
+          console.error(`[MODERATION] Failed to record AI detection events for ${sha256}:`, eventErr.message);
+        }
 
         // Step 7.5: Store classifier + classification data in KV for recommendation systems
         {
@@ -4721,8 +4835,10 @@ async function handleModerationResult(result, env) {
   }
 
   // Notify reporters who filed reports on this content (non-blocking)
-  const { notifyReporters: notifyReportersOfOutcome } = await import('./nostr/dm-sender.mjs');
-  notifyReportersOfOutcome(sha256, action, env, '[MODERATION]').catch(() => {});
+  if (env.NOSTR_PRIVATE_KEY) {
+    const { notifyReporters: notifyReportersOfOutcome } = await import('./nostr/dm-sender.mjs');
+    notifyReportersOfOutcome(sha256, action, env, '[MODERATION]').catch(() => {});
+  }
 
   // Write normalized moderation labels to ClickHouse
   try {

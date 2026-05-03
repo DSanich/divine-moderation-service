@@ -92,7 +92,7 @@ export async function moderateVideoWithHiveAI(videoUrl, metadata, env, options =
     skippedAIDetection: false
   };
 
-  // Run both APIs in parallel (unless AI detection is skipped)
+  // Run both APIs in parallel unless the policy layer skips AI detection.
   const promises = [];
 
   if (env.HIVE_MODERATION_API_KEY) {
@@ -103,7 +103,6 @@ export async function moderateVideoWithHiveAI(videoUrl, metadata, env, options =
     );
   }
 
-  // Skip AI detection for original Vines (pre-2018 content predates AI generation)
   if (env.HIVE_AI_DETECTION_API_KEY && !options.skipAIDetection) {
     promises.push(
       moderateWithHiveAIDetection(videoUrl, env, options)
@@ -112,7 +111,7 @@ export async function moderateVideoWithHiveAI(videoUrl, metadata, env, options =
     );
   } else if (options.skipAIDetection) {
     results.skippedAIDetection = true;
-    console.log('[HiveAI] Skipping AI detection (original Vine content)');
+    console.log('[HiveAI] Skipping AI detection (policy gate)');
   }
 
   if (promises.length === 0) {

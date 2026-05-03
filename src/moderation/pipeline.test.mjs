@@ -678,12 +678,90 @@ describe('Moderation Pipeline — C2PA / ProofMode enforcement', () => {
     expect(result.requiresSecondaryVerification).toBe(false);
     expect(result.c2pa?.state).toBe('valid_ai_signed');
     expect(result.policyContext?.overrideReason).toBe('c2pa-ai-signed-short-circuit');
+    expect(result.aiDetectionPolicy).toMatchObject({
+      aiDetectionAllowed: false,
+      aiDetectionForced: false,
+      aiDetectionRan: false,
+      aiDetectionSkipped: true,
+      policyReason: 'valid_ai_signed_skip',
+      c2paState: 'valid_ai_signed',
+    });
 
     const hiveCalls = mockFetch.mock.calls.filter(([url]) => String(url).includes('api.thehive.ai'));
     expect(hiveCalls).toHaveLength(0);
   });
 
-  it('downgrades AI-driven QUARANTINE to REVIEW on valid_proofmode', async () => {
+  it('skips Hive AI detection by default on valid_proofmode while keeping content moderation', async () => {
+    const hiveAuthCalls = [];
+    const mockFetch = vi.fn(async (url, options = {}) => {
+      const urlStr = String(url);
+
+      if (urlStr.includes('inquisitor.divine.video/verify')) {
+        return {
+          ok: true,
+          json: async () => ({
+            has_c2pa: true,
+            valid: true,
+            validation_state: 'valid',
+            is_proofmode: true,
+            claim_generator: 'ProofMode/1.1.9 Android/14',
+            assertions: [],
+            actions: [],
+            ingredients: [],
+            verified_at: '2026-04-17T10:00:00Z',
+          }),
+        };
+      }
+
+      if (urlStr.endsWith('.vtt')) {
+        return { ok: false, status: 404, text: async () => '' };
+      }
+
+      if (urlStr.includes('api.thehive.ai')) {
+        hiveAuthCalls.push(options.headers?.authorization || null);
+        return {
+          ok: true,
+          json: async () => ({
+            status: [{
+              response: {
+                output: [
+                  {
+                    time: 0,
+                    classes: [
+                      { class: 'general_nsfw', score: 0.05 },
+                      { class: 'ai_generated', score: 0.98 },
+                    ],
+                  },
+                ],
+              },
+            }],
+          }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch call: ${urlStr}`);
+    });
+
+    const result = await moderateVideo({
+      sha256: '9'.repeat(64),
+      uploadedAt: Date.now(),
+    }, baseEnv, mockFetch);
+
+    expect(result.action).toBe('SAFE');
+    expect(result.c2pa?.state).toBe('valid_proofmode');
+    expect(result.scores.ai_generated).toBe(0);
+    expect(result.aiDetectionPolicy).toMatchObject({
+      aiDetectionAllowed: false,
+      aiDetectionForced: false,
+      aiDetectionRan: false,
+      aiDetectionSkipped: true,
+      policyReason: 'valid_proofmode_skip',
+      c2paState: 'valid_proofmode',
+    });
+    expect(hiveAuthCalls).toEqual(['token mod-key']);
+  });
+
+  it('forces AI detection for reported valid_proofmode content and downgrades AI QUARANTINE to REVIEW', async () => {
     const mockFetch = buildMockFetch({
       inquisitor: {
         has_c2pa: true,
@@ -717,6 +795,7 @@ describe('Moderation Pipeline — C2PA / ProofMode enforcement', () => {
     const result = await moderateVideo({
       sha256: 'b'.repeat(64),
       uploadedAt: Date.now(),
+      metadata: { forceAIDetection: true, source: 'ai-report' },
     }, baseEnv, mockFetch);
 
     expect(result.action).toBe('REVIEW');
@@ -724,6 +803,14 @@ describe('Moderation Pipeline — C2PA / ProofMode enforcement', () => {
     expect(result.policyContext?.overrideReason).toBe('proofmode-capture-authenticated');
     expect(result.reason).toContain('proofmode-capture-authenticated');
     expect(result.c2pa?.state).toBe('valid_proofmode');
+    expect(result.aiDetectionPolicy).toMatchObject({
+      aiDetectionAllowed: true,
+      aiDetectionForced: true,
+      aiDetectionRan: true,
+      aiDetectionSkipped: false,
+      policyReason: 'report_forced_ai_detection',
+      c2paState: 'valid_proofmode',
+    });
 
     const hiveCalls = mockFetch.mock.calls.filter(([url]) => String(url).includes('api.thehive.ai'));
     expect(hiveCalls.length).toBeGreaterThan(0);

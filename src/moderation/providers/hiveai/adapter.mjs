@@ -95,11 +95,11 @@ export class HiveAIProvider extends BaseModerationProvider {
 
     try {
       const hasModeration = !!env.HIVE_MODERATION_API_KEY;
-      // Skip AI detection for original Vines (pre-2018 content predates AI generation)
+      // Skip AI detection when the policy layer already has stronger provenance.
       const hasAIDetection = !!env.HIVE_AI_DETECTION_API_KEY && !options.skipAIDetection;
 
       console.log(`[HiveAI] Starting moderation for ${metadata.sha256}`);
-      console.log(`[HiveAI] Models: content=${hasModeration}, ai_detection=${hasAIDetection}${options.skipAIDetection ? ' (skipped - original Vine)' : ''}`);
+      console.log(`[HiveAI] Models: content=${hasModeration}, ai_detection=${hasAIDetection}${options.skipAIDetection ? ' (skipped by policy)' : ''}`);
 
       // Call Hive.AI APIs (runs both in parallel if both keys present)
       const rawResult = await moderateVideoWithHiveAI(

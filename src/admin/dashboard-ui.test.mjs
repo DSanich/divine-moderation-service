@@ -21,4 +21,12 @@ describe('dashboard provenance UI hooks', () => {
     expect(dashboardHTML).toContain('Invalid Proof');
     expect(dashboardHTML).toContain('c2pa-badge');
   });
+
+  it('contains AI detection reporting panel hooks', () => {
+    expect(dashboardHTML).toContain('ai-detection-panel');
+    expect(dashboardHTML).toContain('/admin/api/ai-detection/stats');
+    expect(dashboardHTML).toContain('loadAIDetectionStats');
+    expect(dashboardHTML).toContain('AI Detection');
+    expect(dashboardHTML).toContain('Estimated spend avoided');
+  });
 });

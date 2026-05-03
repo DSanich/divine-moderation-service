@@ -43,13 +43,28 @@ describe('classifyVideo', () => {
     expect(result.provider).toBeNull();
   });
 
+  it('should skip Hive VLM unless explicitly enabled', async () => {
+    const mockFetch = vi.fn();
+
+    const result = await classifyVideo(
+      'https://media.divine.video/test.mp4',
+      { HIVE_VLM_API_KEY: 'vlm-key' },
+      { sha256: 'abc123', fetchFn: mockFetch }
+    );
+
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe('Hive VLM classification disabled');
+    expect(result.provider).toBeNull();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it('should classify video and return labels', async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => mockVLMResponse()
     });
 
-    const env = { HIVE_VLM_API_KEY: 'vlm-key' };
+    const env = { HIVE_VLM_API_KEY: 'vlm-key', HIVE_VLM_ENABLED: 'true' };
     const result = await classifyVideo(
       'https://media.divine.video/test.mp4',
       env,
@@ -78,7 +93,7 @@ describe('classifyVideo', () => {
       json: async () => mockVLMResponse()
     });
 
-    const env = { HIVE_VLM_API_KEY: 'vlm-key' };
+    const env = { HIVE_VLM_API_KEY: 'vlm-key', HIVE_VLM_ENABLED: 'true' };
     const result = await classifyVideo(
       'https://media.divine.video/test.mp4',
       env,
@@ -94,7 +109,7 @@ describe('classifyVideo', () => {
       json: async () => mockVLMResponse()
     });
 
-    const env = { HIVE_VLM_API_KEY: 'vlm-key' };
+    const env = { HIVE_VLM_API_KEY: 'vlm-key', HIVE_VLM_ENABLED: 'true' };
     const result = await classifyVideo(
       'https://media.divine.video/test.mp4',
       env,
@@ -112,7 +127,7 @@ describe('classifyVideo', () => {
       text: async () => 'Internal Server Error'
     });
 
-    const env = { HIVE_VLM_API_KEY: 'vlm-key' };
+    const env = { HIVE_VLM_API_KEY: 'vlm-key', HIVE_VLM_ENABLED: 'true' };
 
     await expect(
       classifyVideo('https://media.divine.video/test.mp4', env, { fetchFn: mockFetch })
@@ -140,7 +155,7 @@ describe('classifyVideo', () => {
       json: async () => badResponse
     });
 
-    const env = { HIVE_VLM_API_KEY: 'vlm-key' };
+    const env = { HIVE_VLM_API_KEY: 'vlm-key', HIVE_VLM_ENABLED: 'true' };
     const result = await classifyVideo(
       'https://media.divine.video/test.mp4',
       env,

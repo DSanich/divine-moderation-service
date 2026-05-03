@@ -12,6 +12,7 @@ import { fetchNostrEventBySha256, parseVideoEventMetadata, isOriginalVine, hasSt
 import { classifyVideo } from '../classification/pipeline.mjs';
 import { extractTopics } from '../classification/topic-extractor.mjs';
 import { verifyC2pa } from './inquisitor-client.mjs';
+import { getAIDetectionPolicyDecision, proofModeSkipsAIDetection, shouldForceAIDetection } from './ai-detection-policy.mjs';
 
 const ORIGINAL_VINE_SUPPRESSED_CATEGORIES = new Set(['ai_generated', 'deepfake']);
 const DOWNSTREAM_SIGNAL_THRESHOLD = 0.5;
@@ -70,6 +71,14 @@ function buildSignedAiShortCircuitResult({ sha256, uploadedBy, uploadedAt, metad
       enforcementOverridden: true,
       overrideReason: 'c2pa-ai-signed-short-circuit',
       originalAction: 'QUARANTINE',
+    },
+    aiDetectionPolicy: {
+      aiDetectionAllowed: false,
+      aiDetectionForced: false,
+      aiDetectionRan: false,
+      aiDetectionSkipped: true,
+      policyReason: 'valid_ai_signed_skip',
+      c2paState: 'valid_ai_signed',
     },
     downstreamSignals: {
       hasSignals: true,
@@ -316,6 +325,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
     videoSealPayload = null,
     videoSealBitAccuracy = null
   } = videoData;
+  const forceAIDetection = shouldForceAIDetection(metadata);
 
   // Validate configuration
   if (!env.CDN_DOMAIN) {
@@ -361,9 +371,9 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
   }
 
   // Step 2: Check if this is an original Vine (skip AI detection for pre-2018 content)
-  const skipAIDetection = isOriginalVine(nostrContext);
+  const originalVineSkipsAIDetection = isOriginalVine(nostrContext);
   const shouldForceServeable = hasStrongOriginalVineEvidence(nostrContext);
-  if (skipAIDetection) {
+  if (originalVineSkipsAIDetection) {
     console.log(`[MODERATION] Original Vine detected - skipping AI detection for ${sha256}`);
   }
 
@@ -372,12 +382,26 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
   console.log(`[MODERATION] ${sha256} - C2PA state: ${c2pa.state}${c2pa.claimGenerator ? ` (claim=${c2pa.claimGenerator})` : ''}`);
   const videoseal = interpretVideoSealPayload(videoSealPayload, videoSealBitAccuracy);
 
+  const aiDetectionPolicyBase = {
+    ...getAIDetectionPolicyDecision({ c2pa, metadata, originalVine: originalVineSkipsAIDetection }),
+    c2paState: c2pa.state,
+  };
+
   if (c2pa.state === 'valid_ai_signed') {
     console.log(`[MODERATION] ${sha256} - signed-AI short-circuit, skipping Hive and Reality Defender`);
     return buildSignedAiShortCircuitResult({
       sha256, uploadedBy, uploadedAt, metadata,
       videoUrl, nostrContext, nostrEventId, c2pa, videoseal,
     });
+  }
+
+  const proofModeSkip = proofModeSkipsAIDetection(c2pa, metadata);
+  const skipAIDetection = originalVineSkipsAIDetection || proofModeSkip;
+
+  if (proofModeSkip) {
+    console.log(`[MODERATION] ${sha256} - valid ProofMode capture, skipping Hive AI detection`);
+  } else if (c2pa.state === 'valid_proofmode' && forceAIDetection) {
+    console.log(`[MODERATION] ${sha256} - valid ProofMode capture but forced AI detection requested`);
   }
 
   // Step 3: Run moderation and scene classification in parallel
@@ -435,6 +459,12 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
   } else if (sceneSettled.status === 'fulfilled' && sceneSettled.value?.skipped) {
     console.log(`[MODERATION] Scene classification skipped for ${sha256}: ${sceneSettled.value.reason}`);
   }
+
+  const aiDetectionPolicy = {
+    ...aiDetectionPolicyBase,
+    aiDetectionRan: !!moderationResult.raw?.aiDetection,
+    aiDetectionSkipped: moderationResult.raw?.skippedAIDetection === true || aiDetectionPolicyBase.aiDetectionAllowed === false,
+  };
 
   // Step 3.5: Fetch VTT transcript and analyze text content + extract topics
   let textScores = null;
@@ -496,7 +526,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
 
   const policyContext = {
     originalVine: shouldForceServeable,
-    originalVineLegacyFallback: skipAIDetection && !shouldForceServeable,
+    originalVineLegacyFallback: originalVineSkipsAIDetection && !shouldForceServeable,
     enforcementOverridden: false,
     overrideReason: null,
     originalAction: classification.action
@@ -579,6 +609,7 @@ export async function moderateVideo(videoData, env, fetchFn = fetch) {
 
     // Explicit policy metadata for serveability vs downstream moderation signals
     policyContext,
+    aiDetectionPolicy,
     downstreamSignals,
 
     // Text analysis scores from VTT transcript (null if no VTT available)
