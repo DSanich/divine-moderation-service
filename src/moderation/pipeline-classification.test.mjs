@@ -127,7 +127,8 @@ describe('Pipeline Classification Integration', () => {
 
       const env = {
         ...baseEnv,
-        HIVE_VLM_API_KEY: 'test-vlm-key'
+        HIVE_VLM_API_KEY: 'test-vlm-key',
+        HIVE_VLM_ENABLED: 'true'
       };
 
       const result = await moderateVideo(
@@ -169,7 +170,8 @@ describe('Pipeline Classification Integration', () => {
 
       const env = {
         ...baseEnv,
-        HIVE_VLM_API_KEY: 'test-vlm-key'
+        HIVE_VLM_API_KEY: 'test-vlm-key',
+        HIVE_VLM_ENABLED: 'true'
       };
 
       // Should NOT throw even though classification fails
@@ -312,7 +314,8 @@ This is a funny joke about comedy and stand-up`;
 
       const env = {
         ...baseEnv,
-        HIVE_VLM_API_KEY: 'test-vlm-key'
+        HIVE_VLM_API_KEY: 'test-vlm-key',
+        HIVE_VLM_ENABLED: 'true'
       };
 
       const result = await moderateVideo(
